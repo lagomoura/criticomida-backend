@@ -144,6 +144,39 @@ def extract_access_token(
     )
 
 
+async def get_current_user_optional(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    bearer_credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme_optional),
+    ],
+) -> User | None:
+    """Return the user when a valid access token is present; otherwise None."""
+    token: str | None = None
+    if bearer_credentials is not None:
+        token = bearer_credentials.credentials
+    else:
+        token = request.cookies.get('access_token')
+    if not token:
+        return None
+    try:
+        payload = decode_jwt_strict(token)
+    except JWTError:
+        return None
+    if payload.get('type') != 'access':
+        return None
+    user_id_str: str | None = payload.get('sub')
+    if user_id_str is None:
+        return None
+    try:
+        user_id = uuid.UUID(user_id_str)
+    except ValueError:
+        return None
+    result = await db.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
 async def get_current_user(
     token: Annotated[str, Depends(extract_access_token)],
     db: Annotated[AsyncSession, Depends(get_db)],

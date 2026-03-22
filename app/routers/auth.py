@@ -5,9 +5,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import JWTError
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db_errors import is_unique_violation
 from app.database import get_db
 from app.middleware.auth import (
     attach_auth_cookies,
@@ -31,6 +33,10 @@ from app.schemas.user import (
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# If two refresh requests use the same JWT concurrently, the loser sees a
+# recently revoked row; that is not token theft — do not revoke all sessions.
+_REFRESH_RACE_GRACE_SECONDS = 3
 
 
 async def revoke_all_refresh_for_user(
@@ -65,6 +71,54 @@ async def rotate_refresh_session(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+    try:
+        user_uuid = uuid.UUID(sub)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
+
+    now = datetime.now(timezone.utc)
+    upd = (
+        update(RefreshToken)
+        .where(
+            RefreshToken.jti == jti,
+            RefreshToken.revoked_at.is_(None),
+            RefreshToken.expires_at >= now,
+            RefreshToken.user_id == user_uuid,
+        )
+        .values(revoked_at=now)
+        .returning(RefreshToken.user_id)
+    )
+    exec_result = await db.execute(upd)
+    winner_user_id = exec_result.scalar_one_or_none()
+
+    if winner_user_id is not None:
+        user_result = await db.execute(
+            select(User).where(User.id == winner_user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+            )
+        new_jti = str(uuid.uuid4())
+        new_exp = now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+        db.add(
+            RefreshToken(
+                jti=new_jti,
+                user_id=user.id,
+                expires_at=new_exp,
+            )
+        )
+        access = create_access_token(subject=str(user.id))
+        refresh = create_refresh_token_string(
+            subject=str(user.id),
+            jti=new_jti,
+        )
+        return access, refresh, user
 
     result = await db.execute(
         select(RefreshToken).where(RefreshToken.jti == jti)
@@ -75,46 +129,32 @@ async def rotate_refresh_session(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
         )
-
-    now = datetime.now(timezone.utc)
-    if row.revoked_at is not None:
-        await revoke_all_refresh_for_user(db, row.user_id)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token reuse detected",
-        )
     if row.expires_at < now:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token expired",
         )
-    if str(row.user_id) != sub:
+    if row.user_id != user_uuid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
         )
-
-    user_result = await db.execute(select(User).where(User.id == row.user_id))
-    user = user_result.scalar_one_or_none()
-    if user is None:
+    if row.revoked_at is not None:
+        age_seconds = (now - row.revoked_at).total_seconds()
+        if age_seconds < _REFRESH_RACE_GRACE_SECONDS:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token",
+            )
+        await revoke_all_refresh_for_user(db, row.user_id)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="Refresh token reuse detected",
         )
-
-    row.revoked_at = now
-    new_jti = str(uuid.uuid4())
-    new_exp = now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    db.add(
-        RefreshToken(
-            jti=new_jti,
-            user_id=user.id,
-            expires_at=new_exp,
-        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid refresh token",
     )
-    access = create_access_token(subject=str(user.id))
-    refresh = create_refresh_token_string(subject=str(user.id), jti=new_jti)
-    return access, refresh, user
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -122,7 +162,10 @@ async def register(
     user_data: UserCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
-    result = await db.execute(select(User).where(User.email == user_data.email))
+    normalized_email = user_data.email.strip().lower()
+    result = await db.execute(
+        select(User).where(User.email == normalized_email)
+    )
     if result.scalar_one_or_none() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -130,12 +173,21 @@ async def register(
         )
 
     user = User(
-        email=user_data.email,
+        email=normalized_email,
         password_hash=hash_password(user_data.password),
         display_name=user_data.display_name,
     )
     db.add(user)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        if is_unique_violation(exc):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            ) from exc
+        raise
     await db.refresh(user)
     return user
 
@@ -146,8 +198,9 @@ async def login(
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenResponse:
+    normalized_email = credentials.email.strip().lower()
     result = await db.execute(
-        select(User).where(User.email == credentials.email)
+        select(User).where(User.email == normalized_email)
     )
     user = result.scalar_one_or_none()
     if user is None or not verify_password(

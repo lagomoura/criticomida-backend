@@ -5,13 +5,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.db_errors import is_unique_violation
 from app.middleware.auth import get_current_user, require_role
 from app.models.category import Category
-from app.models.image import EntityType, Image
 from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
@@ -21,9 +22,9 @@ from app.schemas.restaurant import (
     RestaurantResponse,
     RestaurantUpdate,
 )
+from app.services.image_cleanup import delete_images_for_restaurant
 from app.services.restaurant_service import (
     get_restaurant_detail,
-    get_restaurant_gallery_images,
     get_restaurant_list,
 )
 
@@ -100,24 +101,50 @@ async def create_restaurant(
             detail="Category not found",
         )
 
-    # Auto-generate slug if not provided or use provided one
-    slug = restaurant_data.slug or _slugify(restaurant_data.name)
-
-    # Check slug uniqueness
-    existing = await db.execute(
-        select(Restaurant).where(Restaurant.slug == slug)
+    payload = restaurant_data.model_dump(exclude={"slug"})
+    base_slug = (restaurant_data.slug or "").strip() or _slugify(
+        restaurant_data.name
     )
-    if existing.scalar_one_or_none() is not None:
-        # Append a short random suffix
-        slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+    max_attempts = 8
+    restaurant: Restaurant | None = None
 
-    restaurant = Restaurant(
-        **restaurant_data.model_dump(exclude={"slug"}),
-        slug=slug,
-        created_by=current_user.id,
-    )
-    db.add(restaurant)
-    await db.flush()
+    for attempt in range(max_attempts):
+        if attempt == 0:
+            slug = base_slug
+            taken = await db.execute(
+                select(Restaurant.id).where(Restaurant.slug == slug).limit(1)
+            )
+            if taken.scalar_one_or_none() is not None:
+                slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+        else:
+            slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+
+        candidate = Restaurant(
+            **payload,
+            slug=slug,
+            created_by=current_user.id,
+        )
+        db.add(candidate)
+        try:
+            await db.flush()
+            restaurant = candidate
+            break
+        except IntegrityError as exc:
+            await db.rollback()
+            if not is_unique_violation(exc):
+                raise
+            if attempt == max_attempts - 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Could not allocate a unique restaurant slug",
+                ) from exc
+
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not allocate a unique restaurant slug",
+        )
+
     await db.refresh(restaurant)
 
     # Reload with relationships
@@ -165,7 +192,16 @@ async def update_restaurant(
     for field, value in update_data.items():
         setattr(restaurant, field, value)
 
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        if is_unique_violation(exc):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Restaurant slug already in use",
+            ) from exc
+        raise
 
     # Reload with relationships
     reload_result = await db.execute(
@@ -193,5 +229,6 @@ async def delete_restaurant(
             detail="Restaurant not found",
         )
 
+    await delete_images_for_restaurant(db, restaurant.id)
     await db.delete(restaurant)
     await db.flush()

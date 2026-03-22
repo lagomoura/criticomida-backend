@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.services.image_cleanup import delete_images_for_dish
 from app.middleware.auth import get_current_user, require_role
 from app.models.dish import Dish
 from app.models.restaurant import Restaurant
@@ -125,5 +126,6 @@ async def delete_dish(
             detail="Dish not found",
         )
 
+    await delete_images_for_dish(db, dish.id)
     await db.delete(dish)
     await db.flush()

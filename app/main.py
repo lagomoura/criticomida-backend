@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -12,6 +13,7 @@ from app.routers import (
     auth,
     categories,
     dishes,
+    feedback,
     images,
     menus,
     ratings,
@@ -30,6 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.database import Base
     import app.models  # noqa: F401 - ensure all models are imported
     async with engine.begin() as conn:
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS citext'))
         await conn.run_sync(Base.metadata.create_all)
 
     yield
@@ -60,6 +63,7 @@ app.include_router(restaurants.router)
 app.include_router(dishes.router)
 app.include_router(reviews.router)
 app.include_router(ratings.router)
+app.include_router(feedback.router)
 app.include_router(images.router)
 app.include_router(menus.router)
 app.include_router(admin.router)

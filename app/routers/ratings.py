@@ -3,15 +3,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.restaurant import (
-    RatingDimension,
-    Restaurant,
-    RestaurantRatingDimension,
-)
+from app.models.restaurant import Restaurant, RestaurantRatingDimension
 from app.models.user import User
 from app.schemas.restaurant import RatingDimensionCreate, RatingDimensionResponse
 from app.services.rating_service import update_restaurant_rating
@@ -105,35 +102,30 @@ async def set_ratings(
             detail="Restaurant not found",
         )
 
-    saved_ratings: list[RestaurantRatingDimension] = []
+    table = RestaurantRatingDimension.__table__
+    saved_ids: list[int] = []
 
     for rating_data in ratings:
-        # Check if this user already rated this dimension for this restaurant
-        existing_result = await db.execute(
-            select(RestaurantRatingDimension).where(
-                RestaurantRatingDimension.restaurant_id == restaurant.id,
-                RestaurantRatingDimension.user_id == current_user.id,
-                RestaurantRatingDimension.dimension == rating_data.dimension,
-            )
+        ins = pg_insert(table).values(
+            restaurant_id=restaurant.id,
+            user_id=current_user.id,
+            dimension=rating_data.dimension,
+            score=rating_data.score,
         )
-        existing = existing_result.scalar_one_or_none()
+        stmt = ins.on_conflict_do_update(
+            constraint='uq_rest_user_dimension',
+            set_={'score': ins.excluded.score},
+        ).returning(table.c.id)
+        row_id = (await db.execute(stmt)).scalar_one()
+        saved_ids.append(row_id)
 
-        if existing:
-            existing.score = rating_data.score
-            await db.flush()
-            await db.refresh(existing)
-            saved_ratings.append(existing)
-        else:
-            new_rating = RestaurantRatingDimension(
-                restaurant_id=restaurant.id,
-                user_id=current_user.id,
-                dimension=rating_data.dimension,
-                score=rating_data.score,
-            )
-            db.add(new_rating)
-            await db.flush()
-            await db.refresh(new_rating)
-            saved_ratings.append(new_rating)
+    dim_rows = await db.execute(
+        select(RestaurantRatingDimension).where(
+            RestaurantRatingDimension.id.in_(saved_ids)
+        )
+    )
+    by_id = {row.id: row for row in dim_rows.scalars().all()}
+    saved_ratings = [by_id[i] for i in saved_ids]
 
     # Recompute restaurant rating
     await update_restaurant_rating(db, restaurant.id)

@@ -2,8 +2,8 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Enum, String, DateTime
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import DateTime, Enum, String
+from sqlalchemy.dialects.postgresql import CITEXT, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -22,7 +22,7 @@ class User(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     email: Mapped[str] = mapped_column(
-        String(255), unique=True, index=True, nullable=False
+        CITEXT, unique=True, index=True, nullable=False
     )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -50,5 +50,8 @@ class User(Base):
         back_populates="user"
     )
     dimension_ratings: Mapped[list["RestaurantRatingDimension"]] = relationship(  # noqa: F821
+        back_populates="user"
+    )
+    feedback_submissions: Mapped[list["UserFeedback"]] = relationship(  # noqa: F821
         back_populates="user"
     )
