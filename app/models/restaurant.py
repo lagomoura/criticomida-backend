@@ -51,8 +51,8 @@ class Restaurant(Base):
     longitude: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 7), nullable=True
     )
-    category_id: Mapped[int] = mapped_column(
-        ForeignKey("categories.id"), nullable=False, index=True
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id"), nullable=True, index=True
     )
     cover_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     computed_rating: Mapped[Decimal] = mapped_column(
@@ -75,7 +75,7 @@ class Restaurant(Base):
     )
 
     # Relationships
-    category: Mapped["Category"] = relationship(back_populates="restaurants")  # noqa: F821
+    category: Mapped["Category | None"] = relationship(back_populates="restaurants")  # noqa: F821
     creator: Mapped["User"] = relationship(  # noqa: F821
         back_populates="restaurants", foreign_keys=[created_by]
     )

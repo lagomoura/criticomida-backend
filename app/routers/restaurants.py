@@ -91,15 +91,16 @@ async def create_restaurant(
         User, Depends(require_role(UserRole.admin, UserRole.critic))
     ],
 ) -> Restaurant:
-    # Verify category exists
-    cat_result = await db.execute(
-        select(Category).where(Category.id == restaurant_data.category_id)
-    )
-    if cat_result.scalar_one_or_none() is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Category not found",
+    # Verify category exists only when one is provided
+    if restaurant_data.category_id is not None:
+        cat_result = await db.execute(
+            select(Category).where(Category.id == restaurant_data.category_id)
         )
+        if cat_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Category not found",
+            )
 
     payload = restaurant_data.model_dump(exclude={"slug"})
     base_slug = (restaurant_data.slug or "").strip() or _slugify(

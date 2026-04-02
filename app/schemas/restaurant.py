@@ -16,7 +16,7 @@ class RestaurantCreate(BaseModel):
     location_name: str = Field(max_length=300)
     latitude: Decimal | None = None
     longitude: Decimal | None = None
-    category_id: int
+    category_id: int | None = None
     cover_image_url: str | None = None
 
 
@@ -39,7 +39,7 @@ class RestaurantResponse(BaseModel):
     location_name: str
     latitude: Decimal | None
     longitude: Decimal | None
-    category_id: int
+    category_id: int | None
     cover_image_url: str | None
     computed_rating: Decimal
     review_count: int
