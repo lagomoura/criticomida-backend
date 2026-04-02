@@ -17,10 +17,33 @@ from app.models.dish import (
     DishReviewTag,
 )
 from app.models.user import User, UserRole
-from app.schemas.dish import DishReviewCreate, DishReviewResponse, DishReviewUpdate
+from app.schemas.dish import DishReviewCreate, DishReviewResponse, DishReviewUpdate, MyReviewResponse
 from app.services.rating_service import update_dish_rating, update_restaurant_rating
 
 router = APIRouter(tags=["reviews"])
+
+
+@router.get(
+    "/api/users/me/reviews",
+    response_model=list[MyReviewResponse],
+)
+async def get_my_reviews(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> list[DishReview]:
+    result = await db.execute(
+        select(DishReview)
+        .options(
+            selectinload(DishReview.user),
+            selectinload(DishReview.pros_cons),
+            selectinload(DishReview.tags),
+            selectinload(DishReview.images),
+            selectinload(DishReview.dish).selectinload(Dish.restaurant),
+        )
+        .where(DishReview.user_id == current_user.id)
+        .order_by(DishReview.created_at.desc())
+    )
+    return list(result.scalars().all())
 
 
 async def _load_review_with_relations(

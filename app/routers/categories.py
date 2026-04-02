@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.middleware.auth import get_current_user, require_role
 from app.models.category import Category
+from app.models.dish import Dish
 from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
 from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
@@ -22,11 +23,32 @@ class CategoryWithCount(CategoryResponse):
 @router.get("", response_model=list[CategoryResponse])
 async def list_categories(
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> list[Category]:
-    result = await db.execute(
-        select(Category).order_by(Category.display_order, Category.name)
+) -> list[dict]:
+    review_count_subq = (
+        select(func.coalesce(func.sum(Dish.review_count), 0))
+        .join(Restaurant, Dish.restaurant_id == Restaurant.id)
+        .where(Restaurant.category_id == Category.id)
+        .correlate(Category)
+        .scalar_subquery()
     )
-    return list(result.scalars().all())
+    result = await db.execute(
+        select(Category, review_count_subq.label("review_count")).order_by(
+            Category.display_order, Category.name
+        )
+    )
+    rows = result.all()
+    return [
+        {
+            "id": cat.id,
+            "slug": cat.slug,
+            "name": cat.name,
+            "description": cat.description,
+            "image_url": cat.image_url,
+            "display_order": cat.display_order,
+            "review_count": count,
+        }
+        for cat, count in rows
+    ]
 
 
 @router.get("/{slug}", response_model=CategoryWithCount)

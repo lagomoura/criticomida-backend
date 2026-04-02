@@ -8,7 +8,7 @@ from app.models.dish import DishReviewProsConsType, PortionSize, PriceTier
 
 
 class DishCreate(BaseModel):
-    restaurant_id: uuid.UUID
+    restaurant_id: uuid.UUID | None = None
     name: str = Field(max_length=200)
     description: str | None = None
     cover_image_url: str | None = None
@@ -128,4 +128,23 @@ class DishReviewResponse(BaseModel):
         # Extract user display_name from the ORM relationship if available
         if hasattr(values, "user") and values.user is not None:
             result.user_display_name = values.user.display_name
+        return result
+
+
+class MyReviewResponse(DishReviewResponse):
+    dish_name: str = ""
+    restaurant_name: str = ""
+    restaurant_slug: str = ""
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _extract_user_display_name(cls, values, handler):  # type: ignore[no-untyped-def]
+        result = handler(values)
+        if hasattr(values, "user") and values.user is not None:
+            result.user_display_name = values.user.display_name
+        if hasattr(values, "dish") and values.dish is not None:
+            result.dish_name = values.dish.name
+            if hasattr(values.dish, "restaurant") and values.dish.restaurant is not None:
+                result.restaurant_name = values.dish.restaurant.name
+                result.restaurant_slug = values.dish.restaurant.slug
         return result

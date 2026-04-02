@@ -24,5 +24,6 @@ class CategoryResponse(BaseModel):
     description: str | None
     image_url: str | None
     display_order: int
+    review_count: int = 0
 
     model_config = {"from_attributes": True}
