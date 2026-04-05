@@ -98,6 +98,7 @@ class DishReview(Base):
     )
     would_order_again: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     visited_with: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    is_anonymous: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

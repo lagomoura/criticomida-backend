@@ -122,6 +122,7 @@ async def create_review(
         portion_size=review_data.portion_size,
         would_order_again=review_data.would_order_again,
         visited_with=review_data.visited_with,
+        is_anonymous=review_data.is_anonymous,
     )
     db.add(review)
 

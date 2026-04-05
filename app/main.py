@@ -14,6 +14,7 @@ from app.routers import (
     admin,
     auth,
     categories,
+    chat,
     dishes,
     feedback,
     images,
@@ -68,6 +69,7 @@ def create_app(
     )
 
     application.include_router(auth.router)
+    application.include_router(chat.router)
     application.include_router(categories.router)
     application.include_router(restaurants.router)
     application.include_router(dishes.router)

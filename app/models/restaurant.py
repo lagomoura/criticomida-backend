@@ -10,11 +10,12 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -54,7 +55,13 @@ class Restaurant(Base):
     category_id: Mapped[int | None] = mapped_column(
         ForeignKey("categories.id"), nullable=True, index=True
     )
-    cover_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    cover_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    google_place_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    website: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    google_maps_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    opening_hours: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     computed_rating: Mapped[Decimal] = mapped_column(
         Numeric(3, 2), default=Decimal("0"), nullable=False
     )

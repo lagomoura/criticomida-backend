@@ -18,6 +18,12 @@ class RestaurantCreate(BaseModel):
     longitude: Decimal | None = None
     category_id: int | None = None
     cover_image_url: str | None = None
+    google_place_id: str | None = Field(None, max_length=200)
+    website: str | None = None
+    phone_number: str | None = Field(None, max_length=50)
+    google_maps_url: str | None = None
+    price_level: int | None = None
+    opening_hours: list[str] | None = None
 
 
 class RestaurantUpdate(BaseModel):
@@ -29,6 +35,12 @@ class RestaurantUpdate(BaseModel):
     longitude: Decimal | None = None
     category_id: int | None = None
     cover_image_url: str | None = None
+    google_place_id: str | None = Field(None, max_length=200)
+    website: str | None = None
+    phone_number: str | None = Field(None, max_length=50)
+    google_maps_url: str | None = None
+    price_level: int | None = None
+    opening_hours: list[str] | None = None
 
 
 class RestaurantResponse(BaseModel):
@@ -48,6 +60,12 @@ class RestaurantResponse(BaseModel):
     updated_at: datetime
     category: CategoryResponse | None = None
     creator: UserResponse | None = None
+    google_place_id: str | None = None
+    website: str | None = None
+    phone_number: str | None = None
+    google_maps_url: str | None = None
+    price_level: int | None = None
+    opening_hours: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -57,6 +75,8 @@ class RestaurantListResponse(BaseModel):
     slug: str
     name: str
     location_name: str
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
     cover_image_url: str | None
     computed_rating: Decimal
     review_count: int

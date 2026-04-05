@@ -1,3 +1,4 @@
+
 version: "3.9"
 
 services:
@@ -31,6 +32,8 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CHAT_MODEL: ${CHAT_MODEL:-anthropic/claude-haiku-4-5-20251001}
+      CHAT_API_KEY: ${CHAT_API_KEY:-}
     ports:
       - "8000:8000"
     volumes:

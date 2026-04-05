@@ -86,6 +86,7 @@ class DishReviewCreate(BaseModel):
     portion_size: PortionSize | None = None
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
+    is_anonymous: bool = False
     pros_cons: list[DishReviewProsConsCreate] = []
     tags: list[DishReviewTagCreate] = []
     images: list[DishReviewImageCreate] = []
@@ -99,6 +100,7 @@ class DishReviewUpdate(BaseModel):
     portion_size: PortionSize | None = None
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
+    is_anonymous: bool | None = None
 
 
 class DishReviewResponse(BaseModel):
@@ -113,6 +115,7 @@ class DishReviewResponse(BaseModel):
     portion_size: PortionSize | None
     would_order_again: bool | None
     visited_with: str | None
+    is_anonymous: bool
     created_at: datetime
     updated_at: datetime
     pros_cons: list[DishReviewProsConsResponse] = []
@@ -126,7 +129,7 @@ class DishReviewResponse(BaseModel):
     def _extract_user_display_name(cls, values, handler):  # type: ignore[no-untyped-def]
         result = handler(values)
         # Extract user display_name from the ORM relationship if available
-        if hasattr(values, "user") and values.user is not None:
+        if hasattr(values, "user") and values.user is not None and not result.is_anonymous:
             result.user_display_name = values.user.display_name
         return result
 
