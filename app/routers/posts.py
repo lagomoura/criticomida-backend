@@ -128,6 +128,7 @@ async def _find_or_create_restaurant_from_place(
         slug=slug,
         name=cleaned_name,
         location_name=(place.formatted_address or "").strip(),
+        city=(place.city.strip() if place.city else None) or None,
         latitude=Decimal(str(place.latitude)) if place.latitude is not None else None,
         longitude=Decimal(str(place.longitude)) if place.longitude is not None else None,
         category_id=category_id,

@@ -46,6 +46,7 @@ class Restaurant(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     location_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     latitude: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 7), nullable=True
     )

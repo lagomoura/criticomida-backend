@@ -31,6 +31,7 @@ from app.routers import (
     restaurants,
     reviews,
     search,
+    trending,
     users,
 )
 
@@ -92,6 +93,7 @@ def create_app(
     application.include_router(reports.router)
     application.include_router(feed.router)
     application.include_router(search.router)
+    application.include_router(trending.router)
     application.include_router(posts.router)
     application.include_router(chat.router)
     application.include_router(categories.router)
