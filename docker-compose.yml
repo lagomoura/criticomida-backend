@@ -35,7 +35,9 @@ services:
       CHAT_MODEL: ${CHAT_MODEL:-anthropic/claude-haiku-4-5-20251001}
       CHAT_API_KEY: ${CHAT_API_KEY:-}
     ports:
-      - "8000:8000"
+      # Host :8002 → container :8000. El 8000 del host queda libre para otros
+      # proyectos locales. El frontend apunta a http://localhost:8002.
+      - "8002:8000"
     volumes:
       - .:/app
 

@@ -92,7 +92,7 @@ class DishReview(Base):
     date_tasted: Mapped[date] = mapped_column(Date, nullable=False)
     time_tasted: Mapped[time | None] = mapped_column(Time, nullable=True)
     note: Mapped[str] = mapped_column(Text, nullable=False)
-    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    rating: Mapped[Decimal] = mapped_column(Numeric(2, 1), nullable=False)
     portion_size: Mapped[PortionSize | None] = mapped_column(
         Enum(PortionSize, name="portion_size"), nullable=True
     )

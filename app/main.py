@@ -13,15 +13,25 @@ from app.database import engine
 from app.routers import (
     admin,
     auth,
+    bookmarks,
     categories,
     chat,
+    comments,
     dishes,
+    feed,
     feedback,
+    follows,
     images,
+    likes,
     menus,
+    notifications,
+    posts,
     ratings,
+    reports,
     restaurants,
     reviews,
+    search,
+    users,
 )
 
 
@@ -69,11 +79,24 @@ def create_app(
     )
 
     application.include_router(auth.router)
+    # Specific /api/users/me/* paths from the legacy reviews router must be
+    # registered BEFORE users.router so that its parametrized
+    # `/{id_or_handle}/reviews` doesn't shadow them.
+    application.include_router(reviews.router)
+    application.include_router(users.router)
+    application.include_router(follows.router)
+    application.include_router(likes.router)
+    application.include_router(comments.router)
+    application.include_router(notifications.router)
+    application.include_router(bookmarks.router)
+    application.include_router(reports.router)
+    application.include_router(feed.router)
+    application.include_router(search.router)
+    application.include_router(posts.router)
     application.include_router(chat.router)
     application.include_router(categories.router)
     application.include_router(restaurants.router)
     application.include_router(dishes.router)
-    application.include_router(reviews.router)
     application.include_router(ratings.router)
     application.include_router(feedback.router)
     application.include_router(images.router)

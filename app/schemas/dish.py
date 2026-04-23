@@ -82,7 +82,7 @@ class DishReviewCreate(BaseModel):
     date_tasted: date
     time_tasted: time | None = None
     note: str
-    rating: int = Field(ge=1, le=5)
+    rating: Decimal = Field(ge=1, le=5, decimal_places=1)
     portion_size: PortionSize | None = None
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
@@ -96,7 +96,7 @@ class DishReviewUpdate(BaseModel):
     date_tasted: date | None = None
     time_tasted: time | None = None
     note: str | None = None
-    rating: int | None = Field(None, ge=1, le=5)
+    rating: Decimal | None = Field(None, ge=1, le=5, decimal_places=1)
     portion_size: PortionSize | None = None
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
@@ -111,7 +111,7 @@ class DishReviewResponse(BaseModel):
     date_tasted: date
     time_tasted: time | None
     note: str
-    rating: int
+    rating: Decimal
     portion_size: PortionSize | None
     would_order_again: bool | None
     visited_with: str | None

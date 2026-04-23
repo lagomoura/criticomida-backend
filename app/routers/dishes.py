@@ -1,7 +1,8 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,48 @@ from app.schemas.dish import DishCreate, DishResponse, DishUpdate
 from app.services.dish_service import get_dish_by_id, get_dish_detail, get_dishes_for_restaurant
 
 router = APIRouter(tags=["dishes"])
+
+
+class DishSearchItem(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class DishSearchPage(BaseModel):
+    items: list[DishSearchItem]
+
+
+@router.get("/api/dishes/search", response_model=DishSearchPage)
+async def search_dishes(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    restaurant_place_id: str = Query(min_length=1, max_length=200),
+    q: str = Query(default="", max_length=100),
+    limit: int = Query(default=10, ge=1, le=50),
+) -> DishSearchPage:
+    """
+    Compose autocomplete for dishes within a given Places-identified restaurant.
+
+    Returns an empty list when the restaurant hasn't been stored yet (brand-new
+    place_id) — the frontend falls back to its "crear nuevo plato" affordance
+    without an explicit 404.
+    """
+    restaurant = (
+        await db.execute(
+            select(Restaurant).where(Restaurant.google_place_id == restaurant_place_id)
+        )
+    ).scalar_one_or_none()
+    if restaurant is None:
+        return DishSearchPage(items=[])
+
+    stmt = select(Dish).where(Dish.restaurant_id == restaurant.id)
+    if q.strip():
+        stmt = stmt.where(Dish.name.ilike(f"%{q.strip()}%"))
+    stmt = stmt.order_by(Dish.review_count.desc(), Dish.name.asc()).limit(limit)
+
+    rows = (await db.execute(stmt)).scalars().all()
+    return DishSearchPage(
+        items=[DishSearchItem(id=d.id, name=d.name) for d in rows]
+    )
 
 
 @router.get(

@@ -17,6 +17,9 @@ from app.models.dish import (
 from app.models.image import Image
 from app.models.menu import Menu
 from app.models.user_feedback import UserFeedback
+from app.models.follow import Follow
+from app.models.like import Like
+from app.models.social import Bookmark, Comment, Notification, Report
 
 __all__ = [
     "User",
@@ -34,4 +37,10 @@ __all__ = [
     "Image",
     "Menu",
     "UserFeedback",
+    "Follow",
+    "Like",
+    "Comment",
+    "Notification",
+    "Bookmark",
+    "Report",
 ]
