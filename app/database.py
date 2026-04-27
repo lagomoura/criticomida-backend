@@ -5,7 +5,21 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+
+def _async_db_url(url: str) -> str:
+    # Railway/Heroku inject DATABASE_URL with the bare `postgresql://` (or
+    # legacy `postgres://`) scheme. SQLAlchemy then picks the sync psycopg2
+    # driver, which we don't ship. Force the asyncpg driver.
+    if url.startswith("postgresql+"):
+        return url
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return url
+
+
+engine = create_async_engine(_async_db_url(settings.DATABASE_URL), echo=False)
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
