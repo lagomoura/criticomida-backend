@@ -5,6 +5,14 @@
 
 set -e
 
+# Guard: a `pg_dump --data-only` reseed can leave the schema intact but wipe
+# the alembic_version row, which makes `upgrade head` retry 001 and crash on
+# duplicate enums. Detect that state and stamp head before upgrading.
+if python scripts/safe_migrate.py; then
+    echo "[entrypoint] Schema exists without alembic_version — stamping head"
+    alembic stamp head
+fi
+
 echo "[entrypoint] Running alembic upgrade head..."
 alembic upgrade head
 
