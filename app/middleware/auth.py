@@ -23,13 +23,16 @@ _JWT_DECODE_OPTIONS = {
 
 
 def attach_auth_cookies(response: Response, access: str, refresh: str) -> None:
+    # Cross-site (Vercel ↔ Railway) requires SameSite=None + Secure.
+    # Same-site dev (localhost ↔ localhost) keeps Lax over plain HTTP.
+    samesite = "none" if settings.COOKIE_SECURE else "lax"
     response.set_cookie(
         key="access_token",
         value=access,
         httponly=True,
         max_age=settings.access_token_max_age_seconds,
         secure=settings.COOKIE_SECURE,
-        samesite="lax",
+        samesite=samesite,
         path="/",
     )
     response.set_cookie(
@@ -38,14 +41,25 @@ def attach_auth_cookies(response: Response, access: str, refresh: str) -> None:
         httponly=True,
         max_age=settings.refresh_token_max_age_seconds,
         secure=settings.COOKIE_SECURE,
-        samesite="lax",
+        samesite=samesite,
         path="/api/auth",
     )
 
 
 def clear_auth_cookies(response: Response) -> None:
-    response.delete_cookie(key="access_token", path="/")
-    response.delete_cookie(key="refresh_token", path="/api/auth")
+    samesite = "none" if settings.COOKIE_SECURE else "lax"
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        samesite=samesite,
+        secure=settings.COOKIE_SECURE,
+    )
+    response.delete_cookie(
+        key="refresh_token",
+        path="/api/auth",
+        samesite=samesite,
+        secure=settings.COOKIE_SECURE,
+    )
 
 
 def hash_password(password: str) -> str:
