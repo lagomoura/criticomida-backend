@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+# DB snapshots from Railway prod — distributed out-of-band, never committed.
+scripts/seeds/*.dump
+scripts/seeds/*.sql
+scripts/seeds/*.sql.gz
+
 # Python
 __pycache__/
 *.py[cod]
