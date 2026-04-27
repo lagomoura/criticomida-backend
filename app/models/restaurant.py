@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
+    ARRAY,
     Date,
     DateTime,
     Enum,
@@ -63,6 +64,24 @@ class Restaurant(Base):
     google_maps_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     price_level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     opening_hours: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # ----- Google Places enrichment (migration 014) -----
+    google_rating: Mapped[Decimal | None] = mapped_column(
+        Numeric(2, 1), nullable=True
+    )
+    google_user_ratings_total: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    google_photos: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    editorial_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    editorial_summary_lang: Mapped[str | None] = mapped_column(
+        String(8), nullable=True
+    )
+    cuisine_types: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
+    google_cached_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     computed_rating: Mapped[Decimal] = mapped_column(
         Numeric(3, 2), default=Decimal("0"), nullable=False
     )

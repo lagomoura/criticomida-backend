@@ -9,3 +9,4 @@ passlib[bcrypt]
 python-multipart
 email-validator
 litellm
+slowapi

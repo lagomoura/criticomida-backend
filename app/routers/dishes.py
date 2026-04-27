@@ -68,11 +68,10 @@ async def list_dishes(
     restaurant_slug: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[Dish]:
-    # Verify restaurant exists
-    result = await db.execute(
-        select(Restaurant).where(Restaurant.slug == restaurant_slug)
-    )
-    restaurant = result.scalar_one_or_none()
+    from app.services.restaurant_service import get_restaurant_by_slug
+
+    # Verify restaurant exists (accepts slug or UUID)
+    restaurant = await get_restaurant_by_slug(db, restaurant_slug)
     if restaurant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -109,11 +108,10 @@ async def create_dish(
         User, Depends(require_role(UserRole.admin, UserRole.critic))
     ],
 ) -> Dish:
-    # Verify restaurant exists
-    result = await db.execute(
-        select(Restaurant).where(Restaurant.slug == restaurant_slug)
-    )
-    restaurant = result.scalar_one_or_none()
+    from app.services.restaurant_service import get_restaurant_by_slug
+
+    # Verify restaurant exists (accepts slug or UUID)
+    restaurant = await get_restaurant_by_slug(db, restaurant_slug)
     if restaurant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

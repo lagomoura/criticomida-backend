@@ -9,6 +9,94 @@ from app.schemas.category import CategoryResponse
 from app.schemas.user import UserResponse
 
 
+class ProsConsAggregateItem(BaseModel):
+    text: str
+    count: int
+
+
+class DimensionAggregate(BaseModel):
+    average: Decimal | None
+    count: int
+
+
+class RestaurantAggregatesResponse(BaseModel):
+    pros_top: list[ProsConsAggregateItem]
+    cons_top: list[ProsConsAggregateItem]
+    dimension_averages: dict[str, DimensionAggregate]
+    photos_count: int
+    dishes_count: int
+    reviews_count: int
+
+
+class RestaurantPhotoItem(BaseModel):
+    id: uuid.UUID
+    url: str
+    alt_text: str | None = None
+    taken_at: datetime
+    dish_id: uuid.UUID
+    dish_name: str
+    review_id: uuid.UUID | None = None
+    user_id: uuid.UUID
+    user_handle: str | None = None
+    user_display_name: str
+
+
+class RestaurantPhotosResponse(BaseModel):
+    items: list[RestaurantPhotoItem]
+    next_cursor: str | None = None
+
+
+class DiaryVisitor(BaseModel):
+    id: uuid.UUID
+    handle: str | None = None
+    display_name: str
+    avatar_url: str | None = None
+
+
+class MostOrderedDish(BaseModel):
+    id: uuid.UUID
+    name: str
+    review_count: int
+
+
+class DiaryStatsResponse(BaseModel):
+    unique_visitors: int
+    visits_total: int
+    visits_last_7d: int
+    most_ordered_dish: MostOrderedDish | None = None
+    recent_visitors: list[DiaryVisitor]
+
+
+class SignatureDishItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    cover_image_url: str | None = None
+    computed_rating: Decimal
+    review_count: int
+    best_quote: str | None = None
+    best_quote_author: str | None = None
+
+
+class SignatureDishesResponse(BaseModel):
+    items: list[SignatureDishItem]
+
+
+class NearbyRestaurantItem(BaseModel):
+    id: uuid.UUID
+    slug: str
+    name: str
+    location_name: str
+    cover_image_url: str | None = None
+    computed_rating: Decimal
+    review_count: int
+    category: CategoryResponse | None = None
+    distance_km: float
+
+
+class NearbyRestaurantsResponse(BaseModel):
+    items: list[NearbyRestaurantItem]
+
+
 class RestaurantCreate(BaseModel):
     slug: str = Field(max_length=200)
     name: str = Field(max_length=200)
@@ -66,6 +154,14 @@ class RestaurantResponse(BaseModel):
     google_maps_url: str | None = None
     price_level: int | None = None
     opening_hours: list[str] | None = None
+    # Fase B — Google Places enrichment
+    google_rating: Decimal | None = None
+    google_user_ratings_total: int | None = None
+    google_photos: list[dict] | None = None
+    editorial_summary: str | None = None
+    editorial_summary_lang: str | None = None
+    cuisine_types: list[str] | None = None
+    google_cached_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

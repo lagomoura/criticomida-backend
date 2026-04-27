@@ -1,13 +1,15 @@
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, get_current_user_optional
+from app.middleware.rate_limit import COMMENT_CREATE_LIMIT, limiter
 from app.models.dish import DishReview
 from app.models.social import Comment
 from app.models.user import User, UserRole
@@ -20,6 +22,42 @@ from app.schemas.comment import (
 from app.services.notification_service import record_comment_notification
 
 router = APIRouter(tags=["comments"])
+
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_DUPLICATE_WINDOW = timedelta(minutes=10)
+# Block at the 3rd identical post within the window. Counting existing rows
+# before the insert: 0/1 allowed, >=2 blocked (this attempt would be the 3rd).
+_DUPLICATE_THRESHOLD = 2
+_MAX_URLS_PER_COMMENT = 3
+
+
+async def _anti_spam_check(
+    db: AsyncSession, *, user_id: uuid.UUID, body: str
+) -> None:
+    """Block obvious comment spam (spec §9.2).
+
+    Trips on:
+    - More than `_MAX_URLS_PER_COMMENT` URLs in the body → 400.
+    - Same body posted by the same user `>= _DUPLICATE_THRESHOLD` times within
+      the last `_DUPLICATE_WINDOW` → 429.
+    """
+    if len(_URL_RE.findall(body)) > _MAX_URLS_PER_COMMENT:
+        raise HTTPException(status_code=400, detail="Demasiados enlaces")
+
+    cutoff = datetime.now(timezone.utc) - _DUPLICATE_WINDOW
+    dup_count = await db.execute(
+        select(func.count())
+        .select_from(Comment)
+        .where(
+            Comment.user_id == user_id,
+            Comment.body == body,
+            Comment.created_at >= cutoff,
+        )
+    )
+    if int(dup_count.scalar_one() or 0) >= _DUPLICATE_THRESHOLD:
+        raise HTTPException(
+            status_code=429, detail="Comentario repetido demasiadas veces"
+        )
 
 
 def _comment_response(
@@ -82,7 +120,9 @@ async def list_comments(
     response_model=CommentResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit(COMMENT_CREATE_LIMIT)
 async def create_comment(
+    request: Request,
     review_id: uuid.UUID,
     payload: CommentCreate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -95,10 +135,13 @@ async def create_comment(
     if review is None:
         raise HTTPException(status_code=404, detail="Reseña no encontrada")
 
+    body = payload.body.strip()
+    await _anti_spam_check(db, user_id=current_user.id, body=body)
+
     comment = Comment(
         review_id=review_id,
         user_id=current_user.id,
-        body=payload.body.strip(),
+        body=body,
     )
     db.add(comment)
 

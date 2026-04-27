@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,15 +17,30 @@ from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
 from app.schemas.restaurant import (
+    DiaryStatsResponse,
+    NearbyRestaurantsResponse,
+    RestaurantAggregatesResponse,
     RestaurantCreate,
     RestaurantListResponse,
+    RestaurantPhotosResponse,
     RestaurantResponse,
     RestaurantUpdate,
+    SignatureDishesResponse,
+)
+from app.services.google_places_enricher import (
+    cache_is_fresh,
+    refresh_restaurant_from_google,
 )
 from app.services.image_cleanup import delete_images_for_restaurant
 from app.services.restaurant_service import (
+    get_nearby_restaurants,
+    get_restaurant_aggregates,
+    get_restaurant_by_slug,
     get_restaurant_detail,
+    get_restaurant_diary_stats,
     get_restaurant_list,
+    get_restaurant_photos,
+    get_signature_dishes,
 )
 
 router = APIRouter(prefix="/api/restaurants", tags=["restaurants"])
@@ -72,6 +87,7 @@ async def list_restaurants(
 @router.get("/{slug}", response_model=RestaurantResponse)
 async def get_restaurant(
     slug: str,
+    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Restaurant:
     restaurant = await get_restaurant_detail(db, slug)
@@ -80,7 +96,26 @@ async def get_restaurant(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Restaurant not found",
         )
+    # Lazy enrichment: schedule a Google Places refresh when cache is stale
+    # and a place_id is available. The current response is served from
+    # what's already in the DB (or nothing) — the next page load will see
+    # the new fields once the background task commits.
+    if restaurant.google_place_id and not cache_is_fresh(
+        restaurant.google_cached_at
+    ):
+        background_tasks.add_task(
+            _refresh_in_background, restaurant.id
+        )
     return restaurant
+
+
+async def _refresh_in_background(restaurant_id) -> None:
+    """Open a fresh DB session inside the background task — request-scoped
+    sessions are closed by the time BackgroundTasks runs."""
+    from app.database import async_session
+
+    async with async_session() as session:
+        await refresh_restaurant_from_google(session, restaurant_id, force=False)
 
 
 @router.post("", response_model=RestaurantResponse, status_code=status.HTTP_201_CREATED)
@@ -214,6 +249,135 @@ async def update_restaurant(
         .where(Restaurant.id == restaurant.id)
     )
     return reload_result.scalar_one()
+
+
+@router.get("/{slug}/aggregates", response_model=RestaurantAggregatesResponse)
+async def get_restaurant_aggregates_endpoint(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    restaurant = await get_restaurant_by_slug(db, slug)
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    return await get_restaurant_aggregates(db, restaurant.id)
+
+
+@router.get("/{slug}/photos", response_model=RestaurantPhotosResponse)
+async def get_restaurant_photos_endpoint(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=24, ge=1, le=60),
+    cursor: str | None = None,
+) -> dict:
+    restaurant = await get_restaurant_by_slug(db, slug)
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    return await get_restaurant_photos(db, restaurant.id, limit=limit, cursor=cursor)
+
+
+@router.get("/{slug}/diary-stats", response_model=DiaryStatsResponse)
+async def get_restaurant_diary_stats_endpoint(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    restaurant = await get_restaurant_by_slug(db, slug)
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    return await get_restaurant_diary_stats(db, restaurant.id)
+
+
+@router.get("/{slug}/signature-dishes", response_model=SignatureDishesResponse)
+async def get_signature_dishes_endpoint(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=4, ge=1, le=12),
+) -> dict:
+    restaurant = await get_restaurant_by_slug(db, slug)
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    items = await get_signature_dishes(db, restaurant.id, limit=limit)
+    return {"items": items}
+
+
+@router.get("/{slug}/nearby", response_model=NearbyRestaurantsResponse)
+async def get_nearby_restaurants_endpoint(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    radius_km: float = Query(default=3.0, ge=0.1, le=20.0),
+    limit: int = Query(default=6, ge=1, le=20),
+) -> dict:
+    restaurant = await get_restaurant_by_slug(db, slug)
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    if restaurant.latitude is None or restaurant.longitude is None:
+        return {"items": []}
+
+    items = await get_nearby_restaurants(
+        db,
+        latitude=restaurant.latitude,
+        longitude=restaurant.longitude,
+        exclude_restaurant_id=restaurant.id,
+        radius_km=radius_km,
+        limit=limit,
+    )
+    return {"items": items}
+
+
+@router.post("/{slug}/refresh-google", response_model=RestaurantResponse)
+async def refresh_restaurant_from_google_endpoint(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[
+        User, Depends(require_role(UserRole.admin, UserRole.critic))
+    ],
+) -> Restaurant:
+    """Force a synchronous refresh of Google Places enrichment fields.
+
+    Returns 503 when GOOGLE_PLACES_API_KEY is not configured, and 404 when
+    the restaurant does not exist or has no google_place_id.
+    """
+    from app.config import settings as _settings
+
+    if not _settings.GOOGLE_PLACES_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Places API key not configured",
+        )
+
+    restaurant = await get_restaurant_by_slug(db, slug)
+    if restaurant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    if not restaurant.google_place_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Restaurant has no google_place_id to refresh from",
+        )
+
+    updated = await refresh_restaurant_from_google(db, restaurant.id, force=True)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not retrieve data from Google Places",
+        )
+
+    full = await get_restaurant_detail(db, slug)
+    if full is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
+        )
+    return full
 
 
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)

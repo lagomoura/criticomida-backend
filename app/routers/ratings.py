@@ -29,11 +29,10 @@ async def get_ratings(
     slug: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    # Verify restaurant exists
-    result = await db.execute(
-        select(Restaurant).where(Restaurant.slug == slug)
-    )
-    restaurant = result.scalar_one_or_none()
+    from app.services.restaurant_service import get_restaurant_by_slug
+
+    # Verify restaurant exists (accepts slug or UUID)
+    restaurant = await get_restaurant_by_slug(db, slug)
     if restaurant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -91,11 +90,10 @@ async def set_ratings(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> list[RestaurantRatingDimension]:
-    # Verify restaurant exists
-    result = await db.execute(
-        select(Restaurant).where(Restaurant.slug == slug)
-    )
-    restaurant = result.scalar_one_or_none()
+    from app.services.restaurant_service import get_restaurant_by_slug
+
+    # Verify restaurant exists (accepts slug or UUID)
+    restaurant = await get_restaurant_by_slug(db, slug)
     if restaurant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

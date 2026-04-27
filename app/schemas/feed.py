@@ -67,3 +67,19 @@ class FeedItem(BaseModel):
 class FeedPage(BaseModel):
     items: list[FeedItem]
     next_cursor: str | None = None
+
+
+class DishSocialDetail(BaseModel):
+    """Dish detail in the social shape consumed by /dishes/[id] page."""
+
+    id: uuid.UUID
+    name: str
+    restaurant_id: uuid.UUID
+    restaurant_name: str
+    restaurant_slug: str
+    category: str | None = None
+    hero_image: str | None = None
+    average_score: float
+    review_count: int
+    would_order_again_pct: float | None = None
+    price_range: str | None = None

@@ -34,6 +34,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       CHAT_MODEL: ${CHAT_MODEL:-anthropic/claude-haiku-4-5-20251001}
       CHAT_API_KEY: ${CHAT_API_KEY:-}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      GOOGLE_CACHE_TTL_HOURS: ${GOOGLE_CACHE_TTL_HOURS:-168}
     ports:
       # Host :8002 → container :8000. El 8000 del host queda libre para otros
       # proyectos locales. El frontend apunta a http://localhost:8002.

@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
     APP_ENV: str = "development"
     COOKIE_SECURE: bool = False
+    # Server-side Google Places API key. When unset, /refresh-google
+    # endpoints degrade to no-op so deployments without billing don't break.
+    GOOGLE_PLACES_API_KEY: str | None = None
+    # Cache duration for Google Places enrichment data.
+    GOOGLE_CACHE_TTL_HOURS: int = 168  # 7 days
 
     model_config = {
         "env_file": ".env",

@@ -1,13 +1,14 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
+from app.middleware.rate_limit import LIKE_LIMIT, limiter
 from app.models.dish import DishReview
 from app.models.like import Like
 from app.models.user import User
@@ -39,7 +40,9 @@ async def _review_owner(db: AsyncSession, review_id: uuid.UUID) -> uuid.UUID:
 
 
 @router.post("/{review_id}/like", response_model=LikeActionResponse)
+@limiter.limit(LIKE_LIMIT)
 async def like_review(
+    request: Request,
     review_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -68,7 +71,9 @@ async def like_review(
 
 
 @router.delete("/{review_id}/like", response_model=LikeActionResponse)
+@limiter.limit(LIKE_LIMIT)
 async def unlike_review(
+    request: Request,
     review_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],

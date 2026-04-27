@@ -5,8 +5,44 @@ from typing import Any, NamedTuple
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import text
 
+from app.database import engine
 from app.main import create_app
+from app.middleware.rate_limit import limiter as _rate_limiter
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _disable_rate_limiter():
+    """Keep slowapi out of the way for tests that exercise many actions.
+
+    The dedicated rate-limit test module re-enables it locally.
+    """
+    _rate_limiter.enabled = False
+    yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _truncate_pytest_data():
+    """Leave the DB clean at the end of an integration run.
+
+    Users/restaurants created by these tests use well-known patterns
+    (`pytest_%@test.com`, `pytest_place_%`). Order matters: `restaurants`
+    has `created_by -> users.id` without CASCADE, so restaurants must be
+    deleted first (that cascades dishes/reviews/etc.), then users (cascades
+    follows/likes/comments/bookmarks/notifications/refresh_tokens).
+    """
+    yield
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "DELETE FROM restaurants WHERE google_place_id LIKE 'pytest_place_%' "
+                "OR created_by IN (SELECT id FROM users WHERE email LIKE 'pytest_%@test.com')"
+            )
+        )
+        await conn.execute(
+            text("DELETE FROM users WHERE email LIKE 'pytest_%@test.com'")
+        )
 
 
 @pytest.fixture

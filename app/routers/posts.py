@@ -11,12 +11,13 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
+from app.middleware.rate_limit import POST_CREATE_LIMIT, limiter
 from app.models.category import Category
 from app.models.dish import (
     Dish,
@@ -203,7 +204,9 @@ async def _resolve_dish(
 @router.post(
     "", response_model=FeedItem, status_code=status.HTTP_201_CREATED
 )
+@limiter.limit(POST_CREATE_LIMIT)
 async def create_post(
+    request: Request,
     payload: PostCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],

@@ -2,13 +2,14 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
+from app.middleware.rate_limit import FOLLOW_LIMIT, limiter
 from app.models.follow import Follow
 from app.models.user import User
 from app.schemas.social import (
@@ -51,7 +52,9 @@ async def _followers_count(db: AsyncSession, user_id: uuid.UUID) -> int:
 
 
 @router.post("/{id_or_handle}/follow", response_model=FollowActionResponse)
+@limiter.limit(FOLLOW_LIMIT)
 async def follow_user(
+    request: Request,
     id_or_handle: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -92,7 +95,9 @@ async def follow_user(
 
 
 @router.delete("/{id_or_handle}/follow", response_model=FollowActionResponse)
+@limiter.limit(FOLLOW_LIMIT)
 async def unfollow_user(
+    request: Request,
     id_or_handle: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],

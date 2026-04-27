@@ -5,11 +5,14 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from starlette.types import Lifespan
 
 from app.config import settings
 from app.database import engine
+from app.middleware.rate_limit import limiter
 from app.routers import (
     admin,
     auth,
@@ -18,6 +21,7 @@ from app.routers import (
     chat,
     comments,
     dishes,
+    dishes_social,
     feed,
     feedback,
     follows,
@@ -71,6 +75,11 @@ def create_app(
         lifespan=selected_lifespan,
     )
 
+    application.state.limiter = limiter
+    application.add_exception_handler(
+        RateLimitExceeded, _rate_limit_exceeded_handler
+    )
+
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -99,6 +108,7 @@ def create_app(
     application.include_router(categories.router)
     application.include_router(restaurants.router)
     application.include_router(dishes.router)
+    application.include_router(dishes_social.router)
     application.include_router(ratings.router)
     application.include_router(feedback.router)
     application.include_router(images.router)

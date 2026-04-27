@@ -66,6 +66,12 @@ class Dish(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    editorial_blurb: Mapped[str | None] = mapped_column(Text, nullable=True)
+    editorial_blurb_lang: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    editorial_blurb_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    editorial_cached_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships
     restaurant: Mapped["Restaurant"] = relationship(back_populates="dishes")  # noqa: F821

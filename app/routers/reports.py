@@ -2,12 +2,13 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, require_role
+from app.middleware.rate_limit import REPORT_CREATE_LIMIT, limiter
 from app.models.dish import Dish, DishReview
 from app.models.restaurant import Restaurant
 from app.models.social import Comment, Report
@@ -26,7 +27,9 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
 @router.post("", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(REPORT_CREATE_LIMIT)
 async def create_report(
+    request: Request,
     payload: ReportCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
