@@ -87,6 +87,7 @@ class NearbyRestaurantItem(BaseModel):
     name: str
     location_name: str
     cover_image_url: str | None = None
+    google_photo_url: str | None = None
     computed_rating: Decimal
     review_count: int
     category: CategoryResponse | None = None

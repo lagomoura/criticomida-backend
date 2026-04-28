@@ -485,6 +485,12 @@ async def get_nearby_restaurants(
     for restaurant, distance_km in rows:
         if distance_km is None or float(distance_km) > radius_km:
             continue
+        google_photo_url: str | None = None
+        if restaurant.google_photos:
+            for p in restaurant.google_photos:
+                if isinstance(p, dict) and p.get("url"):
+                    google_photo_url = p["url"]
+                    break
         out.append(
             {
                 "id": restaurant.id,
@@ -492,6 +498,7 @@ async def get_nearby_restaurants(
                 "name": restaurant.name,
                 "location_name": restaurant.location_name,
                 "cover_image_url": restaurant.cover_image_url,
+                "google_photo_url": google_photo_url,
                 "computed_rating": restaurant.computed_rating,
                 "review_count": restaurant.review_count,
                 "category": restaurant.category,
