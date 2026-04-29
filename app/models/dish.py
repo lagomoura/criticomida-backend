@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Computed,
     Date,
     DateTime,
     Enum,
@@ -50,6 +51,11 @@ class Dish(Base):
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    name_normalized: Mapped[str] = mapped_column(
+        Text,
+        Computed("public.dish_name_normalized(name)", persisted=True),
+        nullable=False,
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     price_tier: Mapped[PriceTier | None] = mapped_column(

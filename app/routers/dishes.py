@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -25,6 +25,23 @@ class DishSearchItem(BaseModel):
 
 class DishSearchPage(BaseModel):
     items: list[DishSearchItem]
+
+
+class DishSuggestion(BaseModel):
+    id: uuid.UUID
+    name: str
+    review_count: int
+    similarity: float
+    is_exact_normalized: bool
+
+
+class DishSuggestionPage(BaseModel):
+    items: list[DishSuggestion]
+    """
+    Empty when the input has no plausible duplicate. The frontend uses that as
+    the green light to create a new dish silently. When non-empty, the modal
+    lists candidates so the user can pick instead of creating a duplicate.
+    """
 
 
 @router.get("/api/dishes/search", response_model=DishSearchPage)
@@ -50,13 +67,97 @@ async def search_dishes(
         return DishSearchPage(items=[])
 
     stmt = select(Dish).where(Dish.restaurant_id == restaurant.id)
-    if q.strip():
-        stmt = stmt.where(Dish.name.ilike(f"%{q.strip()}%"))
+    cleaned_q = q.strip()
+    if cleaned_q:
+        # Match either the raw name (legacy ILIKE for partial words) or the
+        # normalized form, so "Muzza" finds "Muzzá" / "Muzzá " and "cafe"
+        # finds "Café".
+        normalized_q = func.dish_name_normalized(cleaned_q)
+        stmt = stmt.where(
+            or_(
+                Dish.name.ilike(f"%{cleaned_q}%"),
+                Dish.name_normalized.like(func.concat("%", normalized_q, "%")),
+            )
+        )
     stmt = stmt.order_by(Dish.review_count.desc(), Dish.name.asc()).limit(limit)
 
     rows = (await db.execute(stmt)).scalars().all()
     return DishSearchPage(
         items=[DishSearchItem(id=d.id, name=d.name) for d in rows]
+    )
+
+
+# similarity threshold below which we don't bother showing a suggestion —
+# pg_trgm typically lands at ~0.3 for the SET pg_trgm.similarity_threshold default;
+# we go a touch higher because false-positive "did you mean..." prompts annoy users.
+_SIMILARITY_THRESHOLD = 0.4
+
+
+@router.get("/api/dishes/suggest-similar", response_model=DishSuggestionPage)
+async def suggest_similar_dishes(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    restaurant_place_id: str = Query(min_length=1, max_length=200),
+    name: str = Query(min_length=1, max_length=100),
+    limit: int = Query(default=5, ge=1, le=10),
+) -> DishSuggestionPage:
+    """
+    Before creating a brand-new dish from compose, the frontend asks here:
+    "is the user about to duplicate something?". We answer with up to `limit`
+    candidates from the same restaurant whose normalized name is either an
+    exact match (the duplicate) or trigram-similar above the threshold.
+
+    Empty list = user input is novel; create freely.
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        return DishSuggestionPage(items=[])
+
+    restaurant = (
+        await db.execute(
+            select(Restaurant).where(Restaurant.google_place_id == restaurant_place_id)
+        )
+    ).scalar_one_or_none()
+    if restaurant is None:
+        return DishSuggestionPage(items=[])
+
+    normalized_input = func.dish_name_normalized(cleaned)
+    similarity = func.similarity(Dish.name_normalized, normalized_input)
+
+    stmt = (
+        select(
+            Dish.id,
+            Dish.name,
+            Dish.review_count,
+            Dish.name_normalized,
+            similarity.label("sim"),
+        )
+        .where(
+            Dish.restaurant_id == restaurant.id,
+            similarity >= _SIMILARITY_THRESHOLD,
+        )
+        .order_by(similarity.desc(), Dish.review_count.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    # Compute the exact normalized form once on the DB side too — easier than
+    # mirroring the SQL function in Python (and guaranteed to agree with the
+    # unique index).
+    exact_normalized = (
+        await db.execute(select(normalized_input))
+    ).scalar_one()
+
+    return DishSuggestionPage(
+        items=[
+            DishSuggestion(
+                id=row.id,
+                name=row.name,
+                review_count=row.review_count,
+                similarity=float(row.sim),
+                is_exact_normalized=(row.name_normalized == exact_normalized),
+            )
+            for row in rows
+        ]
     )
 
 

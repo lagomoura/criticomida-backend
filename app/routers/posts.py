@@ -175,11 +175,13 @@ async def _resolve_dish(
             dish.price_tier = price_tier
         return dish
 
-    # Find or create by name.
+    # Find or create by normalized name. `name_normalized` is a generated
+    # column (lower + unaccent + collapsed whitespace) so it matches the
+    # rule used by the unique index.
     result = await db.execute(
         select(Dish).where(
             Dish.restaurant_id == restaurant_id,
-            func.lower(Dish.name) == cleaned.lower(),
+            Dish.name_normalized == func.dish_name_normalized(cleaned),
         )
     )
     existing = result.scalar_one_or_none()
