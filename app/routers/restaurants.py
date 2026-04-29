@@ -16,6 +16,7 @@ from app.models.category import Category
 from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
+from app.schemas.discovery import MapBboxResponse
 from app.schemas.restaurant import (
     DiaryStatsResponse,
     MatchCandidatesResponse,
@@ -31,6 +32,7 @@ from app.schemas.restaurant import (
     RestaurantUpdate,
     SignatureDishesResponse,
 )
+from app.services.discovery_service import discover_restaurants_in_bbox
 from app.services.google_places_enricher import (
     cache_is_fresh,
     refresh_restaurant_from_google,
@@ -116,6 +118,45 @@ async def match_candidates_endpoint(
         exclude_place_id=exclude_place_id,
     )
     return {"items": items}
+
+
+@router.get("/in-bbox", response_model=MapBboxResponse)
+async def restaurants_in_bbox(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    min_lat: float = Query(..., ge=-90.0, le=90.0),
+    min_lng: float = Query(..., ge=-180.0, le=180.0),
+    max_lat: float = Query(..., ge=-90.0, le=90.0),
+    max_lng: float = Query(..., ge=-180.0, le=180.0),
+    limit: int = Query(default=200, ge=1, le=500),
+    sort: str = Query(default="geek_score"),
+    include_empty: bool = Query(default=False),
+) -> MapBboxResponse:
+    """Restaurantes dentro del bbox + sus platos destacados.
+
+    `sort`: `geek_score` (default) | `value_prop` | `trending`.
+    `include_empty=true` agrega también locales sin reviews (pines grises
+    para CTAs "sé el primero en reseñar").
+    """
+    if min_lat > max_lat or min_lng > max_lng:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="min_lat must be <= max_lat and min_lng must be <= max_lng",
+        )
+    if sort not in ("geek_score", "value_prop", "trending"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sort must be one of: geek_score, value_prop, trending",
+        )
+    return await discover_restaurants_in_bbox(
+        db,
+        min_lat=min_lat,
+        min_lng=min_lng,
+        max_lat=max_lat,
+        max_lng=max_lng,
+        limit=limit,
+        sort=sort,
+        include_empty=include_empty,
+    )
 
 
 @router.get("/{slug}", response_model=RestaurantResponse)

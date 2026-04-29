@@ -17,13 +17,16 @@ cuyos reviewers no rellenaron pilares se sobre-shrinkan.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from sqlalchemy import (
     Float,
+    Integer,
     case,
     cast,
     desc,
+    distinct,
     func,
     literal,
     select,
@@ -37,6 +40,9 @@ from app.models.restaurant import Restaurant
 from app.schemas.discovery import (
     DiscoveryDishItem,
     DiscoveryPillarStats,
+    MapBboxResponse,
+    MapDishHighlight,
+    MapRestaurantPin,
 )
 from app.services._geo import haversine_km_expr
 
@@ -52,8 +58,21 @@ PRIOR_PILLAR = 2.0  # neutro en la escala 1..3
 C_STARS = 5.0
 PRIOR_STARS = 3.5  # un poco optimista — "ok" en escala 1..5
 
+# --- Badges del mapa ---
+# Un plato gana badge si su pilar promedio crudo supera el umbral Y tiene al
+# menos N reviews. El min_reviews protege de 1-review wonders. No usamos el
+# shrinkage acá porque shrinka demasiado para un threshold binario (ej. 5
+# reviews de execution=3 dan shrunk=2.5, que se sentiría como "no califica"
+# cuando claramente lo hace).
+MIN_REVIEWS_FOR_BADGE = 3
+BADGE_AVG_THRESHOLD = 2.7
+
+# --- Trending ---
+TRENDING_WINDOW_HOURS = 48
+
 
 SortKey = Literal["geek_score", "execution", "value_prop", "presentation", "distance"]
+BboxSortKey = Literal["geek_score", "value_prop", "trending"]
 
 
 def _shrink(avg: ColumnElement, n: ColumnElement, c: float, prior: float) -> ColumnElement:
@@ -248,3 +267,375 @@ def _round_or_none(v) -> float | None:
     if v is None:
         return None
     return round(float(v), 2)
+
+
+async def discover_restaurants_in_bbox(
+    db: AsyncSession,
+    *,
+    min_lat: float,
+    min_lng: float,
+    max_lat: float,
+    max_lng: float,
+    limit: int = 200,
+    sort: BboxSortKey = "geek_score",
+    include_empty: bool = False,
+) -> MapBboxResponse:
+    """Restaurantes dentro del bbox con su Golden Dish y Best Value precomputados.
+
+    Sort keys:
+      - `geek_score` (default): orden por mejor plato del local (top geek score).
+      - `value_prop`: por mejor relación precio/calidad del local.
+      - `trending`: por cantidad de reviews recientes (últimas 48h) en el local.
+
+    Cuando `include_empty=true`, después de los locales con reviews se
+    agregan locales del bbox sin ninguna review (con flag `is_empty=true`),
+    pensados para CTAs tipo "sé el primero en reseñar".
+    """
+    trending_cutoff = datetime.now(timezone.utc) - timedelta(hours=TRENDING_WINDOW_HOURS)
+
+    exec_n = cast(func.count(DishReview.execution), Float)
+    exec_avg = func.avg(DishReview.execution)
+    val_n = cast(func.count(DishReview.value_prop), Float)
+    val_avg = func.avg(DishReview.value_prop)
+    pres_n = cast(func.count(DishReview.presentation), Float)
+    pres_avg = func.avg(DishReview.presentation)
+    stars_n = cast(func.count(DishReview.id), Float)
+    stars_avg = func.avg(DishReview.rating)
+    trending_n = cast(
+        func.count(case((DishReview.created_at >= trending_cutoff, 1))),
+        Integer,
+    )
+
+    exec_shrunk = _shrink(exec_avg, exec_n, C_PILLAR, PRIOR_PILLAR)
+    val_shrunk = _shrink(val_avg, val_n, C_PILLAR, PRIOR_PILLAR)
+    pres_shrunk = _shrink(pres_avg, pres_n, C_PILLAR, PRIOR_PILLAR)
+    stars_shrunk = _shrink(stars_avg, stars_n, C_STARS, PRIOR_STARS)
+
+    geek_score = (
+        W_EXECUTION * (exec_shrunk - 1.0) / 2.0
+        + W_VALUE_PROP * (val_shrunk - 1.0) / 2.0
+        + W_PRESENTATION * (pres_shrunk - 1.0) / 2.0
+        + W_STARS * (stars_shrunk - 1.0) / 4.0
+    ) * 100.0
+
+    dish_scores = (
+        select(
+            Dish.id.label("dish_id"),
+            Dish.name.label("dish_name"),
+            Dish.cover_image_url.label("cover_image_url"),
+            Dish.review_count.label("review_count"),
+            Restaurant.id.label("restaurant_id"),
+            Restaurant.slug.label("slug"),
+            Restaurant.name.label("restaurant_name"),
+            Restaurant.latitude.label("latitude"),
+            Restaurant.longitude.label("longitude"),
+            Restaurant.cover_image_url.label("rest_cover"),
+            Restaurant.location_name.label("rest_location"),
+            Restaurant.computed_rating.label("rest_rating"),
+            Restaurant.review_count.label("rest_review_count"),
+            Restaurant.price_level.label("rest_price_level"),
+            Restaurant.cuisine_types.label("rest_cuisine_types"),
+            Category.name.label("category_name"),
+            exec_avg.label("exec_avg"),
+            exec_n.label("exec_n"),
+            val_avg.label("val_avg"),
+            val_n.label("val_n"),
+            pres_avg.label("pres_avg"),
+            exec_shrunk.label("exec_shrunk"),
+            val_shrunk.label("val_shrunk"),
+            geek_score.label("geek_score"),
+            trending_n.label("trending_n"),
+        )
+        .join(DishReview, DishReview.dish_id == Dish.id)
+        .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+        .outerjoin(Category, Category.id == Restaurant.category_id)
+        .where(
+            Restaurant.latitude.is_not(None),
+            Restaurant.longitude.is_not(None),
+            Restaurant.latitude.between(min_lat, max_lat),
+            Restaurant.longitude.between(min_lng, max_lng),
+        )
+        .group_by(Dish.id, Restaurant.id, Category.id)
+        .cte("dish_scores")
+    )
+
+    golden_rk = func.row_number().over(
+        partition_by=dish_scores.c.restaurant_id,
+        order_by=[
+            desc(dish_scores.c.exec_shrunk),
+            desc(dish_scores.c.geek_score),
+            dish_scores.c.dish_id,
+        ],
+    )
+    value_rk = func.row_number().over(
+        partition_by=dish_scores.c.restaurant_id,
+        order_by=[
+            desc(dish_scores.c.val_shrunk),
+            desc(dish_scores.c.geek_score),
+            dish_scores.c.dish_id,
+        ],
+    )
+    top_geek = func.max(dish_scores.c.geek_score).over(
+        partition_by=dish_scores.c.restaurant_id
+    )
+    top_val_shrunk = func.max(dish_scores.c.val_shrunk).over(
+        partition_by=dish_scores.c.restaurant_id
+    )
+    top_trending = func.sum(dish_scores.c.trending_n).over(
+        partition_by=dish_scores.c.restaurant_id
+    )
+    is_chef_dish = case(
+        (
+            (dish_scores.c.exec_avg >= BADGE_AVG_THRESHOLD)
+            & (dish_scores.c.exec_n >= MIN_REVIEWS_FOR_BADGE),
+            True,
+        ),
+        else_=False,
+    )
+    is_gem_dish = case(
+        (
+            (dish_scores.c.val_avg >= BADGE_AVG_THRESHOLD)
+            & (dish_scores.c.val_n >= MIN_REVIEWS_FOR_BADGE),
+            True,
+        ),
+        else_=False,
+    )
+    has_chef_badge = func.bool_or(is_chef_dish).over(
+        partition_by=dish_scores.c.restaurant_id
+    )
+    has_gem_badge = func.bool_or(is_gem_dish).over(
+        partition_by=dish_scores.c.restaurant_id
+    )
+
+    ranked = (
+        select(
+            dish_scores.c.dish_id,
+            dish_scores.c.dish_name,
+            dish_scores.c.cover_image_url,
+            dish_scores.c.review_count,
+            dish_scores.c.restaurant_id,
+            dish_scores.c.slug,
+            dish_scores.c.restaurant_name,
+            dish_scores.c.latitude,
+            dish_scores.c.longitude,
+            dish_scores.c.rest_cover,
+            dish_scores.c.rest_location,
+            dish_scores.c.rest_rating,
+            dish_scores.c.rest_review_count,
+            dish_scores.c.rest_price_level,
+            dish_scores.c.rest_cuisine_types,
+            dish_scores.c.category_name,
+            dish_scores.c.exec_avg,
+            dish_scores.c.val_avg,
+            dish_scores.c.pres_avg,
+            dish_scores.c.geek_score,
+            golden_rk.label("golden_rk"),
+            value_rk.label("value_rk"),
+            top_geek.label("top_geek"),
+            top_val_shrunk.label("top_val_shrunk"),
+            top_trending.label("top_trending"),
+            has_chef_badge.label("has_chef_badge"),
+            has_gem_badge.label("has_gem_badge"),
+        )
+        .select_from(dish_scores)
+        .cte("ranked")
+    )
+
+    # Postgres no tiene MAX(uuid), así que en vez de pivotar con CASE, filtramos
+    # dos CTEs (rk=1) y los joineamos por restaurante. Una fila por restaurante.
+    goldens = select(ranked).where(ranked.c.golden_rk == 1).cte("goldens")
+    bestvals = select(ranked).where(ranked.c.value_rk == 1).cte("bestvals")
+
+    sort_column = {
+        "geek_score": desc(goldens.c.top_geek),
+        "value_prop": desc(goldens.c.top_val_shrunk),
+        "trending": desc(goldens.c.top_trending),
+    }[sort]
+
+    final = (
+        select(
+            goldens.c.restaurant_id,
+            goldens.c.slug,
+            goldens.c.restaurant_name,
+            goldens.c.latitude,
+            goldens.c.longitude,
+            goldens.c.top_geek,
+            goldens.c.top_trending,
+            goldens.c.has_chef_badge,
+            goldens.c.has_gem_badge,
+            goldens.c.rest_cover,
+            goldens.c.rest_location,
+            goldens.c.rest_rating,
+            goldens.c.rest_review_count,
+            goldens.c.rest_price_level,
+            goldens.c.rest_cuisine_types,
+            goldens.c.category_name,
+            goldens.c.dish_id.label("golden_id"),
+            goldens.c.dish_name.label("golden_name"),
+            goldens.c.cover_image_url.label("golden_cover"),
+            goldens.c.exec_avg.label("golden_exec"),
+            goldens.c.val_avg.label("golden_val"),
+            goldens.c.pres_avg.label("golden_pres"),
+            goldens.c.review_count.label("golden_n"),
+            goldens.c.geek_score.label("golden_geek"),
+            bestvals.c.dish_id.label("value_id"),
+            bestvals.c.dish_name.label("value_name"),
+            bestvals.c.cover_image_url.label("value_cover"),
+            bestvals.c.exec_avg.label("value_exec"),
+            bestvals.c.val_avg.label("value_val"),
+            bestvals.c.pres_avg.label("value_pres"),
+            bestvals.c.review_count.label("value_n"),
+            bestvals.c.geek_score.label("value_geek"),
+        )
+        .select_from(
+            goldens.outerjoin(
+                bestvals, bestvals.c.restaurant_id == goldens.c.restaurant_id
+            )
+        )
+        .order_by(sort_column, desc(goldens.c.top_geek), goldens.c.restaurant_id)
+        .limit(limit)
+    )
+
+    rows = (await db.execute(final)).all()
+    items = [_row_to_pin(r) for r in rows]
+
+    if include_empty:
+        remaining = max(0, limit - len(items))
+        if remaining > 0:
+            empty_rows = await _fetch_empty_restaurants(
+                db,
+                min_lat=min_lat,
+                min_lng=min_lng,
+                max_lat=max_lat,
+                max_lng=max_lng,
+                limit=remaining,
+            )
+            items.extend(_row_to_empty_pin(r) for r in empty_rows)
+
+    truncated = len(items) >= limit
+    return MapBboxResponse(items=items, truncated=truncated)
+
+
+async def _fetch_empty_restaurants(
+    db: AsyncSession,
+    *,
+    min_lat: float,
+    min_lng: float,
+    max_lat: float,
+    max_lng: float,
+    limit: int,
+):
+    """Restaurantes en el bbox que no tienen ninguna dish_review.
+
+    Sirve para los pines "Missing Spots" del mapa: el mapa marca el lugar y
+    el frontend ofrece un CTA para que el usuario sea el primero en reseñar.
+    """
+    has_review_subq = (
+        select(distinct(Dish.restaurant_id))
+        .select_from(Dish)
+        .join(DishReview, DishReview.dish_id == Dish.id)
+        .scalar_subquery()
+    )
+    stmt = (
+        select(
+            Restaurant.id.label("restaurant_id"),
+            Restaurant.slug,
+            Restaurant.name.label("restaurant_name"),
+            Restaurant.latitude,
+            Restaurant.longitude,
+            Restaurant.cover_image_url.label("rest_cover"),
+            Restaurant.location_name.label("rest_location"),
+            Restaurant.computed_rating.label("rest_rating"),
+            Restaurant.review_count.label("rest_review_count"),
+            Restaurant.price_level.label("rest_price_level"),
+            Restaurant.cuisine_types.label("rest_cuisine_types"),
+            Category.name.label("category_name"),
+        )
+        .outerjoin(Category, Category.id == Restaurant.category_id)
+        .where(
+            Restaurant.latitude.is_not(None),
+            Restaurant.longitude.is_not(None),
+            Restaurant.latitude.between(min_lat, max_lat),
+            Restaurant.longitude.between(min_lng, max_lng),
+            ~Restaurant.id.in_(has_review_subq),
+        )
+        .order_by(Restaurant.name, Restaurant.id)
+        .limit(limit)
+    )
+    return (await db.execute(stmt)).all()
+
+
+def _row_to_pin(row) -> MapRestaurantPin:
+    golden = (
+        MapDishHighlight(
+            dish_id=row.golden_id,
+            name=row.golden_name,
+            cover_image_url=row.golden_cover,
+            execution_avg=_round_or_none(row.golden_exec),
+            value_prop_avg=_round_or_none(row.golden_val),
+            presentation_avg=_round_or_none(row.golden_pres),
+            review_count=int(row.golden_n or 0),
+            geek_score=round(float(row.golden_geek or 0.0), 2),
+        )
+        if row.golden_id is not None
+        else None
+    )
+    best_value = (
+        MapDishHighlight(
+            dish_id=row.value_id,
+            name=row.value_name,
+            cover_image_url=row.value_cover,
+            execution_avg=_round_or_none(row.value_exec),
+            value_prop_avg=_round_or_none(row.value_val),
+            presentation_avg=_round_or_none(row.value_pres),
+            review_count=int(row.value_n or 0),
+            geek_score=round(float(row.value_geek or 0.0), 2),
+        )
+        if row.value_id is not None
+        else None
+    )
+    return MapRestaurantPin(
+        restaurant_id=row.restaurant_id,
+        slug=row.slug,
+        name=row.restaurant_name,
+        latitude=float(row.latitude),
+        longitude=float(row.longitude),
+        top_geek_score=round(float(row.top_geek or 0.0), 2),
+        has_chef_badge=bool(row.has_chef_badge),
+        has_gem_badge=bool(row.has_gem_badge),
+        cover_image_url=row.rest_cover,
+        location_name=row.rest_location,
+        computed_rating=round(float(row.rest_rating or 0.0), 2),
+        review_count=int(row.rest_review_count or 0),
+        price_level=int(row.rest_price_level) if row.rest_price_level is not None else None,
+        cuisine_types=list(row.rest_cuisine_types) if row.rest_cuisine_types else None,
+        category_name=row.category_name,
+        trending_count=int(row.top_trending or 0),
+        is_empty=False,
+        golden_dish=golden,
+        best_value_dish=best_value,
+    )
+
+
+def _row_to_empty_pin(row) -> MapRestaurantPin:
+    return MapRestaurantPin(
+        restaurant_id=row.restaurant_id,
+        slug=row.slug,
+        name=row.restaurant_name,
+        latitude=float(row.latitude),
+        longitude=float(row.longitude),
+        top_geek_score=0.0,
+        has_chef_badge=False,
+        has_gem_badge=False,
+        cover_image_url=row.rest_cover,
+        location_name=row.rest_location,
+        computed_rating=round(float(row.rest_rating or 0.0), 2),
+        review_count=int(row.rest_review_count or 0),
+        price_level=int(row.rest_price_level) if row.rest_price_level is not None else None,
+        cuisine_types=list(row.rest_cuisine_types) if row.rest_cuisine_types else None,
+        category_name=row.category_name,
+        trending_count=0,
+        is_empty=True,
+        golden_dish=None,
+        best_value_dish=None,
+    )

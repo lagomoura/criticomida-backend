@@ -46,3 +46,41 @@ class DishDuelResponse(BaseModel):
 
     category: str | None = None
     items: list[DiscoveryDishItem]
+
+
+class MapDishHighlight(BaseModel):
+    dish_id: uuid.UUID
+    name: str
+    cover_image_url: str | None = None
+    execution_avg: float | None = None
+    value_prop_avg: float | None = None
+    presentation_avg: float | None = None
+    review_count: int
+    geek_score: float
+
+
+class MapRestaurantPin(BaseModel):
+    restaurant_id: uuid.UUID
+    slug: str
+    name: str
+    latitude: float
+    longitude: float
+    top_geek_score: float
+    has_chef_badge: bool
+    has_gem_badge: bool
+    cover_image_url: str | None = None
+    location_name: str | None = None
+    computed_rating: float
+    review_count: int
+    price_level: int | None = None
+    cuisine_types: list[str] | None = None
+    category_name: str | None = None
+    trending_count: int = 0
+    is_empty: bool = False
+    golden_dish: MapDishHighlight | None = None
+    best_value_dish: MapDishHighlight | None = None
+
+
+class MapBboxResponse(BaseModel):
+    items: list[MapRestaurantPin]
+    truncated: bool
