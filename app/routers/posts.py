@@ -246,19 +246,6 @@ async def create_post(
         price_tier=price_tier_model,
     )
 
-    # One review per (dish, user) — guard before insert to return a clean 409.
-    dup = await db.execute(
-        select(DishReview.id).where(
-            DishReview.dish_id == dish.id,
-            DishReview.user_id == current_user.id,
-        )
-    )
-    if dup.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Ya tenés una reseña de este plato",
-        )
-
     portion_model: ModelPortionSize | None = None
     if extras and extras.portion_size:
         portion_model = ModelPortionSize(extras.portion_size)

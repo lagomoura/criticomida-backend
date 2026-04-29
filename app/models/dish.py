@@ -16,7 +16,6 @@ from sqlalchemy import (
     String,
     Text,
     Time,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -85,7 +84,6 @@ class Dish(Base):
 class DishReview(Base):
     __tablename__ = "dish_reviews"
     __table_args__ = (
-        UniqueConstraint("dish_id", "user_id", name="uq_dish_user_review"),
         CheckConstraint(
             "presentation IS NULL OR presentation BETWEEN 1 AND 3",
             name="ck_dish_reviews_presentation_range",

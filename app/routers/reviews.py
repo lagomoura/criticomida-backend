@@ -127,15 +127,7 @@ async def create_review(
         execution=review_data.execution,
     )
     db.add(review)
-
-    try:
-        await db.flush()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="You have already reviewed this dish",
-        )
+    await db.flush()
 
     # Add pros/cons
     for pc in review_data.pros_cons:

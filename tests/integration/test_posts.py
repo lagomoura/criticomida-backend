@@ -72,7 +72,12 @@ async def test_missing_restaurant_source_422(async_client_integration, user_a):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_dish_by_same_user_409(async_client_integration, user_a):
+async def test_same_user_can_review_same_dish_multiple_times(
+    async_client_integration, user_a
+):
+    """A user is allowed to publish multiple reviews of the same dish — they
+    form the dish's timeline for that user. Both posts should succeed and
+    target the same dish_id."""
     place_id = f"pytest_{uuid.uuid4().hex[:10]}"
     payload = {
         "restaurant": {
@@ -84,13 +89,18 @@ async def test_duplicate_dish_by_same_user_409(async_client_integration, user_a)
         "score": 4,
         "text": "Primera review del mismo dish.",
     }
-    await async_client_integration.post(
+    first = await async_client_integration.post(
         "/api/posts", json=payload, cookies=user_a.cookies
     )
-    r = await async_client_integration.post(
-        "/api/posts", json=payload, cookies=user_a.cookies
+    assert first.status_code == 201
+    second = await async_client_integration.post(
+        "/api/posts",
+        json={**payload, "text": "Segunda visita, sigue rico."},
+        cookies=user_a.cookies,
     )
-    assert r.status_code == 409
+    assert second.status_code == 201
+    assert first.json()["dish"]["id"] == second.json()["dish"]["id"]
+    assert first.json()["id"] != second.json()["id"]
 
 
 @pytest.mark.asyncio
