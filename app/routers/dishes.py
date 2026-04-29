@@ -12,8 +12,19 @@ from app.middleware.auth import get_current_user, require_role
 from app.models.dish import Dish
 from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
-from app.schemas.dish import DishCreate, DishResponse, DishUpdate
-from app.services.dish_service import get_dish_by_id, get_dish_detail, get_dishes_for_restaurant
+from app.schemas.dish import (
+    DishCreate,
+    DishMergeRequest,
+    DishMergeResponse,
+    DishResponse,
+    DishUpdate,
+)
+from app.services.dish_service import (
+    get_dish_by_id,
+    get_dish_detail,
+    get_dishes_for_restaurant,
+    merge_dishes,
+)
 
 router = APIRouter(tags=["dishes"])
 
@@ -271,3 +282,37 @@ async def delete_dish(
     await delete_images_for_dish(db, dish.id)
     await db.delete(dish)
     await db.flush()
+
+
+@router.post(
+    "/api/dishes/{source_id}/merge",
+    response_model=DishMergeResponse,
+)
+async def merge_dish(
+    source_id: uuid.UUID,
+    payload: DishMergeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+) -> dict:
+    """Admin: merge `source_id` dish into `payload.target_id`.
+
+    Both dishes must live in the same restaurant. Moves all reviews from
+    source to target, optionally inherits the cover image when target has
+    none, deletes the source row + its dish_cover images, and recomputes
+    the target's rating aggregate. Whole operation is one transaction.
+    """
+    try:
+        summary = await merge_dishes(
+            db,
+            source_id=source_id,
+            target_id=payload.target_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return summary

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import Float, and_, case, cast, desc, func, or_, select
+from sqlalchemy import Float, and_, case, cast, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +20,8 @@ from app.models.dish import (
 )
 from app.models.restaurant import Restaurant
 from app.models.user import User
+from app.services.image_cleanup import delete_images_for_dish
+from app.services.rating_service import update_dish_rating
 
 
 async def get_dishes_for_restaurant(
@@ -453,3 +455,97 @@ async def get_related_dishes(
             other_city.append(item)
 
     return (same_city + other_city)[:limit]
+
+
+async def merge_dishes(
+    db: AsyncSession,
+    *,
+    source_id: uuid.UUID,
+    target_id: uuid.UUID,
+) -> dict:
+    """Merge `source_id` dish into `target_id`. Atomic.
+
+    Both dishes must belong to the same restaurant — cross-restaurant dish
+    merges go through `merge_restaurants` instead. Moves all `dish_reviews`
+    from source to target, optionally inherits the cover image when target
+    has none, deletes the source's polymorphic dish_cover image rows + files,
+    deletes the source row, and recomputes the target's rating aggregate.
+
+    Caller must commit. Raises:
+      - ValueError if source_id == target_id
+      - ValueError if source/target belong to different restaurants
+      - LookupError if either dish doesn't exist
+    """
+    if source_id == target_id:
+        raise ValueError("source and target must differ")
+
+    # Lock both rows up-front; order by uuid to avoid deadlocks if two merges
+    # race against each other.
+    first, second = sorted([source_id, target_id], key=str)
+    rows = (
+        await db.execute(
+            text(
+                "SELECT id, restaurant_id, name, cover_image_url "
+                "FROM dishes WHERE id IN (:a, :b) FOR UPDATE"
+            ),
+            {"a": first, "b": second},
+        )
+    ).all()
+    by_id = {row.id: row for row in rows}
+    if source_id not in by_id:
+        raise LookupError("source dish not found")
+    if target_id not in by_id:
+        raise LookupError("target dish not found")
+
+    source_row = by_id[source_id]
+    target_row = by_id[target_id]
+
+    if source_row.restaurant_id != target_row.restaurant_id:
+        raise ValueError(
+            "source and target dishes must belong to the same restaurant"
+        )
+
+    summary: dict = {
+        "source_id": source_id,
+        "target_id": target_id,
+        "source_name": source_row.name,
+        "target_name": target_row.name,
+        "cover_inherited": False,
+    }
+
+    # 1) Inherit cover_image_url when target has none — keeps the merge from
+    #    accidentally erasing the only photo of the dish.
+    if target_row.cover_image_url is None and source_row.cover_image_url:
+        await db.execute(
+            text(
+                "UPDATE dishes SET cover_image_url = :url WHERE id = :t"
+            ),
+            {"url": source_row.cover_image_url, "t": target_id},
+        )
+        summary["cover_inherited"] = True
+
+    # 2) Move dish_reviews. There's no UNIQUE constraint on (dish_id, user_id)
+    #    since migration 017, so a plain bulk UPDATE is safe — duplicates
+    #    across users or even within one user become valid timeline entries.
+    moved_reviews = await db.execute(
+        text("UPDATE dish_reviews SET dish_id = :t WHERE dish_id = :s"),
+        {"s": source_id, "t": target_id},
+    )
+    summary["reviews_moved"] = moved_reviews.rowcount
+
+    # 3) Delete source's polymorphic dish_cover images (table + files on disk).
+    #    Target keeps its own. The cover URL we may have inherited above is just
+    #    a string column on the dish row; the image rows were tied to source_id.
+    await delete_images_for_dish(db, source_id)
+
+    # 4) Drop the source row. dish_reviews already moved; the cascade kills any
+    #    leftover children (none expected).
+    await db.execute(
+        text("DELETE FROM dishes WHERE id = :s"), {"s": source_id}
+    )
+
+    # 5) Recompute target rating from the new review set.
+    await db.flush()
+    await update_dish_rating(db, target_id)
+
+    return summary

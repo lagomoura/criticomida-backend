@@ -143,6 +143,20 @@ class DishReviewResponse(BaseModel):
         return result
 
 
+class DishMergeRequest(BaseModel):
+    target_id: uuid.UUID
+
+
+class DishMergeResponse(BaseModel):
+    """Summary of an admin merge — counts of what moved."""
+    source_id: uuid.UUID
+    target_id: uuid.UUID
+    source_name: str
+    target_name: str
+    reviews_moved: int = 0
+    cover_inherited: bool = False
+
+
 class MyReviewResponse(DishReviewResponse):
     dish_name: str = ""
     restaurant_name: str = ""
