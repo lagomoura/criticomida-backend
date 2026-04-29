@@ -167,6 +167,16 @@ class RestaurantResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RestaurantCreateResponse(RestaurantResponse):
+    """Response for POST /api/restaurants.
+
+    `existed` is True when a row with the same `google_place_id` was found and
+    returned instead of creating a new one. Lets the frontend route the user to
+    the existing restaurant instead of showing a "created" toast.
+    """
+    existed: bool = False
+
+
 class RestaurantListResponse(BaseModel):
     id: uuid.UUID
     slug: str

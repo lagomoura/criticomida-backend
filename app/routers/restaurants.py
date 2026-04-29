@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,7 @@ from app.schemas.restaurant import (
     NearbyRestaurantsResponse,
     RestaurantAggregatesResponse,
     RestaurantCreate,
+    RestaurantCreateResponse,
     RestaurantListResponse,
     RestaurantPhotosResponse,
     RestaurantResponse,
@@ -33,6 +34,7 @@ from app.services.google_places_enricher import (
 )
 from app.services.image_cleanup import delete_images_for_restaurant
 from app.services.restaurant_service import (
+    find_restaurant_by_place_id,
     get_nearby_restaurants,
     get_restaurant_aggregates,
     get_restaurant_by_slug,
@@ -118,14 +120,15 @@ async def _refresh_in_background(restaurant_id) -> None:
         await refresh_restaurant_from_google(session, restaurant_id, force=False)
 
 
-@router.post("", response_model=RestaurantResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=RestaurantCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_restaurant(
     restaurant_data: RestaurantCreate,
+    response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[
         User, Depends(require_role(UserRole.admin, UserRole.critic))
     ],
-) -> Restaurant:
+) -> RestaurantCreateResponse:
     # Verify category exists only when one is provided
     if restaurant_data.category_id is not None:
         cat_result = await db.execute(
@@ -137,62 +140,77 @@ async def create_restaurant(
                 detail="Category not found",
             )
 
+    place_id = restaurant_data.google_place_id
+
+    # Pre-INSERT dedup: if this Google Place is already in the DB, return it.
+    if place_id:
+        existing = await find_restaurant_by_place_id(db, place_id, eager=True)
+        if existing is not None:
+            response.status_code = status.HTTP_200_OK
+            return _build_create_response(existing, existed=True)
+
+    # Cache the creator id before the loop — a rollback inside the retry path
+    # expires `current_user`'s attributes, and re-accessing `.id` would trigger
+    # a SELECT outside SQLAlchemy's async greenlet context (MissingGreenlet).
+    creator_id = current_user.id
     payload = restaurant_data.model_dump(exclude={"slug"})
     base_slug = (restaurant_data.slug or "").strip() or _slugify(
         restaurant_data.name
     )
     max_attempts = 8
-    restaurant: Restaurant | None = None
 
     for attempt in range(max_attempts):
-        if attempt == 0:
-            slug = base_slug
-            taken = await db.execute(
-                select(Restaurant.id).where(Restaurant.slug == slug).limit(1)
-            )
-            if taken.scalar_one_or_none() is not None:
-                slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
-        else:
-            slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+        slug = base_slug if attempt == 0 else f"{base_slug}-{uuid.uuid4().hex[:8]}"
 
         candidate = Restaurant(
             **payload,
             slug=slug,
-            created_by=current_user.id,
+            created_by=creator_id,
         )
         db.add(candidate)
         try:
             await db.flush()
-            restaurant = candidate
-            break
         except IntegrityError as exc:
             await db.rollback()
             if not is_unique_violation(exc):
                 raise
+            # Race: another concurrent request may have just inserted the same
+            # google_place_id. Re-check before assuming it was a slug collision.
+            if place_id:
+                existing = await find_restaurant_by_place_id(db, place_id, eager=True)
+                if existing is not None:
+                    response.status_code = status.HTTP_200_OK
+                    return _build_create_response(existing, existed=True)
             if attempt == max_attempts - 1:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Could not allocate a unique restaurant slug",
                 ) from exc
+            continue
 
-    if restaurant is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Could not allocate a unique restaurant slug",
+        await db.refresh(candidate)
+        result = await db.execute(
+            select(Restaurant)
+            .options(
+                selectinload(Restaurant.category),
+                selectinload(Restaurant.creator),
+            )
+            .where(Restaurant.id == candidate.id)
         )
+        return _build_create_response(result.scalar_one(), existed=False)
 
-    await db.refresh(restaurant)
-
-    # Reload with relationships
-    result = await db.execute(
-        select(Restaurant)
-        .options(
-            selectinload(Restaurant.category),
-            selectinload(Restaurant.creator),
-        )
-        .where(Restaurant.id == restaurant.id)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Could not allocate a unique restaurant slug",
     )
-    return result.scalar_one()
+
+
+def _build_create_response(
+    restaurant: Restaurant, *, existed: bool
+) -> RestaurantCreateResponse:
+    payload = RestaurantCreateResponse.model_validate(restaurant, from_attributes=True)
+    payload.existed = existed
+    return payload
 
 
 @router.put("/{slug}", response_model=RestaurantResponse)

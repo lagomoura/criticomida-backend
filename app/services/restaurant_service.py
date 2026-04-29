@@ -121,6 +121,31 @@ async def get_restaurant_by_slug(
     return result.scalar_one_or_none()
 
 
+async def find_restaurant_by_place_id(
+    db: AsyncSession,
+    place_id: str,
+    *,
+    eager: bool = False,
+) -> Restaurant | None:
+    """Lookup a restaurant by its Google Places id.
+
+    Used both as a pre-check before INSERT (to dedupe Google selections that map
+    to an existing entity) and as the recovery path when the unique-index
+    `uq_restaurants_google_place_id` rejects a concurrent INSERT.
+
+    Pass `eager=True` when the caller will return the row through
+    `RestaurantResponse`, which requires `category` and `creator` to be loaded.
+    """
+    stmt = select(Restaurant).where(Restaurant.google_place_id == place_id)
+    if eager:
+        stmt = stmt.options(
+            selectinload(Restaurant.category),
+            selectinload(Restaurant.creator),
+        )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def get_restaurant_gallery_images(
     db: AsyncSession, restaurant_id: uuid.UUID
 ) -> list[Image]:

@@ -37,6 +37,7 @@ from app.services.rating_service import (
     update_dish_rating,
     update_restaurant_rating,
 )
+from app.services.restaurant_service import find_restaurant_by_place_id
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
 
@@ -115,10 +116,7 @@ async def _find_or_create_restaurant_from_place(
     created_by: uuid.UUID,
 ) -> Restaurant:
     """Primary path: dedupe by google_place_id."""
-    result = await db.execute(
-        select(Restaurant).where(Restaurant.google_place_id == place.place_id)
-    )
-    existing = result.scalar_one_or_none()
+    existing = await find_restaurant_by_place_id(db, place.place_id)
     if existing is not None:
         return existing
 
