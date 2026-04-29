@@ -18,11 +18,14 @@ from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
 from app.schemas.restaurant import (
     DiaryStatsResponse,
+    MatchCandidatesResponse,
     NearbyRestaurantsResponse,
     RestaurantAggregatesResponse,
     RestaurantCreate,
     RestaurantCreateResponse,
     RestaurantListResponse,
+    RestaurantMergeRequest,
+    RestaurantMergeResponse,
     RestaurantPhotosResponse,
     RestaurantResponse,
     RestaurantUpdate,
@@ -34,7 +37,9 @@ from app.services.google_places_enricher import (
 )
 from app.services.image_cleanup import delete_images_for_restaurant
 from app.services.restaurant_service import (
+    find_match_candidates,
     find_restaurant_by_place_id,
+    find_restaurant_by_redirect,
     get_nearby_restaurants,
     get_restaurant_aggregates,
     get_restaurant_by_slug,
@@ -43,6 +48,7 @@ from app.services.restaurant_service import (
     get_restaurant_list,
     get_restaurant_photos,
     get_signature_dishes,
+    merge_restaurants,
 )
 
 router = APIRouter(prefix="/api/restaurants", tags=["restaurants"])
@@ -86,6 +92,32 @@ async def list_restaurants(
     }
 
 
+@router.get("/match-candidates", response_model=MatchCandidatesResponse)
+async def match_candidates_endpoint(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    name: str = Query(..., min_length=1, max_length=200),
+    lat: float = Query(..., ge=-90.0, le=90.0),
+    lng: float = Query(..., ge=-180.0, le=180.0),
+    exclude_place_id: str | None = Query(None, max_length=200),
+) -> dict:
+    """Surface potential duplicates of a restaurant the user is about to add.
+
+    Used by the AddRestaurantModal flow to ask "did you mean X?" before
+    committing — covers the case where Google returns two distinct place_ids
+    for the same physical venue (Fase 2.2). The Fase 2.1 dedup by
+    `google_place_id` handles the same-place_id case separately.
+    """
+    items = await find_match_candidates(
+        db,
+        name=name,
+        latitude=lat,
+        longitude=lng,
+        exclude_place_id=exclude_place_id,
+    )
+    return {"items": items}
+
+
 @router.get("/{slug}", response_model=RestaurantResponse)
 async def get_restaurant(
     slug: str,
@@ -93,6 +125,12 @@ async def get_restaurant(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Restaurant:
     restaurant = await get_restaurant_detail(db, slug)
+    if restaurant is None:
+        # Slug may belong to a restaurant that was merged into another. Look up
+        # the redirect table and serve the merge target so old links keep working.
+        redirected_id = await find_restaurant_by_redirect(db, slug)
+        if redirected_id is not None:
+            restaurant = await get_restaurant_detail(db, str(redirected_id))
     if restaurant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -396,6 +434,45 @@ async def refresh_restaurant_from_google_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail="Restaurant not found"
         )
     return full
+
+
+@router.post(
+    "/{source_id}/merge",
+    response_model=RestaurantMergeResponse,
+)
+async def merge_restaurant(
+    source_id: uuid.UUID,
+    payload: RestaurantMergeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+) -> dict:
+    """Admin: merge `source_id` into `payload.target_id`.
+
+    Moves all dishes, reviews, ratings, diary entries, images and existing
+    redirects from source to target, deletes the source row, and inserts a
+    redirect from the source's slug. Aggregates on the target are recomputed
+    from the new state. Whole operation is one transaction.
+    """
+    if source_id == payload.target_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="source_id and target_id must differ",
+        )
+    try:
+        summary = await merge_restaurants(
+            db,
+            source_id=source_id,
+            target_id=payload.target_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return {**summary, "target_id": payload.target_id}
 
 
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)

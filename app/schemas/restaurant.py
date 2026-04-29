@@ -167,6 +167,53 @@ class RestaurantResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MatchCandidate(BaseModel):
+    """A potential duplicate of the restaurant the user is about to create.
+
+    Returned by GET /api/restaurants/match-candidates. The caller (typically
+    AddRestaurantModal) uses these to ask the user "did you mean X?" before
+    submitting a create request.
+    """
+    id: uuid.UUID
+    slug: str
+    name: str
+    location_name: str
+    latitude: Decimal | None
+    longitude: Decimal | None
+    google_place_id: str | None
+    cover_image_url: str | None
+    computed_rating: Decimal
+    review_count: int
+    name_similarity: float
+    distance_m: float
+    confidence_score: float
+
+
+class MatchCandidatesResponse(BaseModel):
+    items: list[MatchCandidate]
+
+
+class RestaurantMergeRequest(BaseModel):
+    target_id: uuid.UUID
+
+
+class RestaurantMergeResponse(BaseModel):
+    """Summary of an admin merge — counts of what moved, plus the redirect."""
+    source_slug: str
+    target_id: uuid.UUID
+    dishes_moved: int = 0
+    dishes_merged_into_target: int = 0
+    reviews_remapped: int = 0
+    pros_cons_moved: int = 0
+    rating_dimensions_moved: int = 0
+    rating_dimensions_dropped: int = 0
+    diary_entries_moved: int = 0
+    images_moved: int = 0
+    redirects_repointed: int = 0
+    menu_moved: int = 0
+    source_menu_deleted: int = 0
+
+
 class RestaurantCreateResponse(RestaurantResponse):
     """Response for POST /api/restaurants.
 
