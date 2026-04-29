@@ -161,6 +161,46 @@ async def compute_dish_aggregates(
         round(100.0 * woa_row.yes / answered, 1) if answered > 0 else None
     )
 
+    # Pilares técnicos (presentation, value_prop, execution): cada uno
+    # nullable 1..3. Devuelvo counts por valor + total respondidos + avg.
+    pillars_stmt = select(
+        func.count(case((DishReview.presentation == 1, 1))).label("pres_1"),
+        func.count(case((DishReview.presentation == 2, 1))).label("pres_2"),
+        func.count(case((DishReview.presentation == 3, 1))).label("pres_3"),
+        func.avg(DishReview.presentation).label("pres_avg"),
+        func.count(case((DishReview.value_prop == 1, 1))).label("val_1"),
+        func.count(case((DishReview.value_prop == 2, 1))).label("val_2"),
+        func.count(case((DishReview.value_prop == 3, 1))).label("val_3"),
+        func.avg(DishReview.value_prop).label("val_avg"),
+        func.count(case((DishReview.execution == 1, 1))).label("exec_1"),
+        func.count(case((DishReview.execution == 2, 1))).label("exec_2"),
+        func.count(case((DishReview.execution == 3, 1))).label("exec_3"),
+        func.avg(DishReview.execution).label("exec_avg"),
+    ).where(DishReview.dish_id == dish_id)
+    pillars_row = (await db.execute(pillars_stmt)).one()
+
+    def _pillar_payload(c1: int, c2: int, c3: int, avg) -> dict:
+        answered = (c1 or 0) + (c2 or 0) + (c3 or 0)
+        return {
+            "one": c1 or 0,
+            "two": c2 or 0,
+            "three": c3 or 0,
+            "answered": answered,
+            "avg": float(round(float(avg), 2)) if avg is not None else None,
+        }
+
+    pillars = {
+        "presentation": _pillar_payload(
+            pillars_row.pres_1, pillars_row.pres_2, pillars_row.pres_3, pillars_row.pres_avg
+        ),
+        "value_prop": _pillar_payload(
+            pillars_row.val_1, pillars_row.val_2, pillars_row.val_3, pillars_row.val_avg
+        ),
+        "execution": _pillar_payload(
+            pillars_row.exec_1, pillars_row.exec_2, pillars_row.exec_3, pillars_row.exec_avg
+        ),
+    }
+
     photos_count_stmt = (
         select(func.count(DishReviewImage.id))
         .join(DishReview, DishReview.id == DishReviewImage.dish_review_id)
@@ -185,6 +225,7 @@ async def compute_dish_aggregates(
             "no_answer": woa_row.no_answer or 0,
             "pct": woa_pct,
         },
+        "pillars": pillars,
         "photos_count": photos_count or 0,
         "unique_eaters": unique_eaters or 0,
     }

@@ -27,6 +27,20 @@ class WouldOrderAgainBreakdown(BaseModel):
     pct: float | None = None
 
 
+class PillarBreakdown(BaseModel):
+    one: int
+    two: int
+    three: int
+    answered: int
+    avg: float | None = None
+
+
+class PillarsAggregates(BaseModel):
+    presentation: PillarBreakdown
+    value_prop: PillarBreakdown
+    execution: PillarBreakdown
+
+
 class DishAggregatesResponse(BaseModel):
     pros_top: list[ProsConsItem]
     cons_top: list[ProsConsItem]
@@ -34,6 +48,7 @@ class DishAggregatesResponse(BaseModel):
     rating_histogram: dict[str, int]
     portion_distribution: dict[str, int]
     would_order_again: WouldOrderAgainBreakdown
+    pillars: PillarsAggregates
     photos_count: int
     unique_eaters: int
 

@@ -3,7 +3,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -123,6 +122,9 @@ async def create_review(
         would_order_again=review_data.would_order_again,
         visited_with=review_data.visited_with,
         is_anonymous=review_data.is_anonymous,
+        presentation=review_data.presentation,
+        value_prop=review_data.value_prop,
+        execution=review_data.execution,
     )
     db.add(review)
 

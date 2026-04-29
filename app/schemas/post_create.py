@@ -18,6 +18,9 @@ class PostCreateExtras(BaseModel):
     pros: list[str] = Field(default_factory=list, max_length=20)
     cons: list[str] = Field(default_factory=list, max_length=20)
     tags: list[str] = Field(default_factory=list, max_length=20)
+    presentation: int | None = Field(default=None, ge=1, le=3)
+    value_prop: int | None = Field(default=None, ge=1, le=3)
+    execution: int | None = Field(default=None, ge=1, le=3)
 
 
 class RestaurantFromPlace(BaseModel):

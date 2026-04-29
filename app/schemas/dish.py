@@ -87,6 +87,9 @@ class DishReviewCreate(BaseModel):
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
     is_anonymous: bool = False
+    presentation: int | None = Field(None, ge=1, le=3)
+    value_prop: int | None = Field(None, ge=1, le=3)
+    execution: int | None = Field(None, ge=1, le=3)
     pros_cons: list[DishReviewProsConsCreate] = []
     tags: list[DishReviewTagCreate] = []
     images: list[DishReviewImageCreate] = []
@@ -101,6 +104,9 @@ class DishReviewUpdate(BaseModel):
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
     is_anonymous: bool | None = None
+    presentation: int | None = Field(None, ge=1, le=3)
+    value_prop: int | None = Field(None, ge=1, le=3)
+    execution: int | None = Field(None, ge=1, le=3)
 
 
 class DishReviewResponse(BaseModel):
@@ -116,6 +122,9 @@ class DishReviewResponse(BaseModel):
     would_order_again: bool | None
     visited_with: str | None
     is_anonymous: bool
+    presentation: int | None = None
+    value_prop: int | None = None
+    execution: int | None = None
     created_at: datetime
     updated_at: datetime
     pros_cons: list[DishReviewProsConsResponse] = []

@@ -273,6 +273,9 @@ async def create_post(
         would_order_again=(extras.would_order_again if extras else None),
         visited_with=(extras.visited_with if extras else None),
         is_anonymous=bool(extras.is_anonymous) if extras else False,
+        presentation=(extras.presentation if extras else None),
+        value_prop=(extras.value_prop if extras else None),
+        execution=(extras.execution if extras else None),
     )
     db.add(review)
     await db.flush()  # need review.id for pros/cons/tags

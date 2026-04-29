@@ -5,12 +5,14 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
     ForeignKey,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     Time,
@@ -84,6 +86,18 @@ class DishReview(Base):
     __tablename__ = "dish_reviews"
     __table_args__ = (
         UniqueConstraint("dish_id", "user_id", name="uq_dish_user_review"),
+        CheckConstraint(
+            "presentation IS NULL OR presentation BETWEEN 1 AND 3",
+            name="ck_dish_reviews_presentation_range",
+        ),
+        CheckConstraint(
+            "value_prop IS NULL OR value_prop BETWEEN 1 AND 3",
+            name="ck_dish_reviews_value_prop_range",
+        ),
+        CheckConstraint(
+            "execution IS NULL OR execution BETWEEN 1 AND 3",
+            name="ck_dish_reviews_execution_range",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -105,6 +119,9 @@ class DishReview(Base):
     would_order_again: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     visited_with: Mapped[str | None] = mapped_column(String(200), nullable=True)
     is_anonymous: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    presentation: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    value_prop: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    execution: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
