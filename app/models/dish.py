@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Text,
@@ -201,3 +202,28 @@ class DishReviewImage(Base):
 
     # Relationships
     dish_review: Mapped["DishReview"] = relationship(back_populates="images")
+
+
+class WantToTryDish(Base):
+    """Wishlist row: user wants to try this dish. PK compuesta = uniqueness gratis."""
+
+    __tablename__ = "want_to_try_dishes"
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "dish_id", name="pk_want_to_try_dishes"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dish_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("dishes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

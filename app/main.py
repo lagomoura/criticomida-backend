@@ -20,6 +20,7 @@ from app.routers import (
     categories,
     chat,
     comments,
+    discovery,
     dishes,
     dishes_social,
     feed,
@@ -37,6 +38,7 @@ from app.routers import (
     search,
     trending,
     users,
+    want_to_try,
 )
 
 
@@ -99,6 +101,7 @@ def create_app(
     application.include_router(comments.router)
     application.include_router(notifications.router)
     application.include_router(bookmarks.router)
+    application.include_router(want_to_try.router)
     application.include_router(reports.router)
     application.include_router(feed.router)
     application.include_router(search.router)
@@ -107,6 +110,10 @@ def create_app(
     application.include_router(chat.router)
     application.include_router(categories.router)
     application.include_router(restaurants.router)
+    # discovery.router debe ir ANTES que dishes.router porque sus paths
+    # específicos (/api/dishes/discover, /api/dishes/duel) son matcheados
+    # por la ruta paramétrica /api/dishes/{dish_id} si esta se registra primero.
+    application.include_router(discovery.router)
     application.include_router(dishes.router)
     application.include_router(dishes_social.router)
     application.include_router(ratings.router)

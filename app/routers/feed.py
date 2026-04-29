@@ -25,6 +25,7 @@ from app.models.dish import (
     DishReviewImage,
     DishReviewProsCons,
     DishReviewTag,
+    WantToTryDish,
 )
 from app.models.follow import Follow
 from app.models.like import Like
@@ -171,10 +172,16 @@ async def _build_feed_items(
             Follow.follower_id == viewer_id,
             Follow.following_id == DishReview.user_id,
         ).correlate(DishReview)
+        # want_to_try es a nivel plato (no review): correlamos con Dish.
+        viewer_want_to_try = exists().where(
+            WantToTryDish.dish_id == DishReview.dish_id,
+            WantToTryDish.user_id == viewer_id,
+        ).correlate(DishReview)
     else:
         viewer_liked = select(False).scalar_subquery()
         viewer_saved = select(False).scalar_subquery()
         viewer_follows_author = select(False).scalar_subquery()
+        viewer_want_to_try = select(False).scalar_subquery()
 
     stmt = (
         select(
@@ -189,6 +196,7 @@ async def _build_feed_items(
             viewer_liked.label("viewer_liked"),
             viewer_saved.label("viewer_saved"),
             viewer_follows_author.label("viewer_follows_author"),
+            viewer_want_to_try.label("viewer_want_to_try"),
         )
         .join(User, DishReview.user_id == User.id)
         .join(Dish, DishReview.dish_id == Dish.id)
@@ -273,6 +281,7 @@ async def _build_feed_items(
         v_liked,
         v_saved,
         v_follow_author,
+        v_want_to_try,
     ) in trimmed:
         extras: FeedExtras | None = None
         if with_extras:
@@ -315,6 +324,7 @@ async def _build_feed_items(
                     liked=bool(v_liked),
                     saved=bool(v_saved),
                     following_author=bool(v_follow_author),
+                    want_to_try=bool(v_want_to_try),
                 ),
                 extras=extras,
             )

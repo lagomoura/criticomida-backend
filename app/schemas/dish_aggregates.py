@@ -137,3 +137,4 @@ class DishSocialDetailEnriched(BaseModel):
     editorial_blurb: str | None = None
     editorial_source: str | None = None
     created_by_display_name: str | None = None
+    want_to_try: bool = False

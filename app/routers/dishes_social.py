@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.middleware.auth import get_current_user_optional, require_role
 from app.models.category import Category
-from app.models.dish import Dish, DishReview
+from app.models.dish import Dish, DishReview, WantToTryDish
 from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
 from app.routers.feed import _build_feed_items
@@ -48,6 +48,7 @@ async def get_dish_social(
     dish_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     background_tasks: BackgroundTasks,
+    viewer: Annotated[User | None, Depends(get_current_user_optional)] = None,
 ) -> dict:
     stmt = (
         select(Dish, Restaurant, Category, User)
@@ -79,6 +80,16 @@ async def get_dish_social(
     # Lazy editorial blurb generation. Degrades silent when not configured.
     maybe_schedule_blurb_refresh(background_tasks, dish.id)
 
+    want_to_try = False
+    if viewer is not None:
+        wtt_row = await db.execute(
+            select(WantToTryDish.dish_id).where(
+                WantToTryDish.user_id == viewer.id,
+                WantToTryDish.dish_id == dish.id,
+            )
+        )
+        want_to_try = wtt_row.scalar_one_or_none() is not None
+
     return {
         "id": dish.id,
         "name": dish.name,
@@ -103,6 +114,7 @@ async def get_dish_social(
         "editorial_blurb": dish.editorial_blurb,
         "editorial_source": dish.editorial_blurb_source,
         "created_by_display_name": creator.display_name if creator else None,
+        "want_to_try": want_to_try,
     }
 
 

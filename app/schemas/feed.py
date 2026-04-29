@@ -37,6 +37,7 @@ class FeedViewerState(BaseModel):
     liked: bool = False
     saved: bool = False
     following_author: bool = False
+    want_to_try: bool = False
 
 
 class FeedExtras(BaseModel):
