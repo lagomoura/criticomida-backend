@@ -55,23 +55,35 @@ async def test_like_rate_limit(async_client_integration, user_a, user_b):
     assert r61.status_code == 429, r61.text
 
 
-async def test_follow_rate_limit(async_client_integration, user_a):
+async def test_follow_rate_limit(
+    async_client_integration, integration_app, user_a
+):
     from tests.integration.conftest import register_and_login
+    import httpx
 
     targets = [
         await register_and_login(async_client_integration) for _ in range(31)
     ]
 
-    for t in targets[:30]:
-        r = await async_client_integration.post(
-            f"/api/users/{t.user_id}/follow", cookies=user_a.cookies
-        )
-        assert r.status_code == 200, r.text
+    # register_and_login reusa el client compartido y deja sus cookies como
+    # las del último target registrado. Pasar `cookies=` request-level se
+    # mezcla con esas cookies sticky (httpx warning dixit), lo que termina
+    # mandando el access_token de target30 en lugar del de user_a, y los
+    # 30 follows caen en el bucket equivocado.
+    #
+    # Solución: cliente fresco con `cookies=` en el constructor (cookies
+    # del jar inicial, sin sticky residue). Es el mismo integration_app —
+    # comparte la DB y los usuarios ya creados.
+    transport = httpx.ASGITransport(app=integration_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", cookies=user_a.cookies
+    ) as client:
+        for t in targets[:30]:
+            r = await client.post(f"/api/users/{t.user_id}/follow")
+            assert r.status_code == 200, r.text
 
-    r31 = await async_client_integration.post(
-        f"/api/users/{targets[30].user_id}/follow", cookies=user_a.cookies
-    )
-    assert r31.status_code == 429, r31.text
+        r31 = await client.post(f"/api/users/{targets[30].user_id}/follow")
+        assert r31.status_code == 429, r31.text
 
 
 async def test_comment_duplicate_body_blocked(async_client_integration, user_a, user_b):

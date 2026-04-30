@@ -41,7 +41,13 @@ def user_or_ip_key(request: Request) -> str:
     return f"ip:{get_remote_address(request)}"
 
 
-limiter = Limiter(key_func=user_or_ip_key)
+limiter = Limiter(key_func=user_or_ip_key, key_style="endpoint")
+# key_style="endpoint" agrupa todas las requests al mismo view function en
+# un único bucket (ej. follow_user). Con el default "url", cada path
+# resolvido es un bucket distinto — eso significaba que un user podía
+# seguir a N personas distintas sin gastar el budget de 30/min, porque
+# /api/users/uuid1/follow y /api/users/uuid2/follow caían en buckets
+# separados. Confirmado leyendo slowapi.Limiter._check_request_limit.
 
 
 # Centralised limit strings — change here and all decorated endpoints follow.
