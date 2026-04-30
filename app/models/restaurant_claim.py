@@ -10,7 +10,7 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
 class ClaimStatus(str, enum.Enum):
@@ -70,4 +70,13 @@ class RestaurantClaim(Base):
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    restaurant: Mapped["Restaurant"] = relationship(  # noqa: F821
+        foreign_keys=[restaurant_id],
+        lazy="selectin",
+    )
+    claimant: Mapped["User"] = relationship(  # noqa: F821
+        foreign_keys=[claimant_user_id],
+        lazy="selectin",
     )

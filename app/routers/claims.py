@@ -8,8 +8,6 @@ subir fotos oficiales. La revisión admin vive en `routers/admin.py`.
 from __future__ import annotations
 
 import secrets
-import uuid
-from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -32,6 +30,7 @@ from app.schemas.claim import (
     ClaimResponse,
     ClaimStatusResponse,
 )
+from app.services.claim_service import approve_claim
 
 
 router = APIRouter(tags=["claims"])
@@ -179,47 +178,15 @@ async def verify_email_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Token not found"
         )
 
-    if claim.status == ClaimStatus.verified.value:
-        return claim
-
-    if claim.status not in {
-        ClaimStatus.pending.value,
-        ClaimStatus.verifying.value,
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Claim is {claim.status}, cannot verify",
-        )
-
-    restaurant_row = await db.execute(
-        select(Restaurant).where(Restaurant.id == claim.restaurant_id)
-    )
-    restaurant = restaurant_row.scalar_one()
-
-    # Si otro claim ganó la carrera (constraint partial UNIQUE) caemos en 409.
-    if (
-        restaurant.claimed_by_user_id is not None
-        and restaurant.claimed_by_user_id != claim.claimant_user_id
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Another claim was verified first",
-        )
-
-    now = datetime.now(timezone.utc)
-    claim.status = ClaimStatus.verified.value
-    claim.reviewed_at = now
-    # Rotar el token para evitar replays — guardamos un valor opaco vacío.
+    # Rotar el token antes de aprobar — un solo uso. Si el approve falla, el
+    # claim queda sin token y el flujo continúa por revisión admin manual.
     if claim.verification_payload is not None:
         new_payload = dict(claim.verification_payload)
         new_payload.pop("email_token", None)
         new_payload["verified_via"] = "email_token"
         claim.verification_payload = new_payload
 
-    restaurant.claimed_by_user_id = claim.claimant_user_id
-    restaurant.claimed_at = now
-
-    await db.flush()
+    await approve_claim(db, claim, reviewer_admin_id=None)
     await db.refresh(claim)
     return claim
 
