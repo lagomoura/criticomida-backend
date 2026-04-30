@@ -63,6 +63,10 @@ class FeedItem(BaseModel):
     stats: FeedStats
     viewer_state: FeedViewerState
     extras: FeedExtras | None = None
+    # True cuando la review tiene los 3 pilares técnicos completos
+    # (presentation + value_prop + execution NOT NULL). El frontend lo usa
+    # para resaltarla con sello "Verificada por experto".
+    verified_by_expert: bool = False
 
 
 class FeedPage(BaseModel):

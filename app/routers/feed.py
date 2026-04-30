@@ -300,6 +300,11 @@ async def _build_feed_items(
                 price_tier=dish.price_tier.value if dish.price_tier is not None else None,
             )
 
+        verified = (
+            review.presentation is not None
+            and review.value_prop is not None
+            and review.execution is not None
+        )
         items.append(
             FeedItem(
                 id=review.id,
@@ -327,6 +332,7 @@ async def _build_feed_items(
                     want_to_try=bool(v_want_to_try),
                 ),
                 extras=extras,
+                verified_by_expert=verified,
             )
         )
 
