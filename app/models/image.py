@@ -12,6 +12,7 @@ from app.database import Base
 class EntityType(str, enum.Enum):
     restaurant_cover = "restaurant_cover"
     restaurant_gallery = "restaurant_gallery"
+    restaurant_official_photo = "restaurant_official_photo"
     dish_cover = "dish_cover"
     menu = "menu"
 
