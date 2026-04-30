@@ -2,6 +2,7 @@ from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.models.category import Category
 from app.models.restaurant import (
+    ReservationClick,
     Restaurant,
     RestaurantRatingDimension,
     RestaurantProsCons,
@@ -29,6 +30,7 @@ __all__ = [
     "RestaurantRatingDimension",
     "RestaurantProsCons",
     "VisitDiaryEntry",
+    "ReservationClick",
     "Dish",
     "DishReview",
     "DishReviewProsCons",

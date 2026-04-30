@@ -11,9 +11,9 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.db_errors import is_unique_violation
-from app.middleware.auth import get_current_user, require_role
+from app.middleware.auth import get_current_user, get_current_user_optional, require_role
 from app.models.category import Category
-from app.models.restaurant import Restaurant
+from app.models.restaurant import ReservationClick, Restaurant
 from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
 from app.schemas.discovery import MapBboxResponse
@@ -21,6 +21,7 @@ from app.schemas.restaurant import (
     DiaryStatsResponse,
     MatchCandidatesResponse,
     NearbyRestaurantsResponse,
+    ReservationClickCreate,
     RestaurantAggregatesResponse,
     RestaurantCreate,
     RestaurantCreateResponse,
@@ -538,3 +539,39 @@ async def delete_restaurant(
     await delete_images_for_restaurant(db, restaurant.id)
     await db.delete(restaurant)
     await db.flush()
+
+
+@router.post(
+    "/{slug}/reservation-click",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def log_reservation_click(
+    slug: str,
+    payload: ReservationClickCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User | None, Depends(get_current_user_optional)],
+) -> Response:
+    """Logs a click on the "Reservar mesa" CTA. Auth opcional.
+
+    Devuelve 404 si el restaurant no tiene `reservation_url` configurada para
+    evitar inflar la tabla con eventos de páginas que no muestran el CTA.
+    """
+    result = await db.execute(select(Restaurant).where(Restaurant.slug == slug))
+    restaurant = result.scalar_one_or_none()
+    if restaurant is None or not restaurant.reservation_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Restaurant has no reservation flow",
+        )
+
+    click = ReservationClick(
+        restaurant_id=restaurant.id,
+        user_id=current_user.id if current_user is not None else None,
+        provider=payload.provider or restaurant.reservation_provider,
+        referrer=payload.referrer,
+        utm=payload.utm,
+        session_id=payload.session_id,
+    )
+    db.add(click)
+    await db.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
