@@ -202,6 +202,56 @@ async def test_admin_endpoints_404_on_unknown_claim(
 
 
 @pytest.mark.asyncio
+async def test_approve_creates_in_app_notification(
+    async_client_integration, admin_client, user_a
+):
+    resto = await _create_resto(async_client_integration, admin_client)
+    claim_id = await _open_claim(async_client_integration, resto, user_a)
+
+    await async_client_integration.post(
+        f"/api/admin/claims/{claim_id}/approve",
+        json={},
+        cookies=admin_client,
+    )
+
+    notifs = await async_client_integration.get(
+        "/api/notifications", cookies=user_a.cookies
+    )
+    assert notifs.status_code == 200
+    items = notifs.json()["items"]
+    approved = next(
+        (i for i in items if i["kind"] == "claim_approved"), None
+    )
+    assert approved is not None
+    assert approved["target_restaurant_id"] == resto["id"]
+    assert resto["name"] in approved["text"]
+
+
+@pytest.mark.asyncio
+async def test_reject_creates_in_app_notification_with_reason(
+    async_client_integration, admin_client, user_a
+):
+    resto = await _create_resto(async_client_integration, admin_client)
+    claim_id = await _open_claim(async_client_integration, resto, user_a)
+
+    await async_client_integration.post(
+        f"/api/admin/claims/{claim_id}/reject",
+        json={"reason": "evidencia insuficiente"},
+        cookies=admin_client,
+    )
+
+    notifs = await async_client_integration.get(
+        "/api/notifications", cookies=user_a.cookies
+    )
+    items = notifs.json()["items"]
+    rejected = next(
+        (i for i in items if i["kind"] == "claim_rejected"), None
+    )
+    assert rejected is not None
+    assert "evidencia insuficiente" in rejected["text"]
+
+
+@pytest.mark.asyncio
 async def test_revoke_only_clears_owner_if_active(
     async_client_integration, admin_client, user_a, user_b
 ):
