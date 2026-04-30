@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     GOOGLE_PLACES_API_KEY: str | None = None
     # Cache duration for Google Places enrichment data.
     GOOGLE_CACHE_TTL_HOURS: int = 168  # 7 days
+    # Email transaccional (Resend). Cuando RESEND_API_KEY está vacío,
+    # send_email() loguea un dry-run y no falla — para que dev/staging
+    # corran sin necesidad de una cuenta del proveedor.
+    RESEND_API_KEY: str | None = None
+    EMAIL_FROM: str = "CritiComida <noreply@criticomida.com>"
+    # URL base usada para construir links absolutos en los emails (verify
+    # token, panel del owner). En prod se setea desde la env de Vercel.
+    PUBLIC_APP_URL: str = "http://localhost:3000"
 
     model_config = {
         "env_file": ".env",

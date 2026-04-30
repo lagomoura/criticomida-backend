@@ -20,6 +20,12 @@ from app.models.restaurant import Restaurant
 from app.models.restaurant_claim import ClaimStatus, RestaurantClaim
 from app.models.social import Notification
 from app.models.user import User, UserRole
+from app.services.email_service import (
+    render_claim_approved,
+    render_claim_rejected,
+    render_claim_revoked,
+    send_email,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -43,14 +49,19 @@ async def _record_claim_notification(
     actor_user_id: uuid.UUID,
     reason: str | None = None,
 ) -> None:
-    """Crea una fila en notifications para el claimant. Si no encuentra el
-    restaurant (caso borde), no crea la notificación — el log siempre queda."""
+    """Crea una fila en notifications para el claimant + dispara el email
+    transaccional. Ambos son best-effort: si el restaurant no existe, o el
+    proveedor de email está caído, NO se rompe la transición de estado del
+    claim — solo queda en logs."""
     restaurant_row = await db.execute(
-        select(Restaurant.name).where(Restaurant.id == claim.restaurant_id)
+        select(Restaurant.name, Restaurant.slug).where(
+            Restaurant.id == claim.restaurant_id
+        )
     )
-    name = restaurant_row.scalar_one_or_none()
-    if name is None:
+    res = restaurant_row.first()
+    if res is None:
         return
+    name, slug = res
 
     template = _NOTIFICATION_TEXTS.get(event)
     if template is None:
@@ -69,6 +80,30 @@ async def _record_claim_notification(
             text=text,
         )
     )
+
+    # Email transaccional. contact_email es lo que el user ingresó al
+    # reclamar; si está vacío, fallback al email de la cuenta.
+    to_email = claim.contact_email
+    if not to_email:
+        claimant_email = (
+            await db.execute(
+                select(User.email).where(User.id == claim.claimant_user_id)
+            )
+        ).scalar_one_or_none()
+        if claimant_email:
+            to_email = str(claimant_email)
+    if to_email:
+        renderers = {
+            "approved": lambda: render_claim_approved(name, slug),
+            "rejected": lambda: render_claim_rejected(name, reason or ""),
+            "revoked": lambda: render_claim_revoked(name, reason or ""),
+        }
+        renderer = renderers.get(event)
+        if renderer is not None:
+            subject, html, txt = renderer()
+            await send_email(
+                to=to_email, subject=subject, html=html, text=txt
+            )
 
 
 async def approve_claim(
