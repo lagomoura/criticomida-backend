@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.restaurant import Restaurant
 from app.models.restaurant_claim import ClaimStatus, RestaurantClaim
+from app.models.user import User, UserRole
 
 
 logger = logging.getLogger(__name__)
@@ -139,19 +140,25 @@ async def revoke_claim(
 async def assert_verified_owner(
     db: AsyncSession,
     *,
-    user_id: uuid.UUID,
+    user: User,
     restaurant_id: uuid.UUID,
 ) -> None:
     """Levanta 403 si el user no es el verified owner del restaurant.
 
     Centralizamos el chequeo acá para que cualquier endpoint que desbloquee
     permisos (responder reviews, fotos oficiales, futuro analytics)
-    aplique la misma regla."""
+    aplique la misma regla.
+
+    Bypass: los usuarios con role=admin pueden actuar sobre cualquier
+    restaurant para tareas de soporte y moderación."""
+    if user.role == UserRole.admin:
+        return
+
     row = await db.execute(
         select(Restaurant.claimed_by_user_id).where(Restaurant.id == restaurant_id)
     )
     owner = row.scalar_one_or_none()
-    if owner is None or owner != user_id:
+    if owner is None or owner != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo el dueño verificado del restaurante puede hacer esta acción",

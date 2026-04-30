@@ -103,7 +103,7 @@ async def upsert_owner_response(
     review (la PK es review_id)."""
     _, restaurant_id = await _get_review_with_restaurant(db, review_id)
     await assert_verified_owner(
-        db, user_id=current_user.id, restaurant_id=restaurant_id
+        db, user=current_user, restaurant_id=restaurant_id
     )
 
     existing = (
@@ -142,7 +142,7 @@ async def delete_owner_response(
 ) -> Response:
     _, restaurant_id = await _get_review_with_restaurant(db, review_id)
     await assert_verified_owner(
-        db, user_id=current_user.id, restaurant_id=restaurant_id
+        db, user=current_user, restaurant_id=restaurant_id
     )
 
     existing = (
@@ -202,7 +202,7 @@ async def add_official_photo(
     Cap de 5 por restaurant — devuelve 409 si se intenta superar."""
     restaurant = await _get_restaurant_or_404(db, slug)
     await assert_verified_owner(
-        db, user_id=current_user.id, restaurant_id=restaurant.id
+        db, user=current_user, restaurant_id=restaurant.id
     )
 
     count = (
@@ -251,7 +251,7 @@ async def list_owner_reviews(
 
     restaurant = await _get_restaurant_or_404(db, slug)
     await assert_verified_owner(
-        db, user_id=current_user.id, restaurant_id=restaurant.id
+        db, user=current_user, restaurant_id=restaurant.id
     )
 
     # Una sola query con LEFT JOIN al owner-response — evita N+1 al render.
@@ -318,7 +318,7 @@ async def delete_official_photo(
 ) -> Response:
     restaurant = await _get_restaurant_or_404(db, slug)
     await assert_verified_owner(
-        db, user_id=current_user.id, restaurant_id=restaurant.id
+        db, user=current_user, restaurant_id=restaurant.id
     )
 
     photo = (

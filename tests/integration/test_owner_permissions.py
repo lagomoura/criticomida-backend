@@ -275,6 +275,41 @@ async def test_owner_can_delete_official_photo(
 
 
 @pytest.mark.asyncio
+async def test_admin_bypasses_owner_check(
+    async_client_integration, admin_client, user_a
+):
+    """Admins pueden ejecutar acciones de owner sobre cualquier restaurant
+    para soporte/moderación, aún cuando no son el verified owner."""
+    resto, review_id = await _seed_resto_with_review(
+        async_client_integration, admin_client, user_a
+    )
+    # No marcamos a nadie como owner — el restaurant queda sin claim.
+
+    # 1. Admin puede listar reseñas del owner-dashboard.
+    list_reviews = await async_client_integration.get(
+        f"/api/restaurants/{resto['slug']}/owner/reviews",
+        cookies=admin_client,
+    )
+    assert list_reviews.status_code == 200
+
+    # 2. Admin puede responder una reseña.
+    respond = await async_client_integration.put(
+        f"/api/dish-reviews/{review_id}/owner-response",
+        json={"body": "Respuesta de soporte"},
+        cookies=admin_client,
+    )
+    assert respond.status_code == 200
+
+    # 3. Admin puede subir foto oficial.
+    add_photo = await async_client_integration.post(
+        f"/api/restaurants/{resto['slug']}/official-photos",
+        json={"url": "/uploads/admin-photo.jpg"},
+        cookies=admin_client,
+    )
+    assert add_photo.status_code == 201
+
+
+@pytest.mark.asyncio
 async def test_public_lists_official_photos(
     async_client_integration, admin_client, user_a
 ):
