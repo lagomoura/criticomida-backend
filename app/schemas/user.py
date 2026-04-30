@@ -48,6 +48,10 @@ class UserResponse(BaseModel):
     role: UserRole
     created_at: datetime
     updated_at: datetime
+    # Migración 028: si el user ya confirmó el link enviado al registrarse.
+    # El frontend usa este flag para mostrar/ocultar el banner de
+    # "verificá tu email". No es bloqueante.
+    email_verified: bool = False
 
     model_config = {"from_attributes": True}
 

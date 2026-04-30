@@ -17,6 +17,7 @@ from app.models.owner_content import (
     DishReviewOwnerResponse,
     RestaurantOfficialPhoto,
 )
+from app.models.email_verification import EmailVerificationToken
 from app.models.dish import (
     Dish,
     DishReview,
@@ -45,6 +46,7 @@ __all__ = [
     "VerificationMethod",
     "DishReviewOwnerResponse",
     "RestaurantOfficialPhoto",
+    "EmailVerificationToken",
     "Dish",
     "DishReview",
     "DishReviewProsCons",

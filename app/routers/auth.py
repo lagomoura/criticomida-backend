@@ -31,6 +31,11 @@ from app.schemas.user import (
     UserLogin,
     UserResponse,
 )
+from app.services.email_verification_service import (
+    consume_verification_token,
+    create_verification_token,
+    send_verification_email,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -189,6 +194,15 @@ async def register(
             ) from exc
         raise
     await db.refresh(user)
+
+    # Verification email — best-effort. Si el provider falla, el user puede
+    # pedir un resend desde la UI. No bloqueamos el registro.
+    try:
+        token = await create_verification_token(db, user)
+        await send_verification_email(user, token)
+    except Exception:
+        pass
+
     return user
 
 
@@ -293,3 +307,36 @@ async def get_me(
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
     return current_user
+
+
+@router.post("/resend-verification", status_code=status.HTTP_204_NO_CONTENT)
+async def resend_verification(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> Response:
+    """Pide un nuevo email de verificación. Idempotente: si el user ya está
+    verificado, devuelve 204 sin hacer nada.
+
+    Invalidamos cualquier token previo no consumido al crear uno nuevo (el
+    service lo hace), así un reenvío inutiliza el link viejo del usuario."""
+    if current_user.email_verified_at is None:
+        token = await create_verification_token(db, current_user)
+        await send_verification_email(current_user, token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/verify-email/{token}", response_model=UserResponse)
+async def verify_email(
+    token: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    """Endpoint público — el user clickea el link del email y este endpoint
+    consume el token. Idempotente para el usuario ya verificado: si el token
+    coincide y el user ya tenía email_verified_at, devuelve OK igual."""
+    user = await consume_verification_token(db, token)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token inválido o expirado",
+        )
+    return user
