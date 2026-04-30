@@ -49,3 +49,30 @@ class OfficialPhotoRead(BaseModel):
 
 class OfficialPhotosListResponse(BaseModel):
     items: list[OfficialPhotoRead]
+
+
+# ----- Owner dashboard -----
+
+
+class OwnerReviewItem(BaseModel):
+    """Vista plana de cada reseña del restaurant para el dashboard del dueño.
+
+    Incluye el flag has_owner_response para que el frontend pueda destacar
+    rápido cuáles requieren atención sin un fetch extra por reseña."""
+
+    id: uuid.UUID
+    dish_id: uuid.UUID
+    dish_name: str
+    rating: float
+    note: str
+    user_display_name: str
+    user_handle: str | None = None
+    is_anonymous: bool
+    date_tasted: str
+    has_owner_response: bool
+
+
+class OwnerReviewsListResponse(BaseModel):
+    items: list[OwnerReviewItem]
+    total: int
+    pending_count: int

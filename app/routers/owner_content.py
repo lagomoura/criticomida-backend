@@ -29,6 +29,8 @@ from app.schemas.owner_content import (
     OfficialPhotosListResponse,
     OwnerResponseRead,
     OwnerResponseUpsert,
+    OwnerReviewItem,
+    OwnerReviewsListResponse,
 )
 from app.services.claim_service import assert_verified_owner
 
@@ -227,6 +229,81 @@ async def add_official_photo(
     await db.flush()
     await db.refresh(photo)
     return photo
+
+
+@router.get(
+    "/api/restaurants/{slug}/owner/reviews",
+    response_model=OwnerReviewsListResponse,
+)
+async def list_owner_reviews(
+    slug: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict:
+    """Lista plana de todas las reseñas del restaurant para el dashboard del
+    owner. Incluye has_owner_response para que el frontend resalte cuáles
+    siguen sin contestar.
+
+    Solo accesible al verified owner."""
+    from app.models.dish import Dish, DishReview
+    from app.models.user import User as UserModel
+    from app.models.owner_content import DishReviewOwnerResponse
+
+    restaurant = await _get_restaurant_or_404(db, slug)
+    await assert_verified_owner(
+        db, user_id=current_user.id, restaurant_id=restaurant.id
+    )
+
+    # Una sola query con LEFT JOIN al owner-response — evita N+1 al render.
+    stmt = (
+        select(
+            DishReview.id,
+            DishReview.dish_id,
+            Dish.name.label("dish_name"),
+            DishReview.rating,
+            DishReview.note,
+            DishReview.is_anonymous,
+            DishReview.date_tasted,
+            UserModel.display_name,
+            UserModel.handle,
+            DishReviewOwnerResponse.review_id.label("response_review_id"),
+        )
+        .join(Dish, DishReview.dish_id == Dish.id)
+        .join(UserModel, DishReview.user_id == UserModel.id)
+        .outerjoin(
+            DishReviewOwnerResponse,
+            DishReviewOwnerResponse.review_id == DishReview.id,
+        )
+        .where(Dish.restaurant_id == restaurant.id)
+        .order_by(DishReview.created_at.desc())
+    )
+    rows = (await db.execute(stmt)).all()
+
+    items: list[OwnerReviewItem] = []
+    pending_count = 0
+    for row in rows:
+        has_resp = row.response_review_id is not None
+        if not has_resp:
+            pending_count += 1
+        items.append(
+            OwnerReviewItem(
+                id=row.id,
+                dish_id=row.dish_id,
+                dish_name=row.dish_name,
+                rating=float(row.rating),
+                note=row.note,
+                user_display_name="Anónimo" if row.is_anonymous else row.display_name,
+                user_handle=None if row.is_anonymous else row.handle,
+                is_anonymous=row.is_anonymous,
+                date_tasted=row.date_tasted.isoformat(),
+                has_owner_response=has_resp,
+            )
+        )
+    return {
+        "items": items,
+        "total": len(items),
+        "pending_count": pending_count,
+    }
 
 
 @router.delete(

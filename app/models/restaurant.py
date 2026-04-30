@@ -131,6 +131,17 @@ class Restaurant(Base):
     menu: Mapped["Menu | None"] = relationship(  # noqa: F821
         back_populates="restaurant", uselist=False
     )
+    official_photos: Mapped[list["RestaurantOfficialPhoto"]] = relationship(  # noqa: F821
+        primaryjoin=(
+            "Restaurant.id == foreign(RestaurantOfficialPhoto.restaurant_id)"
+        ),
+        order_by=(
+            "(RestaurantOfficialPhoto.display_order, "
+            "RestaurantOfficialPhoto.created_at)"
+        ),
+        viewonly=True,
+        lazy="selectin",
+    )
 
     @property
     def has_reservation(self) -> bool:

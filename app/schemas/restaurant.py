@@ -138,6 +138,18 @@ class RestaurantUpdate(BaseModel):
     reservation_partner_meta: dict | None = None
 
 
+class OfficialPhotoEmbedded(BaseModel):
+    """Versión light que viaja embebida en RestaurantResponse — el endpoint
+    dedicado /official-photos sigue devolviendo el shape completo."""
+
+    id: uuid.UUID
+    url: str
+    alt_text: str | None = None
+    display_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
 class RestaurantResponse(BaseModel):
     id: uuid.UUID
     slug: str
@@ -179,6 +191,10 @@ class RestaurantResponse(BaseModel):
     # No se expone la identidad del owner; este flag permite gating de UI sin
     # doxear quién es.
     viewer_is_owner: bool = False
+    # ----- Owner content (migration 025) -----
+    # Fotos subidas por el verified owner. El frontend las prioriza sobre
+    # google_photos en el hero del detail page.
+    official_photos: list[OfficialPhotoEmbedded] = []
 
     model_config = {"from_attributes": True}
 
