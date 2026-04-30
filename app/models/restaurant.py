@@ -87,6 +87,13 @@ class Restaurant(Base):
     reservation_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     reservation_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reservation_partner_meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # ----- Claim flow (migration 024) -----
+    claimed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     computed_rating: Mapped[Decimal] = mapped_column(
         Numeric(3, 2), default=Decimal("0"), nullable=False
     )
@@ -128,6 +135,10 @@ class Restaurant(Base):
     @property
     def has_reservation(self) -> bool:
         return bool(self.reservation_url)
+
+    @property
+    def is_claimed(self) -> bool:
+        return self.claimed_by_user_id is not None
 
 
 class RestaurantRatingDimension(Base):

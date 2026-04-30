@@ -19,6 +19,7 @@ from app.routers import (
     bookmarks,
     categories,
     chat,
+    claims,
     comments,
     discovery,
     dishes,
@@ -121,6 +122,7 @@ def create_app(
     application.include_router(images.router)
     application.include_router(menus.router)
     application.include_router(admin.router)
+    application.include_router(claims.router)
 
     uploads_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),

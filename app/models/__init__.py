@@ -8,6 +8,11 @@ from app.models.restaurant import (
     RestaurantProsCons,
     VisitDiaryEntry,
 )
+from app.models.restaurant_claim import (
+    ClaimStatus,
+    RestaurantClaim,
+    VerificationMethod,
+)
 from app.models.dish import (
     Dish,
     DishReview,
@@ -31,6 +36,9 @@ __all__ = [
     "RestaurantProsCons",
     "VisitDiaryEntry",
     "ReservationClick",
+    "RestaurantClaim",
+    "ClaimStatus",
+    "VerificationMethod",
     "Dish",
     "DishReview",
     "DishReviewProsCons",

@@ -173,6 +173,8 @@ class RestaurantResponse(BaseModel):
     reservation_url: str | None = None
     reservation_provider: str | None = None
     reservation_partner_meta: dict | None = None
+    # ----- Claim flow (migration 024) -----
+    is_claimed: bool = False
 
     model_config = {"from_attributes": True}
 
