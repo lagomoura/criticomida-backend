@@ -55,6 +55,36 @@ class UserCounts(BaseModel):
     following: int = 0
 
 
+class CategoryStat(BaseModel):
+    """Una categoría donde el usuario muestra criterio (volumen + rating).
+
+    `score` es el ranking interno (rating × log(1+count)) que usa el backend
+    para elegir las top categorías; el frontend lo ignora a la hora de
+    renderizar pero puede usarlo para tie-breaking.
+    """
+
+    name: str
+    review_count: int
+    avg_rating: float
+    score: float
+
+
+class UserReputation(BaseModel):
+    """Métricas que cuantifican la "voz del crítico" de un usuario.
+
+    - `verified_review_count`: reviews con los 3 pilares técnicos completos.
+      Indica cuán seriamente el usuario aplica criterio en sus reseñas.
+    - `restaurants_visited`: cantidad de restaurantes únicos reseñados.
+    - `top_categories`: hasta 3 categorías donde el usuario tiene volumen
+      ≥ 2 y mejor combinación de volumen + rating. Sirve como "especialidad"
+      del crítico.
+    """
+
+    verified_review_count: int = 0
+    restaurants_visited: int = 0
+    top_categories: list[CategoryStat] = []
+
+
 class PublicViewerState(BaseModel):
     """Describes the relationship between the caller and the profile owner.
 
@@ -76,6 +106,7 @@ class PublicUserResponse(BaseModel):
     bio: str | None = None
     location: str | None = None
     counts: UserCounts
+    reputation: UserReputation = UserReputation()
     viewer_state: PublicViewerState
 
     model_config = {"from_attributes": True}

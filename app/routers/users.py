@@ -1,3 +1,4 @@
+import math
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -10,15 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.db_errors import is_unique_violation
 from app.middleware.auth import get_current_user, get_current_user_optional
-from app.models.dish import DishReview
+from app.models.category import Category
+from app.models.dish import Dish, DishReview
 from app.models.follow import Follow
+from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.feed import FeedPage
 from app.schemas.user import (
+    CategoryStat,
     PublicUserResponse,
     PublicViewerState,
     UserCounts,
     UserProfileUpdate,
+    UserReputation,
     UserResponse,
 )
 
@@ -105,6 +110,8 @@ async def get_public_profile(
         )
     ).scalar_one() or 0
 
+    reputation = await _build_reputation(db, user.id)
+
     # Viewer context (anonymous → all false).
     is_self = viewer is not None and viewer.id == user.id
     viewer_following = False
@@ -129,10 +136,89 @@ async def get_public_profile(
             followers=int(followers),
             following=int(following),
         ),
+        reputation=reputation,
         viewer_state=PublicViewerState(
             is_self=is_self,
             following=viewer_following,
         ),
+    )
+
+
+# Mínimo de reviews por categoría para que califique como "especialidad" del
+# usuario. Por debajo de eso, una categoría puede aparecer por casualidad y
+# no representa criterio. 2 es razonable para dev / early stage; subir a 3+
+# cuando haya más data.
+_MIN_REVIEWS_PER_CATEGORY = 2
+_TOP_CATEGORIES_LIMIT = 3
+
+
+async def _build_reputation(
+    db: AsyncSession, user_id: uuid.UUID
+) -> UserReputation:
+    """Calcula reviews verificadas, restos visitados y top categorías."""
+    # Reviews verificadas: 3 pilares NOT NULL.
+    verified = (
+        await db.execute(
+            select(func.count())
+            .select_from(DishReview)
+            .where(
+                DishReview.user_id == user_id,
+                DishReview.presentation.is_not(None),
+                DishReview.value_prop.is_not(None),
+                DishReview.execution.is_not(None),
+            )
+        )
+    ).scalar_one() or 0
+
+    # Restaurantes únicos reseñados.
+    visited = (
+        await db.execute(
+            select(func.count(func.distinct(Dish.restaurant_id)))
+            .select_from(DishReview)
+            .join(Dish, Dish.id == DishReview.dish_id)
+            .where(DishReview.user_id == user_id)
+        )
+    ).scalar_one() or 0
+
+    # Top categorías: agregamos por categoría del restaurante, filtramos por
+    # volumen mínimo y rankeamos por (avg_rating × log(1 + count)) — combina
+    # consistencia (volumen) con valoración alta. Tope arbitrario de 3.
+    rows = (
+        await db.execute(
+            select(
+                Category.name.label("name"),
+                func.count(DishReview.id).label("review_count"),
+                func.avg(DishReview.rating).label("avg_rating"),
+            )
+            .select_from(DishReview)
+            .join(Dish, Dish.id == DishReview.dish_id)
+            .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+            .join(Category, Category.id == Restaurant.category_id)
+            .where(DishReview.user_id == user_id)
+            .group_by(Category.name)
+            .having(func.count(DishReview.id) >= _MIN_REVIEWS_PER_CATEGORY)
+        )
+    ).all()
+
+    scored: list[CategoryStat] = []
+    for r in rows:
+        count = int(r.review_count or 0)
+        avg = float(r.avg_rating or 0.0)
+        score = avg * math.log1p(count)
+        scored.append(
+            CategoryStat(
+                name=r.name,
+                review_count=count,
+                avg_rating=round(avg, 2),
+                score=round(score, 4),
+            )
+        )
+    scored.sort(key=lambda c: c.score, reverse=True)
+
+    return UserReputation(
+        verified_review_count=int(verified),
+        restaurants_visited=int(visited),
+        top_categories=scored[:_TOP_CATEGORIES_LIMIT],
     )
 
 
