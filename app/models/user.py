@@ -44,6 +44,13 @@ class User(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @property
+    def email_verified(self) -> bool:
+        return self.email_verified_at is not None
 
     # Relationships
     restaurants: Mapped[list["Restaurant"]] = relationship(  # noqa: F821
