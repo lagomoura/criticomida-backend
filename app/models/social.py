@@ -57,7 +57,9 @@ class Notification(Base):
     __tablename__ = "notifications"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('like','comment','follow')", name="ck_notifications_kind"
+            "kind IN ('like','comment','follow','claim_approved',"
+            "'claim_rejected','claim_revoked')",
+            name="ck_notifications_kind",
         ),
     )
 
@@ -83,6 +85,11 @@ class Notification(Base):
     target_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    target_restaurant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("restaurants.id", ondelete="CASCADE"),
         nullable=True,
     )
     text: Mapped[str] = mapped_column(String(500), nullable=False)

@@ -18,13 +18,92 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.restaurant import Restaurant
 from app.models.restaurant_claim import ClaimStatus, RestaurantClaim
+from app.models.social import Notification
 from app.models.user import User, UserRole
+from app.services.email_service import (
+    render_claim_approved,
+    render_claim_rejected,
+    render_claim_revoked,
+    send_email,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 _OPEN_STATUSES = {ClaimStatus.pending.value, ClaimStatus.verifying.value}
+
+
+_NOTIFICATION_TEXTS = {
+    "approved": "aprobó tu reclamo de {name}",
+    "rejected": "rechazó tu reclamo de {name}: {reason}",
+    "revoked": "revocó tu verificación de {name}: {reason}",
+}
+
+
+async def _record_claim_notification(
+    db: AsyncSession,
+    claim: RestaurantClaim,
+    *,
+    event: str,
+    actor_user_id: uuid.UUID,
+    reason: str | None = None,
+) -> None:
+    """Crea una fila en notifications para el claimant + dispara el email
+    transaccional. Ambos son best-effort: si el restaurant no existe, o el
+    proveedor de email está caído, NO se rompe la transición de estado del
+    claim — solo queda en logs."""
+    restaurant_row = await db.execute(
+        select(Restaurant.name, Restaurant.slug).where(
+            Restaurant.id == claim.restaurant_id
+        )
+    )
+    res = restaurant_row.first()
+    if res is None:
+        return
+    name, slug = res
+
+    template = _NOTIFICATION_TEXTS.get(event)
+    if template is None:
+        return
+
+    text = template.format(name=name, reason=(reason or "sin motivo"))
+    if len(text) > 500:
+        text = text[:497] + "…"
+
+    db.add(
+        Notification(
+            recipient_user_id=claim.claimant_user_id,
+            actor_user_id=actor_user_id,
+            kind=f"claim_{event}",
+            target_restaurant_id=claim.restaurant_id,
+            text=text,
+        )
+    )
+
+    # Email transaccional. contact_email es lo que el user ingresó al
+    # reclamar; si está vacío, fallback al email de la cuenta.
+    to_email = claim.contact_email
+    if not to_email:
+        claimant_email = (
+            await db.execute(
+                select(User.email).where(User.id == claim.claimant_user_id)
+            )
+        ).scalar_one_or_none()
+        if claimant_email:
+            to_email = str(claimant_email)
+    if to_email:
+        renderers = {
+            "approved": lambda: render_claim_approved(name, slug),
+            "rejected": lambda: render_claim_rejected(name, reason or ""),
+            "revoked": lambda: render_claim_revoked(name, reason or ""),
+        }
+        renderer = renderers.get(event)
+        if renderer is not None:
+            subject, html, txt = renderer()
+            await send_email(
+                to=to_email, subject=subject, html=html, text=txt
+            )
 
 
 async def approve_claim(
@@ -73,6 +152,13 @@ async def approve_claim(
     restaurant.claimed_by_user_id = claim.claimant_user_id
     restaurant.claimed_at = now
 
+    # email-token flow no tiene admin — el claimant se aprueba a sí mismo
+    # clickeando el link del mail, así que actor=claimant en ese caso.
+    actor_id = reviewer_admin_id or claim.claimant_user_id
+    await _record_claim_notification(
+        db, claim, event="approved", actor_user_id=actor_id
+    )
+
     await db.flush()
     notify_claimant(claim, event="approved")
     return claim
@@ -95,6 +181,10 @@ async def reject_claim(
     claim.reviewed_at = datetime.now(timezone.utc)
     claim.reviewed_by_admin_id = reviewer_admin_id
     claim.rejection_reason = reason
+
+    await _record_claim_notification(
+        db, claim, event="rejected", actor_user_id=reviewer_admin_id, reason=reason
+    )
 
     await db.flush()
     notify_claimant(claim, event="rejected", reason=reason)
@@ -131,6 +221,10 @@ async def revoke_claim(
     if restaurant.claimed_by_user_id == claim.claimant_user_id:
         restaurant.claimed_by_user_id = None
         restaurant.claimed_at = None
+
+    await _record_claim_notification(
+        db, claim, event="revoked", actor_user_id=reviewer_admin_id, reason=reason
+    )
 
     await db.flush()
     notify_claimant(claim, event="revoked", reason=reason)

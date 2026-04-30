@@ -14,12 +14,20 @@ class NotificationActor(BaseModel):
 
 class NotificationResponse(BaseModel):
     id: uuid.UUID
-    kind: Literal["like", "comment", "follow"]
+    kind: Literal[
+        "like",
+        "comment",
+        "follow",
+        "claim_approved",
+        "claim_rejected",
+        "claim_revoked",
+    ]
     unread: bool
     created_at: datetime
     actor: NotificationActor
     target_review_id: uuid.UUID | None = None
     target_user_id: uuid.UUID | None = None
+    target_restaurant_id: uuid.UUID | None = None
     text: str
 
 

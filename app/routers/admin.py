@@ -1,8 +1,9 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,7 +11,11 @@ from app.database import get_db
 from app.middleware.auth import hash_password, require_role
 from app.models.category import Category
 from app.models.dish import Dish, DishReview
-from app.models.restaurant import Restaurant
+from app.models.owner_content import (
+    DishReviewOwnerResponse,
+    RestaurantOfficialPhoto,
+)
+from app.models.restaurant import ReservationClick, Restaurant
 from app.models.restaurant_claim import ClaimStatus, RestaurantClaim
 from app.models.user import User, UserRole
 from app.schemas.claim import (
@@ -238,3 +243,139 @@ async def admin_revoke_claim(
     )
     await db.refresh(claim, attribute_names=["restaurant"])
     return _hydrate_claim(claim)
+
+
+# ── B2B metrics ──────────────────────────────────────────────────────────────
+
+
+@router.get("/metrics/b2b", response_model=dict)
+async def get_b2b_metrics(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+) -> dict:
+    """Vista agregada del estado del pilar B2B.
+
+    Pensado para una página /admin/metrics minimal — los numbers crudos sin
+    gráficos. Cuando crezca, mover a un servicio dedicado o un dashboard
+    externo (Grafana, Metabase) que lea directo de la DB.
+    """
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+
+    # ----- Reservas afiliadas -----
+    restaurants_with_url = (
+        await db.execute(
+            select(func.count())
+            .select_from(Restaurant)
+            .where(Restaurant.reservation_url.is_not(None))
+        )
+    ).scalar_one()
+
+    clicks_total = (
+        await db.execute(select(func.count()).select_from(ReservationClick))
+    ).scalar_one()
+    clicks_7d = (
+        await db.execute(
+            select(func.count())
+            .select_from(ReservationClick)
+            .where(ReservationClick.clicked_at >= week_ago)
+        )
+    ).scalar_one()
+    clicks_30d = (
+        await db.execute(
+            select(func.count())
+            .select_from(ReservationClick)
+            .where(ReservationClick.clicked_at >= month_ago)
+        )
+    ).scalar_one()
+
+    top_clicked_rows = (
+        await db.execute(
+            select(
+                Restaurant.slug,
+                Restaurant.name,
+                func.count(ReservationClick.id).label("clicks"),
+            )
+            .join(ReservationClick, ReservationClick.restaurant_id == Restaurant.id)
+            .group_by(Restaurant.slug, Restaurant.name)
+            .order_by(desc("clicks"))
+            .limit(5)
+        )
+    ).all()
+
+    # ----- Claim flow -----
+    claims_by_status_rows = (
+        await db.execute(
+            select(RestaurantClaim.status, func.count())
+            .group_by(RestaurantClaim.status)
+        )
+    ).all()
+    claims_by_status = {status: count for status, count in claims_by_status_rows}
+
+    restaurants_total = (
+        await db.execute(select(func.count()).select_from(Restaurant))
+    ).scalar_one()
+    restaurants_claimed = (
+        await db.execute(
+            select(func.count())
+            .select_from(Restaurant)
+            .where(Restaurant.claimed_by_user_id.is_not(None))
+        )
+    ).scalar_one()
+    claim_coverage_pct = (
+        round(restaurants_claimed * 100 / restaurants_total, 2)
+        if restaurants_total
+        else 0
+    )
+
+    # ----- Owner engagement -----
+    reviews_total = (
+        await db.execute(select(func.count()).select_from(DishReview))
+    ).scalar_one()
+    reviews_with_response = (
+        await db.execute(
+            select(func.count()).select_from(DishReviewOwnerResponse)
+        )
+    ).scalar_one()
+    response_coverage_pct = (
+        round(reviews_with_response * 100 / reviews_total, 2)
+        if reviews_total
+        else 0
+    )
+    official_photos_total = (
+        await db.execute(
+            select(func.count()).select_from(RestaurantOfficialPhoto)
+        )
+    ).scalar_one()
+    restaurants_with_photos = (
+        await db.execute(
+            select(func.count(func.distinct(RestaurantOfficialPhoto.restaurant_id)))
+        )
+    ).scalar_one()
+
+    return {
+        "reservations": {
+            "restaurants_with_url": restaurants_with_url,
+            "clicks_total": clicks_total,
+            "clicks_last_7d": clicks_7d,
+            "clicks_last_30d": clicks_30d,
+            "top_clicked": [
+                {"slug": slug, "name": name, "clicks": clicks}
+                for slug, name, clicks in top_clicked_rows
+            ],
+        },
+        "claims": {
+            "by_status": claims_by_status,
+            "restaurants_total": restaurants_total,
+            "restaurants_claimed": restaurants_claimed,
+            "coverage_pct": claim_coverage_pct,
+        },
+        "owner_engagement": {
+            "reviews_total": reviews_total,
+            "reviews_with_response": reviews_with_response,
+            "response_coverage_pct": response_coverage_pct,
+            "official_photos_total": official_photos_total,
+            "restaurants_with_photos": restaurants_with_photos,
+        },
+    }

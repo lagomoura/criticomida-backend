@@ -98,12 +98,27 @@ async def test_viewer_state_in_feed(async_client_integration, user_a, user_b):
         f"/api/dishes/{dish_id}/want-to-try", cookies=user_b.cookies
     )
 
-    feed = await async_client_integration.get(
-        "/api/feed?type=for_you", cookies=user_b.cookies
+    # Buscamos por páginas porque la suite completa puede crear más reviews
+    # que el limit por defecto (20). Iteramos cursor-based hasta encontrar la
+    # nuestra o agotar pages — si no aparece en 200 reviews, hay un bug.
+    target = None
+    cursor: str | None = None
+    for _ in range(4):
+        url = "/api/feed?type=for_you&limit=50"
+        if cursor:
+            url += f"&cursor={cursor}"
+        page = await async_client_integration.get(url, cookies=user_b.cookies)
+        assert page.status_code == 200
+        body = page.json()
+        target = next(
+            (it for it in body["items"] if it["id"] == review_id), None
+        )
+        if target is not None:
+            break
+        cursor = body.get("next_cursor")
+        if not cursor:
+            break
+    assert target is not None, (
+        f"review {review_id} not found in user_b's for_you feed"
     )
-    assert feed.status_code == 200
-    target = next(
-        (it for it in feed.json()["items"] if it["id"] == review_id), None
-    )
-    assert target is not None
     assert target["viewer_state"]["want_to_try"] is True
