@@ -175,6 +175,10 @@ class RestaurantResponse(BaseModel):
     reservation_partner_meta: dict | None = None
     # ----- Claim flow (migration 024) -----
     is_claimed: bool = False
+    # True solo si el viewer actual es el verified owner de este restaurant.
+    # No se expone la identidad del owner; este flag permite gating de UI sin
+    # doxear quién es.
+    viewer_is_owner: bool = False
 
     model_config = {"from_attributes": True}
 

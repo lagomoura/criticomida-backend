@@ -170,7 +170,8 @@ async def get_restaurant(
     slug: str,
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> Restaurant:
+    current_user: Annotated[User | None, Depends(get_current_user_optional)],
+) -> RestaurantResponse:
     restaurant = await get_restaurant_detail(db, slug)
     if restaurant is None:
         # Slug may belong to a restaurant that was merged into another. Look up
@@ -193,7 +194,13 @@ async def get_restaurant(
         background_tasks.add_task(
             _refresh_in_background, restaurant.id
         )
-    return restaurant
+    response = RestaurantResponse.model_validate(restaurant)
+    response.viewer_is_owner = (
+        current_user is not None
+        and restaurant.claimed_by_user_id is not None
+        and restaurant.claimed_by_user_id == current_user.id
+    )
+    return response
 
 
 async def _refresh_in_background(restaurant_id) -> None:
