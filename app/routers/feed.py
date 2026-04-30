@@ -338,6 +338,7 @@ async def get_feed(
     db: Annotated[AsyncSession, Depends(get_db)],
     viewer: Annotated[User | None, Depends(get_current_user_optional)],
     type: Literal["for_you", "following"] = Query(default="for_you"),
+    sort: Literal["recent", "top"] = Query(default="recent"),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
 ) -> FeedPage:
@@ -360,6 +361,11 @@ async def get_feed(
             )
         )
 
+    # 'for_you' siempre rankea por priority (sort se ignora).
+    # 'following' default es cronológico; 'sort=top' aplica la misma fórmula
+    # de priority para subir lo mejor puntuado de los críticos seguidos.
+    rank_by_priority = type == "for_you" or (type == "following" and sort == "top")
+
     items, has_more = await _build_feed_items(
         db,
         viewer,
@@ -367,7 +373,7 @@ async def get_feed(
         cursor_dt,
         limit,
         with_extras=False,
-        rank_by_priority=(type == "for_you"),
+        rank_by_priority=rank_by_priority,
         diversify_by_restaurant=(type == "for_you"),
     )
     next_cursor = items[-1].created_at.isoformat() if has_more and items else None

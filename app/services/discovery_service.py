@@ -279,6 +279,7 @@ async def discover_restaurants_in_bbox(
     limit: int = 200,
     sort: BboxSortKey = "geek_score",
     include_empty: bool = False,
+    chef_only: bool = False,
 ) -> MapBboxResponse:
     """Restaurantes dentro del bbox con su Golden Dish y Best Value precomputados.
 
@@ -290,6 +291,12 @@ async def discover_restaurants_in_bbox(
     Cuando `include_empty=true`, después de los locales con reviews se
     agregan locales del bbox sin ninguna review (con flag `is_empty=true`),
     pensados para CTAs tipo "sé el primero en reseñar".
+
+    Cuando `chef_only=true`, se filtra a solo restaurantes con al menos un
+    plato Chef Badge (`execution_avg ≥ BADGE_AVG_THRESHOLD` y ≥
+    `MIN_REVIEWS_FOR_BADGE` reviews). Los locales sin reviews se excluyen
+    aun si `include_empty=true`, ya que por definición no pueden tener
+    Chef Badge.
     """
     trending_cutoff = datetime.now(timezone.utc) - timedelta(hours=TRENDING_WINDOW_HOURS)
 
@@ -492,14 +499,19 @@ async def discover_restaurants_in_bbox(
                 bestvals, bestvals.c.restaurant_id == goldens.c.restaurant_id
             )
         )
-        .order_by(sort_column, desc(goldens.c.top_geek), goldens.c.restaurant_id)
-        .limit(limit)
     )
+    if chef_only:
+        final = final.where(goldens.c.has_chef_badge.is_(True))
+    final = final.order_by(
+        sort_column, desc(goldens.c.top_geek), goldens.c.restaurant_id
+    ).limit(limit)
 
     rows = (await db.execute(final)).all()
     items = [_row_to_pin(r) for r in rows]
 
-    if include_empty:
+    # Locales sin reviews no pueden tener Chef Badge — los suprimimos cuando
+    # se pidió `chef_only`, aun si `include_empty` está activo.
+    if include_empty and not chef_only:
         remaining = max(0, limit - len(items))
         if remaining > 0:
             empty_rows = await _fetch_empty_restaurants(

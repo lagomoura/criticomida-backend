@@ -130,12 +130,16 @@ async def restaurants_in_bbox(
     limit: int = Query(default=200, ge=1, le=500),
     sort: str = Query(default="geek_score"),
     include_empty: bool = Query(default=False),
+    chef_only: bool = Query(default=False),
 ) -> MapBboxResponse:
     """Restaurantes dentro del bbox + sus platos destacados.
 
     `sort`: `geek_score` (default) | `value_prop` | `trending`.
     `include_empty=true` agrega también locales sin reviews (pines grises
     para CTAs "sé el primero en reseñar").
+    `chef_only=true` filtra a solo restaurantes con Chef Badge (al menos un
+    plato con execution_avg ≥ 2.7 y suficientes reviews). Cuando se combina
+    con `include_empty`, los locales sin reviews quedan excluidos.
     """
     if min_lat > max_lat or min_lng > max_lng:
         raise HTTPException(
@@ -156,6 +160,7 @@ async def restaurants_in_bbox(
         limit=limit,
         sort=sort,
         include_empty=include_empty,
+        chef_only=chef_only,
     )
 
 
