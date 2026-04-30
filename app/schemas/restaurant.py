@@ -113,6 +113,9 @@ class RestaurantCreate(BaseModel):
     google_maps_url: str | None = None
     price_level: int | None = None
     opening_hours: list[str] | None = None
+    reservation_url: str | None = None
+    reservation_provider: str | None = Field(None, max_length=32)
+    reservation_partner_meta: dict | None = None
 
 
 class RestaurantUpdate(BaseModel):
@@ -130,6 +133,21 @@ class RestaurantUpdate(BaseModel):
     google_maps_url: str | None = None
     price_level: int | None = None
     opening_hours: list[str] | None = None
+    reservation_url: str | None = None
+    reservation_provider: str | None = Field(None, max_length=32)
+    reservation_partner_meta: dict | None = None
+
+
+class OfficialPhotoEmbedded(BaseModel):
+    """Versión light que viaja embebida en RestaurantResponse — el endpoint
+    dedicado /official-photos sigue devolviendo el shape completo."""
+
+    id: uuid.UUID
+    url: str
+    alt_text: str | None = None
+    display_order: int = 0
+
+    model_config = {"from_attributes": True}
 
 
 class RestaurantResponse(BaseModel):
@@ -163,6 +181,20 @@ class RestaurantResponse(BaseModel):
     editorial_summary_lang: str | None = None
     cuisine_types: list[str] | None = None
     google_cached_at: datetime | None = None
+    # ----- Reservas afiliadas (migration 023) -----
+    reservation_url: str | None = None
+    reservation_provider: str | None = None
+    reservation_partner_meta: dict | None = None
+    # ----- Claim flow (migration 024) -----
+    is_claimed: bool = False
+    # True solo si el viewer actual es el verified owner de este restaurant.
+    # No se expone la identidad del owner; este flag permite gating de UI sin
+    # doxear quién es.
+    viewer_is_owner: bool = False
+    # ----- Owner content (migration 025) -----
+    # Fotos subidas por el verified owner. El frontend las prioriza sobre
+    # google_photos en el hero del detail page.
+    official_photos: list[OfficialPhotoEmbedded] = []
 
     model_config = {"from_attributes": True}
 
@@ -235,8 +267,23 @@ class RestaurantListResponse(BaseModel):
     computed_rating: Decimal
     review_count: int
     category: CategoryResponse | None = None
+    has_reservation: bool = False
+    reservation_provider: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ReservationClickCreate(BaseModel):
+    """Body de POST /api/restaurants/{slug}/reservation-click.
+
+    `provider` puede no coincidir con el del restaurante si el partner tiene
+    múltiples canales — lo aceptamos tal cual viene del frontend para auditoría.
+    """
+
+    provider: str | None = Field(None, max_length=32)
+    referrer: str | None = None
+    utm: dict | None = None
+    session_id: str | None = Field(None, max_length=128)
 
 
 class RatingDimensionCreate(BaseModel):

@@ -1,15 +1,32 @@
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.middleware.auth import hash_password, require_role
 from app.models.category import Category
 from app.models.dish import Dish, DishReview
 from app.models.restaurant import Restaurant
+from app.models.restaurant_claim import ClaimStatus, RestaurantClaim
 from app.models.user import User, UserRole
+from app.schemas.claim import (
+    ClaimAdminListResponse,
+    ClaimAdminResponse,
+    ClaimApproveBody,
+    ClaimClaimantSummary,
+    ClaimRejectBody,
+    ClaimRestaurantSummary,
+    ClaimRevokeBody,
+)
+from app.services.claim_service import (
+    approve_claim,
+    reject_claim,
+    revoke_claim,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -88,3 +105,136 @@ async def seed_data(
         "message": "Seed data applied successfully",
         "categories_created": created_categories,
     }
+
+
+# ── Claim review queue ───────────────────────────────────────────────────────
+
+
+def _hydrate_claim(claim: RestaurantClaim) -> ClaimAdminResponse:
+    return ClaimAdminResponse(
+        id=claim.id,
+        status=ClaimStatus(claim.status),
+        verification_method=claim.verification_method,
+        contact_email=claim.contact_email,
+        evidence_urls=claim.evidence_urls,
+        submitted_at=claim.submitted_at,
+        reviewed_at=claim.reviewed_at,
+        rejection_reason=claim.rejection_reason,
+        expires_at=claim.expires_at,
+        restaurant=ClaimRestaurantSummary(
+            id=claim.restaurant.id,
+            slug=claim.restaurant.slug,
+            name=claim.restaurant.name,
+            location_name=claim.restaurant.location_name,
+            is_claimed=claim.restaurant.claimed_by_user_id is not None,
+        ),
+        claimant=ClaimClaimantSummary.model_validate(claim.claimant),
+    )
+
+
+async def _get_claim_or_404(
+    db: AsyncSession, claim_id: uuid.UUID
+) -> RestaurantClaim:
+    rows = await db.execute(
+        select(RestaurantClaim)
+        .options(
+            selectinload(RestaurantClaim.restaurant),
+            selectinload(RestaurantClaim.claimant),
+        )
+        .where(RestaurantClaim.id == claim_id)
+    )
+    claim = rows.scalar_one_or_none()
+    if claim is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Claim not found"
+        )
+    return claim
+
+
+@router.get("/claims", response_model=ClaimAdminListResponse)
+async def list_admin_claims(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+    status_filter: ClaimStatus | None = Query(default=None, alias="status"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    stmt = select(RestaurantClaim).options(
+        selectinload(RestaurantClaim.restaurant),
+        selectinload(RestaurantClaim.claimant),
+    )
+    if status_filter is not None:
+        stmt = stmt.where(RestaurantClaim.status == status_filter.value)
+
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    offset = (page - 1) * page_size
+    stmt = (
+        stmt.order_by(RestaurantClaim.submitted_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return {
+        "items": [_hydrate_claim(c) for c in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+@router.post("/claims/{claim_id}/approve", response_model=ClaimAdminResponse)
+async def admin_approve_claim(
+    claim_id: uuid.UUID,
+    payload: ClaimApproveBody,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+) -> ClaimAdminResponse:
+    claim = await _get_claim_or_404(db, claim_id)
+    await approve_claim(
+        db,
+        claim,
+        reviewer_admin_id=current_user.id,
+        notes=payload.notes,
+    )
+    await db.refresh(claim, attribute_names=["restaurant"])
+    return _hydrate_claim(claim)
+
+
+@router.post("/claims/{claim_id}/reject", response_model=ClaimAdminResponse)
+async def admin_reject_claim(
+    claim_id: uuid.UUID,
+    payload: ClaimRejectBody,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+) -> ClaimAdminResponse:
+    claim = await _get_claim_or_404(db, claim_id)
+    await reject_claim(
+        db,
+        claim,
+        reviewer_admin_id=current_user.id,
+        reason=payload.reason,
+    )
+    return _hydrate_claim(claim)
+
+
+@router.post("/claims/{claim_id}/revoke", response_model=ClaimAdminResponse)
+async def admin_revoke_claim(
+    claim_id: uuid.UUID,
+    payload: ClaimRevokeBody,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.admin))],
+) -> ClaimAdminResponse:
+    claim = await _get_claim_or_404(db, claim_id)
+    await revoke_claim(
+        db,
+        claim,
+        reviewer_admin_id=current_user.id,
+        reason=payload.reason,
+    )
+    await db.refresh(claim, attribute_names=["restaurant"])
+    return _hydrate_claim(claim)

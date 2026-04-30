@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     Date,
     DateTime,
     Enum,
@@ -82,6 +83,17 @@ class Restaurant(Base):
     google_cached_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # ----- Reservas afiliadas (migration 023) -----
+    reservation_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reservation_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reservation_partner_meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # ----- Claim flow (migration 024) -----
+    claimed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     computed_rating: Mapped[Decimal] = mapped_column(
         Numeric(3, 2), default=Decimal("0"), nullable=False
     )
@@ -119,6 +131,25 @@ class Restaurant(Base):
     menu: Mapped["Menu | None"] = relationship(  # noqa: F821
         back_populates="restaurant", uselist=False
     )
+    official_photos: Mapped[list["RestaurantOfficialPhoto"]] = relationship(  # noqa: F821
+        primaryjoin=(
+            "Restaurant.id == foreign(RestaurantOfficialPhoto.restaurant_id)"
+        ),
+        order_by=(
+            "(RestaurantOfficialPhoto.display_order, "
+            "RestaurantOfficialPhoto.created_at)"
+        ),
+        viewonly=True,
+        lazy="selectin",
+    )
+
+    @property
+    def has_reservation(self) -> bool:
+        return bool(self.reservation_url)
+
+    @property
+    def is_claimed(self) -> bool:
+        return self.claimed_by_user_id is not None
 
 
 class RestaurantRatingDimension(Base):
@@ -183,3 +214,26 @@ class VisitDiaryEntry(Base):
 
     # Relationships
     restaurant: Mapped["Restaurant"] = relationship(back_populates="diary_entries")
+
+
+class ReservationClick(Base):
+    """Click en el CTA "Reservar Mesa" — alimenta CTR para validar el pilar B2B."""
+
+    __tablename__ = "reservation_clicks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    restaurant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    clicked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    referrer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
