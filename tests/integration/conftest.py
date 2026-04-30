@@ -105,11 +105,20 @@ async def create_review(
     score: float = 4.0,
     text: str = "Review de prueba generada por integration tests.",
     city: str | None = "Buenos Aires",
+    latitude: float = -34.6,
+    longitude: float = -58.4,
+    presentation: int | None = None,
+    value_prop: int | None = None,
+    execution: int | None = None,
 ) -> str:
     """POST /api/posts and return the created review's id.
 
     Uses a fresh place_id per call unless caller overrides, so two reviews by
     the same user never collide on unique(dish_id, user_id).
+
+    `presentation`, `value_prop`, `execution`: pilares técnicos (1-3) — usá
+    estos en tests que validan `verified_by_expert`, notificación
+    enriquecida o reputation por categoría.
     """
     pid = place_id or f"pytest_place_{uuid.uuid4().hex[:10]}"
     payload: dict[str, Any] = {
@@ -118,13 +127,19 @@ async def create_review(
             "name": restaurant_name,
             "formatted_address": f"{restaurant_name}, {city or 'BA'}",
             "city": city,
-            "latitude": -34.6,
-            "longitude": -58.4,
+            "latitude": latitude,
+            "longitude": longitude,
         },
         "dish_name": dish_name,
         "score": score,
         "text": text,
     }
+    if presentation is not None or value_prop is not None or execution is not None:
+        payload["extras"] = {
+            "presentation": presentation,
+            "value_prop": value_prop,
+            "execution": execution,
+        }
     r = await client.post("/api/posts", json=payload, cookies=cookies)
     assert r.status_code == 201, r.text
     return r.json()["id"]

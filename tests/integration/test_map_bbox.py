@@ -396,3 +396,110 @@ async def test_bbox_include_empty_adds_restaurants_without_reviews(async_client_
     assert by_name["Resto Vacio"]["is_empty"] is True
     assert by_name["Resto Vacio"]["golden_dish"] is None
     assert by_name["Resto Con Reviews"]["is_empty"] is False
+
+
+# --- Fase 4: chef_only=true filtra a restos con Chef Badge --------------------
+
+
+@pytest.mark.asyncio
+async def test_bbox_chef_only_keeps_only_chef_restos(async_client_integration):
+    """chef_only=true filtra a locales con al menos un plato Chef Badge.
+
+    Setup: 2 restos en CABA — uno con 5 reviews execution=3 (gana Chef
+    Badge), otro con 1 review execution=3 (no califica por shrinkage).
+    """
+    pid_chef = f"pytest_place_{uuid.uuid4().hex[:8]}"
+    pid_no_chef = f"pytest_place_{uuid.uuid4().hex[:8]}"
+
+    # Resto con Chef Badge: 5 reviews exec=3 sobre el mismo plato.
+    for _ in range(5):
+        u = await register_and_login(async_client_integration)
+        await _post_review_with_pillars(
+            async_client_integration,
+            u.cookies,
+            place_id=pid_chef,
+            restaurant_name="Resto Chef Filter",
+            dish_name="Plato Chef",
+            score=4.5,
+            execution=3,
+        )
+    # Resto sin Chef Badge: 1 sola review exec=3 (no llega al MIN_REVIEWS_FOR_BADGE).
+    u = await register_and_login(async_client_integration)
+    await _post_review_with_pillars(
+        async_client_integration,
+        u.cookies,
+        place_id=pid_no_chef,
+        restaurant_name="Resto Sin Chef Filter",
+        dish_name="Plato",
+        score=5.0,
+        execution=3,
+    )
+
+    # Sin chef_only ambos aparecen.
+    r_all = await async_client_integration.get(f"/api/restaurants/in-bbox?{BBOX_PARAMS}")
+    assert r_all.status_code == 200
+    names_all = {it["name"] for it in r_all.json()["items"]}
+    assert "Resto Chef Filter" in names_all
+    assert "Resto Sin Chef Filter" in names_all
+
+    # Con chef_only=true solo aparece el Chef.
+    r_chef = await async_client_integration.get(
+        f"/api/restaurants/in-bbox?{BBOX_PARAMS}&chef_only=true"
+    )
+    assert r_chef.status_code == 200
+    items = r_chef.json()["items"]
+    names_chef = {it["name"] for it in items}
+    assert "Resto Chef Filter" in names_chef
+    assert "Resto Sin Chef Filter" not in names_chef
+    # Cualquier resto en la respuesta debe tener has_chef_badge=True.
+    for it in items:
+        assert it["has_chef_badge"] is True, (
+            f"{it['name']} apareció con chef_only=true pero no tiene Chef Badge"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bbox_chef_only_overrides_include_empty(async_client_integration):
+    """Locales sin reviews no pueden tener Chef Badge; chef_only los excluye
+    incluso con include_empty=true."""
+    user = await register_and_login(async_client_integration)
+    pid_chef = f"pytest_place_{uuid.uuid4().hex[:8]}"
+    pid_empty = f"pytest_place_{uuid.uuid4().hex[:8]}"
+
+    # Resto con Chef Badge.
+    for _ in range(4):
+        u = await register_and_login(async_client_integration)
+        await _post_review_with_pillars(
+            async_client_integration,
+            u.cookies,
+            place_id=pid_chef,
+            restaurant_name="Resto Chef Override",
+            dish_name="Plato Chef",
+            score=5.0,
+            execution=3,
+        )
+
+    # Resto vacío (sin reviews) — requiere endpoint de creación de restaurant.
+    create_resp = await async_client_integration.post(
+        "/api/restaurants",
+        json={
+            "google_place_id": pid_empty,
+            "name": "Resto Vacio Chef Test",
+            "city": "Buenos Aires",
+            "latitude": -34.6,
+            "longitude": -58.4,
+        },
+        cookies=user.cookies,
+    )
+    if create_resp.status_code in (401, 403):
+        pytest.skip("Restaurant create requires admin/critic role")
+    assert create_resp.status_code in (200, 201), create_resp.text
+
+    # chef_only=true + include_empty=true → el empty sigue suprimido.
+    r = await async_client_integration.get(
+        f"/api/restaurants/in-bbox?{BBOX_PARAMS}&chef_only=true&include_empty=true"
+    )
+    assert r.status_code == 200
+    names = {it["name"] for it in r.json()["items"]}
+    assert "Resto Chef Override" in names
+    assert "Resto Vacio Chef Test" not in names
