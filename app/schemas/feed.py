@@ -67,6 +67,9 @@ class FeedItem(BaseModel):
     # (presentation + value_prop + execution NOT NULL). El frontend lo usa
     # para resaltarla con sello "Verificada por experto".
     verified_by_expert: bool = False
+    # Posición del autor entre los primeros reseñadores del plato (1, 2 o 3).
+    # None para el resto. Rankea por created_at ASC, id ASC para desempatar.
+    discovery_rank: Literal[1, 2, 3] | None = None
 
 
 class FeedPage(BaseModel):

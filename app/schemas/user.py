@@ -1,9 +1,12 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models.user import UserRole
+
+MasteryLevel = Literal["apprentice", "sommelier", "master"]
 
 
 class UserCreate(BaseModel):
@@ -61,12 +64,28 @@ class CategoryStat(BaseModel):
     `score` es el ranking interno (rating × log(1+count)) que usa el backend
     para elegir las top categorías; el frontend lo ignora a la hora de
     renderizar pero puede usarlo para tie-breaking.
+
+    `mastery_level` clasifica al usuario en esa categoría según volumen y
+    promedio. Niveles escalonados: aprendiz → sommelier → maestro. None
+    cuando no llega al umbral mínimo (3 reseñas y avg ≥ 3.5).
     """
 
     name: str
     review_count: int
     avg_rating: float
     score: float
+    mastery_level: MasteryLevel | None = None
+
+
+class FeaturedTitle(BaseModel):
+    """Título destacado que el usuario "lleva" en el feed (chip junto al nombre).
+
+    Se elige el de mayor nivel de maestría; tie-break por mayor `review_count`.
+    None cuando ninguna categoría alcanza el nivel `apprentice`.
+    """
+
+    category: str
+    level: MasteryLevel
 
 
 class UserReputation(BaseModel):
@@ -78,11 +97,14 @@ class UserReputation(BaseModel):
     - `top_categories`: hasta 3 categorías donde el usuario tiene volumen
       ≥ 2 y mejor combinación de volumen + rating. Sirve como "especialidad"
       del crítico.
+    - `featured_title`: el título de maestría más alto alcanzado, listo para
+      renderizar como chip junto al nombre.
     """
 
     verified_review_count: int = 0
     restaurants_visited: int = 0
     top_categories: list[CategoryStat] = []
+    featured_title: FeaturedTitle | None = None
 
 
 class PublicViewerState(BaseModel):

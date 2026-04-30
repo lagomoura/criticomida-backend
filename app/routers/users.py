@@ -19,6 +19,8 @@ from app.models.user import User
 from app.schemas.feed import FeedPage
 from app.schemas.user import (
     CategoryStat,
+    FeaturedTitle,
+    MasteryLevel,
     PublicUserResponse,
     PublicViewerState,
     UserCounts,
@@ -151,6 +153,23 @@ async def get_public_profile(
 _MIN_REVIEWS_PER_CATEGORY = 2
 _TOP_CATEGORIES_LIMIT = 3
 
+# Umbrales escalonados de "maestría" en una categoría. El gastronerd colecciona
+# títulos: apprentice → sommelier → master. None cuando no llega al primero.
+# Los pisos de avg_rating evitan que el volumen solo otorgue título.
+_MASTERY_TIERS: tuple[tuple[MasteryLevel, int, float], ...] = (
+    ("master", 25, 4.0),
+    ("sommelier", 10, 3.8),
+    ("apprentice", 3, 3.5),
+)
+_LEVEL_RANK: dict[MasteryLevel, int] = {"apprentice": 1, "sommelier": 2, "master": 3}
+
+
+def _classify_mastery(review_count: int, avg_rating: float) -> MasteryLevel | None:
+    for level, min_count, min_avg in _MASTERY_TIERS:
+        if review_count >= min_count and avg_rating >= min_avg:
+            return level
+    return None
+
 
 async def _build_reputation(
     db: AsyncSession, user_id: uuid.UUID
@@ -211,14 +230,28 @@ async def _build_reputation(
                 review_count=count,
                 avg_rating=round(avg, 2),
                 score=round(score, 4),
+                mastery_level=_classify_mastery(count, avg),
             )
         )
     scored.sort(key=lambda c: c.score, reverse=True)
+
+    # Featured title: el de mayor nivel; tie-break por review_count.
+    titled = [c for c in scored if c.mastery_level is not None]
+    titled.sort(
+        key=lambda c: (_LEVEL_RANK[c.mastery_level], c.review_count),  # type: ignore[index]
+        reverse=True,
+    )
+    featured = (
+        FeaturedTitle(category=titled[0].name, level=titled[0].mastery_level)  # type: ignore[arg-type]
+        if titled
+        else None
+    )
 
     return UserReputation(
         verified_review_count=int(verified),
         restaurants_visited=int(visited),
         top_categories=scored[:_TOP_CATEGORIES_LIMIT],
+        featured_title=featured,
     )
 
 

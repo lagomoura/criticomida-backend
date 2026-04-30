@@ -9,7 +9,8 @@ Promise.allSettled.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from decimal import Decimal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import case, func, select
@@ -28,6 +29,9 @@ from app.schemas.dish_aggregates import (
     DishEditorialBlurb,
     DishPhotosPage,
     DishSocialDetailEnriched,
+    DishTimelineBucket,
+    DishTimelineResponse,
+    FirstDiscoverer,
     RelatedDishesResponse,
 )
 from app.schemas.feed import FeedPage
@@ -90,6 +94,46 @@ async def get_dish_social(
         )
         want_to_try = wtt_row.scalar_one_or_none() is not None
 
+    # Cronistas fundadores: los 3 primeros reseñadores DISTINTOS, ordenados
+    # por created_at asc; desempate por DishReview.id. Anónimos no aparecen
+    # como "fundadores" porque pierde la narrativa ("quién llegó primero").
+    # Si un usuario tiene varias reseñas del mismo plato, contamos solo la
+    # más temprana (ese fue el momento en que "descubrió" el plato).
+    rn_per_user = func.row_number().over(
+        partition_by=DishReview.user_id,
+        order_by=[DishReview.created_at.asc(), DishReview.id.asc()],
+    ).label("rn_per_user")
+    earliest_per_user = (
+        select(
+            DishReview.id.label("review_id"),
+            rn_per_user,
+        )
+        .where(DishReview.dish_id == dish_id, DishReview.is_anonymous.is_(False))
+        .subquery()
+    )
+    first_rows = (
+        await db.execute(
+            select(DishReview, User)
+            .join(earliest_per_user, earliest_per_user.c.review_id == DishReview.id)
+            .join(User, User.id == DishReview.user_id)
+            .where(earliest_per_user.c.rn_per_user == 1)
+            .order_by(DishReview.created_at.asc(), DishReview.id.asc())
+            .limit(3)
+        )
+    ).all()
+    first_discoverers = [
+        FirstDiscoverer(
+            rank=idx + 1,  # type: ignore[arg-type]
+            user_id=usr.id,
+            handle=usr.handle,
+            display_name=usr.display_name,
+            avatar_url=usr.avatar_url,
+            discovered_at=rev.created_at,
+            review_id=rev.id,
+        )
+        for idx, (rev, usr) in enumerate(first_rows)
+    ]
+
     return {
         "id": dish.id,
         "name": dish.name,
@@ -115,6 +159,7 @@ async def get_dish_social(
         "editorial_source": dish.editorial_blurb_source,
         "created_by_display_name": creator.display_name if creator else None,
         "want_to_try": want_to_try,
+        "first_discoverers": first_discoverers,
     }
 
 
@@ -181,6 +226,90 @@ async def get_dish_photos_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail="Dish not found"
         )
     return await get_dish_photos(db, dish_id, limit=limit, cursor=cursor)
+
+
+@router.get("/{dish_id}/timeline", response_model=DishTimelineResponse)
+async def get_dish_timeline(
+    dish_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    granularity: Literal["quarter", "month"] = Query(default="quarter"),
+) -> DishTimelineResponse:
+    """Evolución del plato a lo largo del tiempo: rating + 3 pilares por bucket.
+
+    Agrupa por trimestre (default) o mes usando `date_tasted`. Reseñas sin
+    `date_tasted` se ignoran (en la práctica son raras: el form lo pide).
+    El frontend muestra esto como narrativa del gastronerd ("¿cómo cambió este
+    plato a lo largo del tiempo?") — el quick-win clave del anzuelo.
+    """
+    exists = (
+        await db.execute(select(Dish.id).where(Dish.id == dish_id).limit(1))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Dish not found"
+        )
+
+    if granularity == "quarter":
+        period_expr = func.concat(
+            func.to_char(DishReview.date_tasted, "YYYY"),
+            "-Q",
+            func.to_char(DishReview.date_tasted, "Q"),
+        )
+    else:
+        period_expr = func.to_char(DishReview.date_tasted, "YYYY-MM")
+
+    rows = (
+        await db.execute(
+            select(
+                period_expr.label("period"),
+                func.count(DishReview.id).label("review_count"),
+                func.avg(DishReview.rating).label("avg_rating"),
+                func.avg(DishReview.presentation).label("presentation_avg"),
+                func.avg(DishReview.value_prop).label("value_prop_avg"),
+                func.avg(DishReview.execution).label("execution_avg"),
+            )
+            .where(
+                DishReview.dish_id == dish_id,
+                DishReview.date_tasted.is_not(None),
+            )
+            .group_by(period_expr)
+            .order_by(period_expr.asc())
+        )
+    ).all()
+
+    buckets: list[DishTimelineBucket] = []
+    prev_avg: float | None = None
+    for r in rows:
+        avg_f = float(r.avg_rating) if r.avg_rating is not None else 0.0
+        delta = (
+            Decimal(str(round(avg_f - prev_avg, 2))) if prev_avg is not None else None
+        )
+        buckets.append(
+            DishTimelineBucket(
+                period=str(r.period),
+                review_count=int(r.review_count or 0),
+                avg_rating=Decimal(str(round(avg_f, 2))),
+                presentation_avg=(
+                    round(float(r.presentation_avg), 2)
+                    if r.presentation_avg is not None
+                    else None
+                ),
+                value_prop_avg=(
+                    round(float(r.value_prop_avg), 2)
+                    if r.value_prop_avg is not None
+                    else None
+                ),
+                execution_avg=(
+                    round(float(r.execution_avg), 2)
+                    if r.execution_avg is not None
+                    else None
+                ),
+                delta_rating=delta,
+            )
+        )
+        prev_avg = avg_f
+
+    return DishTimelineResponse(granularity=granularity, buckets=buckets)
 
 
 @router.get("/{dish_id}/diary-stats", response_model=DishDiaryStats)

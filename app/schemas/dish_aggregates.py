@@ -79,6 +79,23 @@ class RecentEater(BaseModel):
     avatar_url: str | None = None
 
 
+class FirstDiscoverer(BaseModel):
+    """Uno de los 3 primeros reseñadores del plato (cronista fundador).
+
+    `rank` 1 = el primer humano que dejó constancia del plato.
+    `discovered_at` es el `created_at` de su reseña (no `date_tasted`, que es
+    editable y rompería la idea de "quién llegó primero").
+    """
+
+    rank: Literal[1, 2, 3]
+    user_id: uuid.UUID
+    handle: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    discovered_at: datetime
+    review_id: uuid.UUID
+
+
 class DishDiaryStats(BaseModel):
     unique_eaters: int
     reviews_total: int
@@ -111,6 +128,28 @@ class DishEditorialBlurb(BaseModel):
     cached_at: datetime | None = None
 
 
+class DishTimelineBucket(BaseModel):
+    """Resumen agregado de un período (trimestre o mes) en la evolución del plato.
+
+    Los averages de pilares solo se calculan sobre reseñas que tienen el pilar
+    seteado (no NULL); `review_count` es el total de reseñas del bucket
+    independiente de los pilares.
+    """
+
+    period: str  # "2025-Q1" o "2025-03" según granularity
+    review_count: int
+    avg_rating: Decimal
+    presentation_avg: float | None = None
+    value_prop_avg: float | None = None
+    execution_avg: float | None = None
+    delta_rating: Decimal | None = None  # vs bucket anterior; None en el primero
+
+
+class DishTimelineResponse(BaseModel):
+    granularity: Literal["quarter", "month"]
+    buckets: list[DishTimelineBucket]
+
+
 class DishSocialDetailEnriched(BaseModel):
     """Enriched dish detail consumed by the new /dishes/[id] page."""
 
@@ -138,3 +177,4 @@ class DishSocialDetailEnriched(BaseModel):
     editorial_source: str | None = None
     created_by_display_name: str | None = None
     want_to_try: bool = False
+    first_discoverers: list[FirstDiscoverer] = []

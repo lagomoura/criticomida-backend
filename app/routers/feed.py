@@ -65,6 +65,56 @@ def _author_for_row(user: User, is_anonymous: bool) -> FeedAuthor:
     )
 
 
+async def _discovery_ranks_for_dishes(
+    db: AsyncSession, dish_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """Devuelve {review_id: rank} para los primeros 3 reseñadores DISTINTOS
+    de cada plato.
+
+    Si un usuario tiene varias reseñas del mismo plato, solo la más temprana
+    cuenta como "descubrimiento" (rank 1/2/3). Las posteriores quedan sin
+    rank — el usuario no descubre dos veces el mismo plato.
+
+    Implementación con dos windows: la primera deduplica por usuario dentro
+    del plato (rn_per_user=1 = la reseña más temprana del usuario en ese
+    plato), la segunda rankea entre esas reseñas únicas.
+    """
+    if not dish_ids:
+        return {}
+    rn_per_user = func.row_number().over(
+        partition_by=[DishReview.dish_id, DishReview.user_id],
+        order_by=[DishReview.created_at.asc(), DishReview.id.asc()],
+    ).label("rn_per_user")
+    earliest_per_user = (
+        select(
+            DishReview.id.label("review_id"),
+            DishReview.dish_id.label("dish_id"),
+            DishReview.created_at.label("created_at"),
+            rn_per_user,
+        )
+        .where(DishReview.dish_id.in_(dish_ids))
+        .subquery()
+    )
+    rn = func.row_number().over(
+        partition_by=earliest_per_user.c.dish_id,
+        order_by=[
+            earliest_per_user.c.created_at.asc(),
+            earliest_per_user.c.review_id.asc(),
+        ],
+    ).label("rn")
+    ranked = (
+        select(earliest_per_user.c.review_id.label("review_id"), rn)
+        .where(earliest_per_user.c.rn_per_user == 1)
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(ranked.c.review_id, ranked.c.rn).where(ranked.c.rn <= 3)
+        )
+    ).all()
+    return {row.review_id: int(row.rn) for row in rows}
+
+
 async def _images_for_reviews(
     db: AsyncSession, review_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[FeedMediaImage]]:
@@ -244,6 +294,12 @@ async def _build_feed_items(
     review_ids = [r[0].id for r in trimmed]
     images_by_review = await _images_for_reviews(db, review_ids)
 
+    # Rank de descubrimiento: para cada plato presente en la página, los
+    # primeros 3 reseñadores (created_at ASC, id ASC para desempatar) reciben
+    # rank 1/2/3. Una sola query con ROW_NUMBER en lugar de N queries.
+    dish_ids = list({r[2].id for r in trimmed})
+    discovery_ranks = await _discovery_ranks_for_dishes(db, dish_ids)
+
     pros_cons_by_review: dict[uuid.UUID, tuple[list[str], list[str]]] = {}
     tags_by_review: dict[uuid.UUID, list[str]] = {}
     if with_extras and review_ids:
@@ -333,6 +389,7 @@ async def _build_feed_items(
                 ),
                 extras=extras,
                 verified_by_expert=verified,
+                discovery_rank=discovery_ranks.get(review.id),  # type: ignore[arg-type]
             )
         )
 
