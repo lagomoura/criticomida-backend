@@ -31,6 +31,7 @@ from app.routers import (
     likes,
     menus,
     notifications,
+    owner_content,
     posts,
     ratings,
     reports,
@@ -123,6 +124,7 @@ def create_app(
     application.include_router(menus.router)
     application.include_router(admin.router)
     application.include_router(claims.router)
+    application.include_router(owner_content.router)
 
     uploads_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),

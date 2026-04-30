@@ -136,6 +136,28 @@ async def revoke_claim(
     return claim
 
 
+async def assert_verified_owner(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    restaurant_id: uuid.UUID,
+) -> None:
+    """Levanta 403 si el user no es el verified owner del restaurant.
+
+    Centralizamos el chequeo acá para que cualquier endpoint que desbloquee
+    permisos (responder reviews, fotos oficiales, futuro analytics)
+    aplique la misma regla."""
+    row = await db.execute(
+        select(Restaurant.claimed_by_user_id).where(Restaurant.id == restaurant_id)
+    )
+    owner = row.scalar_one_or_none()
+    if owner is None or owner != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el dueño verificado del restaurante puede hacer esta acción",
+        )
+
+
 def notify_claimant(
     claim: RestaurantClaim,
     *,

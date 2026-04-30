@@ -13,6 +13,10 @@ from app.models.restaurant_claim import (
     RestaurantClaim,
     VerificationMethod,
 )
+from app.models.owner_content import (
+    DishReviewOwnerResponse,
+    RestaurantOfficialPhoto,
+)
 from app.models.dish import (
     Dish,
     DishReview,
@@ -39,6 +43,8 @@ __all__ = [
     "RestaurantClaim",
     "ClaimStatus",
     "VerificationMethod",
+    "DishReviewOwnerResponse",
+    "RestaurantOfficialPhoto",
     "Dish",
     "DishReview",
     "DishReviewProsCons",
