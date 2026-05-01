@@ -148,6 +148,107 @@ async def test_discover_radius_filters_far_dishes(async_client_integration):
 
 
 @pytest.mark.asyncio
+async def test_nearby_smart_combines_proximity_and_execution(async_client_integration):
+    """nearby_smart prioriza cercanía + ejecución técnica.
+
+    Tres platos:
+      A: cerca (0km), execution=3 → debería rankear primero (alta prox + alta exec).
+      C: lejos (~12km), execution=3 → menor que A por la penalización de proximidad,
+         pero mayor que D porque la ejecución pesa más.
+      D: cerca (0km), execution=1 → ejecución mala penaliza más que la cercanía buena.
+
+    Verifica orden: A > C > D.
+
+    No testeamos recency directamente porque las 3 reviews son "nuevas" en este test
+    (created_at = now). El score recency aporta lo mismo a las 3, así que solo
+    validamos el efecto compuesto de proximidad + ejecución.
+    """
+    user = await register_and_login(async_client_integration)
+    base_lat, base_lng = -34.6, -58.4
+
+    # A: misma coord que la query → distance ≈ 0km
+    await _post_review_with_pillars(
+        async_client_integration,
+        user.cookies,
+        place_id=f"pytest_place_{uuid.uuid4().hex[:8]}",
+        restaurant_name="Resto A Cerca Tecnico",
+        dish_name="Plato A nearby_smart",
+        score=4.0,
+        execution=3,
+        lat=base_lat,
+        lng=base_lng,
+    )
+    # C: ~12km al norte → cae en bucket [5, 15]km
+    await _post_review_with_pillars(
+        async_client_integration,
+        user.cookies,
+        place_id=f"pytest_place_{uuid.uuid4().hex[:8]}",
+        restaurant_name="Resto C Lejos Tecnico",
+        dish_name="Plato C nearby_smart",
+        score=4.0,
+        execution=3,
+        lat=base_lat + 0.108,  # ≈ 12km en latitud
+        lng=base_lng,
+    )
+    # D: misma coord que la query, ejecución pobre
+    await _post_review_with_pillars(
+        async_client_integration,
+        user.cookies,
+        place_id=f"pytest_place_{uuid.uuid4().hex[:8]}",
+        restaurant_name="Resto D Cerca Mala",
+        dish_name="Plato D nearby_smart",
+        score=4.0,
+        execution=1,
+        lat=base_lat,
+        lng=base_lng,
+    )
+
+    r = await async_client_integration.get(
+        f"/api/dishes/discover?lat={base_lat}&lng={base_lng}"
+        f"&radius_km=50&sort=nearby_smart&limit=50"
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    names_in_order = [it["dish_name"] for it in items]
+
+    a_idx = names_in_order.index("Plato A nearby_smart")
+    c_idx = names_in_order.index("Plato C nearby_smart")
+    d_idx = names_in_order.index("Plato D nearby_smart")
+
+    assert a_idx < c_idx, (
+        f"A (cerca + exec3) debe rankear antes que C (lejos + exec3). "
+        f"Orden actual: {names_in_order}"
+    )
+    assert c_idx < d_idx, (
+        f"C (lejos + exec3) debe rankear antes que D (cerca + exec1) — "
+        f"la ejecución técnica pesa más que la cercanía. "
+        f"Orden actual: {names_in_order}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_nearby_smart_falls_back_when_no_geo(async_client_integration):
+    """Sin lat/lng, nearby_smart debe degradar a geek_score sin reventar."""
+    user = await register_and_login(async_client_integration)
+    await _post_review_with_pillars(
+        async_client_integration,
+        user.cookies,
+        place_id=f"pytest_place_{uuid.uuid4().hex[:8]}",
+        restaurant_name="Resto Fallback",
+        dish_name="Plato Fallback",
+        score=4.0,
+        execution=3,
+    )
+
+    r = await async_client_integration.get(
+        "/api/dishes/discover?sort=nearby_smart&limit=10"
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert any(it["dish_name"] == "Plato Fallback" for it in items)
+
+
+@pytest.mark.asyncio
 async def test_duel_returns_at_most_two(async_client_integration):
     """El duelo nunca devuelve más de 2 platos."""
     user = await register_and_login(async_client_integration)

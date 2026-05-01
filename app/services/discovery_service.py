@@ -70,8 +70,22 @@ BADGE_AVG_THRESHOLD = 2.7
 # --- Trending ---
 TRENDING_WINDOW_HOURS = 48
 
+# --- Nearby Smart: ranking compuesto cercanía + ejecución + recencia ---
+# Suma ponderada sobre 3 componentes normalizados a [0, 1]. La ejecución técnica
+# pesa más que la cercanía (un plato 3★ a 5km le gana a uno 1★ a 500m).
+W_NEARBY_PROXIMITY = 2.5
+W_NEARBY_EXECUTION = 3.0
+W_NEARBY_RECENCY = 1.0
 
-SortKey = Literal["geek_score", "execution", "value_prop", "presentation", "distance"]
+
+SortKey = Literal[
+    "geek_score",
+    "execution",
+    "value_prop",
+    "presentation",
+    "distance",
+    "nearby_smart",
+]
 BboxSortKey = Literal["geek_score", "value_prop", "trending"]
 
 
@@ -129,6 +143,33 @@ async def discover_dishes(
     if lat is not None and lng is not None:
         distance_expr = haversine_km_expr(
             Restaurant.latitude, Restaurant.longitude, lat=lat, lng=lng
+        )
+
+    # Nearby Smart ranking: solo se materializa cuando hay lat/lng. Si el sort
+    # es nearby_smart pero el viewer no tiene geo, caemos a geek_score más abajo.
+    nearby_smart_expr: ColumnElement | None = None
+    if distance_expr is not None:
+        now = datetime.now(timezone.utc)
+        proximity_score = case(
+            (distance_expr <= 1.0, 1.0),
+            (distance_expr <= 5.0, 0.7),
+            (distance_expr <= 15.0, 0.3),
+            else_=0.0,
+        )
+        # exec_avg viene en escala 1..3. Si null (sin reviews con execution),
+        # damos score 0 — no inflamos platos sin pilar técnico cargado.
+        execution_score = func.coalesce((exec_avg - 1.0) / 2.0, 0.0)
+        last_review_at = func.max(DishReview.created_at)
+        recency_score = case(
+            (last_review_at >= now - timedelta(days=7), 1.0),
+            (last_review_at >= now - timedelta(days=30), 0.6),
+            (last_review_at >= now - timedelta(days=90), 0.3),
+            else_=0.1,
+        )
+        nearby_smart_expr = (
+            W_NEARBY_PROXIMITY * proximity_score
+            + W_NEARBY_EXECUTION * execution_score
+            + W_NEARBY_RECENCY * recency_score
         )
 
     # want_to_try por viewer.
@@ -198,6 +239,10 @@ async def discover_dishes(
     }
     if sort == "distance" and distance_expr is not None:
         stmt = stmt.order_by(distance_expr.asc(), desc(geek_score))
+    elif sort == "nearby_smart" and nearby_smart_expr is not None:
+        # Tiebreaker: geek_score para estabilizar orden cuando empatan en
+        # priority (puede pasar al cruzarse umbrales escalonados de proximidad).
+        stmt = stmt.order_by(desc(nearby_smart_expr), desc(geek_score), Dish.id)
     else:
         primary = sort_map.get(sort, geek_score)
         # Tiebreaker: stars shrunk para estabilizar orden.

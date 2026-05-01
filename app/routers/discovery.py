@@ -35,7 +35,12 @@ async def discover(
     lng: float | None = Query(default=None, ge=-180, le=180),
     radius_km: float | None = Query(default=None, ge=0.1, le=50.0),
     sort: Literal[
-        "geek_score", "execution", "value_prop", "presentation", "distance"
+        "geek_score",
+        "execution",
+        "value_prop",
+        "presentation",
+        "distance",
+        "nearby_smart",
     ] = Query(default="geek_score"),
     category: str | None = Query(default=None, description="Slug de categoría"),
     limit: int = Query(default=20, ge=1, le=50),
