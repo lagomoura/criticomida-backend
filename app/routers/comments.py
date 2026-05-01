@@ -4,13 +4,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import Select, exists, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, get_current_user_optional
 from app.middleware.rate_limit import COMMENT_CREATE_LIMIT, limiter
 from app.models.dish import DishReview
+from app.models.like import CommentLike
 from app.models.social import Comment
 from app.models.user import User, UserRole
 from app.schemas.comment import (
@@ -20,7 +22,10 @@ from app.schemas.comment import (
     CommentsPage,
     CommentUpdate,
 )
-from app.services.notification_service import record_comment_notification
+from app.services.notification_service import (
+    record_comment_notification,
+    record_comment_reply_notification,
+)
 
 router = APIRouter(tags=["comments"])
 
@@ -61,14 +66,62 @@ async def _anti_spam_check(
         )
 
 
-def _comment_response(
-    comment: Comment, author: User, *, viewer: User | None
-) -> CommentResponse:
+def _replies_count_sq():
+    child = aliased(Comment)
+    return (
+        select(func.count())
+        .select_from(child)
+        .where(child.parent_comment_id == Comment.id)
+        .where(child.removed_at.is_(None))
+        .correlate(Comment)
+        .scalar_subquery()
+    )
+
+
+def _likes_count_sq():
+    return (
+        select(func.count())
+        .select_from(CommentLike)
+        .where(CommentLike.comment_id == Comment.id)
+        .correlate(Comment)
+        .scalar_subquery()
+    )
+
+
+def _viewer_liked_sq(viewer: User | None):
+    if viewer is None:
+        return literal(False)
+    return exists(
+        select(literal(1))
+        .select_from(CommentLike)
+        .where(CommentLike.comment_id == Comment.id)
+        .where(CommentLike.user_id == viewer.id)
+        .correlate(Comment)
+    )
+
+
+def _base_select(viewer: User | None) -> Select:
+    return select(
+        Comment,
+        User,
+        _replies_count_sq().label("replies_count"),
+        _likes_count_sq().label("likes_count"),
+        _viewer_liked_sq(viewer).label("viewer_liked"),
+    ).join(User, Comment.user_id == User.id)
+
+
+def _row_to_response(row, *, viewer: User | None) -> CommentResponse:
+    comment: Comment = row[0]
+    author: User = row[1]
+    replies_count: int = int(row[2] or 0)
+    likes_count: int = int(row[3] or 0)
+    viewer_liked: bool = bool(row[4])
     is_owner = viewer is not None and viewer.id == comment.user_id
     is_admin = viewer is not None and viewer.role == UserRole.admin
     return CommentResponse(
         id=comment.id,
         review_id=comment.review_id,
+        parent_comment_id=comment.parent_comment_id,
         created_at=comment.created_at,
         updated_at=comment.updated_at,
         body=comment.body,
@@ -78,10 +131,24 @@ def _comment_response(
             handle=author.handle,
             avatar_url=author.avatar_url,
         ),
+        replies_count=replies_count,
+        likes_count=likes_count,
+        viewer_liked=viewer_liked,
         can_delete=is_owner or is_admin,
         can_edit=is_owner,
         can_report=viewer is not None and not is_owner,
     )
+
+
+async def _load_response(
+    db: AsyncSession, comment_id: uuid.UUID, *, viewer: User | None
+) -> CommentResponse:
+    """Re-fetch a comment plus its computed counts/flags."""
+    stmt = _base_select(viewer).where(Comment.id == comment_id)
+    row = (await db.execute(stmt)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Comentario no encontrado")
+    return _row_to_response(row, viewer=viewer)
 
 
 @router.get("/api/reviews/{review_id}/comments", response_model=CommentsPage)
@@ -100,9 +167,9 @@ async def list_comments(
             raise HTTPException(status_code=400, detail="Cursor inválido")
 
     stmt = (
-        select(Comment, User)
-        .join(User, Comment.user_id == User.id)
+        _base_select(viewer)
         .where(Comment.review_id == review_id)
+        .where(Comment.parent_comment_id.is_(None))
         .where(Comment.removed_at.is_(None))
         .order_by(Comment.created_at.asc())
         .limit(limit + 1)
@@ -113,7 +180,42 @@ async def list_comments(
     rows = (await db.execute(stmt)).all()
     has_more = len(rows) > limit
     trimmed = rows[:limit]
-    items = [_comment_response(c, u, viewer=viewer) for c, u in trimmed]
+    items = [_row_to_response(r, viewer=viewer) for r in trimmed]
+    next_cursor = trimmed[-1][0].created_at.isoformat() if has_more and trimmed else None
+    return CommentsPage(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/api/comments/{comment_id}/replies", response_model=CommentsPage
+)
+async def list_replies(
+    comment_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    viewer: Annotated[User | None, Depends(get_current_user_optional)],
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> CommentsPage:
+    cursor_dt: datetime | None = None
+    if cursor:
+        try:
+            cursor_dt = datetime.fromisoformat(cursor)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Cursor inválido")
+
+    stmt = (
+        _base_select(viewer)
+        .where(Comment.parent_comment_id == comment_id)
+        .where(Comment.removed_at.is_(None))
+        .order_by(Comment.created_at.asc())
+        .limit(limit + 1)
+    )
+    if cursor_dt is not None:
+        stmt = stmt.where(Comment.created_at > cursor_dt)
+
+    rows = (await db.execute(stmt)).all()
+    has_more = len(rows) > limit
+    trimmed = rows[:limit]
+    items = [_row_to_response(r, viewer=viewer) for r in trimmed]
     next_cursor = trimmed[-1][0].created_at.isoformat() if has_more and trimmed else None
     return CommentsPage(items=items, next_cursor=next_cursor)
 
@@ -159,7 +261,73 @@ async def create_comment(
     await db.commit()
     await db.refresh(comment)
 
-    return _comment_response(comment, current_user, viewer=current_user)
+    return await _load_response(db, comment.id, viewer=current_user)
+
+
+@router.post(
+    "/api/comments/{comment_id}/replies",
+    response_model=CommentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+@limiter.limit(COMMENT_CREATE_LIMIT)
+async def create_reply(
+    request: Request,
+    comment_id: uuid.UUID,
+    payload: CommentCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CommentResponse:
+    parent_row = await db.execute(
+        select(Comment).where(Comment.id == comment_id)
+    )
+    parent = parent_row.scalar_one_or_none()
+    if parent is None or parent.removed_at is not None:
+        raise HTTPException(status_code=404, detail="Comentario no encontrado")
+    if parent.parent_comment_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede responder a una respuesta",
+        )
+
+    review_row = await db.execute(
+        select(DishReview.user_id).where(DishReview.id == parent.review_id)
+    )
+    review_owner_id = review_row.scalar_one_or_none()
+    if review_owner_id is None:
+        raise HTTPException(status_code=404, detail="Reseña no encontrada")
+
+    body = payload.body.strip()
+    await _anti_spam_check(db, user_id=current_user.id, body=body)
+
+    reply = Comment(
+        review_id=parent.review_id,
+        user_id=current_user.id,
+        parent_comment_id=parent.id,
+        body=body,
+    )
+    db.add(reply)
+    await db.flush()
+
+    await record_comment_reply_notification(
+        db,
+        actor_id=current_user.id,
+        parent_owner_id=parent.user_id,
+        review_id=parent.review_id,
+        reply_body=reply.body,
+        reply_id=reply.id,
+    )
+    await record_comment_notification(
+        db,
+        actor_id=current_user.id,
+        review_id=parent.review_id,
+        review_owner_id=review_owner_id,
+        comment_body=reply.body,
+    )
+
+    await db.commit()
+    await db.refresh(reply)
+
+    return await _load_response(db, reply.id, viewer=current_user)
 
 
 @router.patch(
@@ -172,31 +340,21 @@ async def update_comment(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CommentResponse:
     """Edit body of own comment. Admins cannot edit other users' comments."""
-    result = await db.execute(
-        select(Comment, User).join(User, Comment.user_id == User.id).where(
-            Comment.id == comment_id
-        )
-    )
-    row = result.first()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Comentario no encontrado")
-    comment, author = row
-    if comment.removed_at is not None:
+    result = await db.execute(select(Comment).where(Comment.id == comment_id))
+    comment = result.scalar_one_or_none()
+    if comment is None or comment.removed_at is not None:
         raise HTTPException(status_code=404, detail="Comentario no encontrado")
     if comment.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="No podés editar este comentario")
 
     body = payload.body.strip()
-    if body == comment.body:
-        return _comment_response(comment, author, viewer=current_user)
+    if body != comment.body:
+        await _anti_spam_check(db, user_id=current_user.id, body=body)
+        comment.body = body
+        await db.commit()
+        await db.refresh(comment)
 
-    await _anti_spam_check(db, user_id=current_user.id, body=body)
-
-    comment.body = body
-    await db.commit()
-    await db.refresh(comment)
-
-    return _comment_response(comment, author, viewer=current_user)
+    return await _load_response(db, comment.id, viewer=current_user)
 
 
 @router.delete(

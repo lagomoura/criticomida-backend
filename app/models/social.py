@@ -17,7 +17,10 @@ from app.database import Base
 
 
 class Comment(Base):
-    """1-level comment on a dish review. Soft-deletable via `removed_at`."""
+    """Comment on a dish review. Hasta 2 niveles: si `parent_comment_id` es
+    NULL es un comentario top-level; si apunta a otro comment, es una
+    respuesta. No se permite responder a una respuesta. Soft-deletable
+    via `removed_at`."""
 
     __tablename__ = "comments"
 
@@ -33,6 +36,11 @@ class Comment(Base):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    parent_comment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
     )
     body: Mapped[str] = mapped_column(String(500), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -58,7 +66,7 @@ class Notification(Base):
     __table_args__ = (
         CheckConstraint(
             "kind IN ('like','comment','follow','claim_approved',"
-            "'claim_rejected','claim_revoked')",
+            "'claim_rejected','claim_revoked','comment_like','comment_reply')",
             name="ck_notifications_kind",
         ),
     )
@@ -90,6 +98,11 @@ class Notification(Base):
     target_restaurant_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("restaurants.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    target_comment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("comments.id", ondelete="CASCADE"),
         nullable=True,
     )
     text: Mapped[str] = mapped_column(String(500), nullable=False)

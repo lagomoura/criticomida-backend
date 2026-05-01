@@ -29,3 +29,28 @@ class Like(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class CommentLike(Base):
+    """A user's like on a comment (top-level o respuesta)."""
+
+    __tablename__ = "comment_likes"
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "comment_id", name="pk_comment_likes"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    comment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

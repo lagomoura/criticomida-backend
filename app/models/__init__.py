@@ -30,7 +30,7 @@ from app.models.image import Image
 from app.models.menu import Menu
 from app.models.user_feedback import UserFeedback
 from app.models.follow import Follow
-from app.models.like import Like
+from app.models.like import CommentLike, Like
 from app.models.social import Bookmark, Comment, Notification, Report
 
 __all__ = [
@@ -59,6 +59,7 @@ __all__ = [
     "UserFeedback",
     "Follow",
     "Like",
+    "CommentLike",
     "Comment",
     "Notification",
     "Bookmark",

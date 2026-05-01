@@ -132,6 +132,56 @@ async def record_comment_notification(
     )
 
 
+async def record_comment_like_notification(
+    db: AsyncSession,
+    *,
+    actor_id: uuid.UUID,
+    comment_id: uuid.UUID,
+    comment_owner_id: uuid.UUID,
+    comment_body: str,
+    review_id: uuid.UUID,
+) -> None:
+    if actor_id == comment_owner_id:
+        return
+    excerpt = (comment_body[:60] + "…") if len(comment_body) > 60 else comment_body
+    text = f'le dio like a tu comentario: "{excerpt}"'
+    db.add(
+        Notification(
+            recipient_user_id=comment_owner_id,
+            actor_user_id=actor_id,
+            kind="comment_like",
+            target_review_id=review_id,
+            target_comment_id=comment_id,
+            text=text,
+        )
+    )
+
+
+async def record_comment_reply_notification(
+    db: AsyncSession,
+    *,
+    actor_id: uuid.UUID,
+    parent_owner_id: uuid.UUID,
+    review_id: uuid.UUID,
+    reply_body: str,
+    reply_id: uuid.UUID,
+) -> None:
+    if actor_id == parent_owner_id:
+        return
+    excerpt = (reply_body[:60] + "…") if len(reply_body) > 60 else reply_body
+    text = f'respondió tu comentario: "{excerpt}"'
+    db.add(
+        Notification(
+            recipient_user_id=parent_owner_id,
+            actor_user_id=actor_id,
+            kind="comment_reply",
+            target_review_id=review_id,
+            target_comment_id=reply_id,
+            text=text,
+        )
+    )
+
+
 async def record_follow_notification(
     db: AsyncSession,
     *,

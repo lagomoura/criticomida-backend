@@ -21,6 +21,8 @@ class NotificationResponse(BaseModel):
         "claim_approved",
         "claim_rejected",
         "claim_revoked",
+        "comment_like",
+        "comment_reply",
     ]
     unread: bool
     created_at: datetime
@@ -28,6 +30,7 @@ class NotificationResponse(BaseModel):
     target_review_id: uuid.UUID | None = None
     target_user_id: uuid.UUID | None = None
     target_restaurant_id: uuid.UUID | None = None
+    target_comment_id: uuid.UUID | None = None
     text: str
 
 

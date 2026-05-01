@@ -39,3 +39,11 @@ class LikeActionResponse(BaseModel):
     review_id: uuid.UUID
     liked: bool
     likes_count: int
+
+
+class CommentLikeActionResponse(BaseModel):
+    """Response for POST/DELETE /api/comments/{id}/like."""
+
+    comment_id: uuid.UUID
+    liked: bool
+    likes_count: int

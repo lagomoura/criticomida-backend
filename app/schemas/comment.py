@@ -22,10 +22,14 @@ class CommentAuthor(BaseModel):
 class CommentResponse(BaseModel):
     id: uuid.UUID
     review_id: uuid.UUID
+    parent_comment_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
     author: CommentAuthor
     body: str
+    replies_count: int = 0
+    likes_count: int = 0
+    viewer_liked: bool = False
     can_delete: bool = False
     can_edit: bool = False
     can_report: bool = False

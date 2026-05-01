@@ -20,6 +20,7 @@ from app.routers import (
     categories,
     chat,
     claims,
+    comment_likes,
     comments,
     discovery,
     dishes,
@@ -101,6 +102,7 @@ def create_app(
     application.include_router(follows.router)
     application.include_router(likes.router)
     application.include_router(comments.router)
+    application.include_router(comment_likes.router)
     application.include_router(notifications.router)
     application.include_router(bookmarks.router)
     application.include_router(want_to_try.router)

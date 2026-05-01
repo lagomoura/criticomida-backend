@@ -249,3 +249,132 @@ async def test_comment_generates_notification(
         n["kind"] == "comment" and n["target_review_id"] == review_id
         for n in notifs
     )
+
+
+# ── Replies (1 nivel de anidación) ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_reply_and_list(async_client_integration, user_a, user_b):
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    parent = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "comentario padre"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+
+    r = await async_client_integration.post(
+        f"/api/comments/{parent['id']}/replies",
+        json={"body": "respuesta!"},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 201
+    reply = r.json()
+    assert reply["parent_comment_id"] == parent["id"]
+    assert reply["body"] == "respuesta!"
+
+    # Listar el review NO debe traer la reply (sólo top-level).
+    items = (
+        await async_client_integration.get(
+            f"/api/reviews/{review_id}/comments", cookies=user_a.cookies
+        )
+    ).json()["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == parent["id"]
+    assert items[0]["replies_count"] == 1
+
+    # GET /api/comments/{id}/replies sí lista la reply.
+    replies = (
+        await async_client_integration.get(
+            f"/api/comments/{parent['id']}/replies", cookies=user_a.cookies
+        )
+    ).json()["items"]
+    assert len(replies) == 1
+    assert replies[0]["id"] == reply["id"]
+
+
+@pytest.mark.asyncio
+async def test_cannot_reply_to_a_reply(async_client_integration, user_a, user_b):
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    parent = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "padre"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+    reply = (
+        await async_client_integration.post(
+            f"/api/comments/{parent['id']}/replies",
+            json={"body": "respuesta nivel 1"},
+            cookies=user_a.cookies,
+        )
+    ).json()
+
+    r = await async_client_integration.post(
+        f"/api/comments/{reply['id']}/replies",
+        json={"body": "nivel 2 prohibido"},
+        cookies=user_b.cookies,
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cannot_reply_to_missing_or_deleted_comment(
+    async_client_integration, user_a, user_b
+):
+    r = await async_client_integration.post(
+        f"/api/comments/{uuid.uuid4()}/replies",
+        json={"body": "ghost"},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 404
+
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    parent = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "se borra"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+    await async_client_integration.delete(
+        f"/api/comments/{parent['id']}", cookies=user_b.cookies
+    )
+    r = await async_client_integration.post(
+        f"/api/comments/{parent['id']}/replies",
+        json={"body": "tarde"},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reply_notifies_parent_author_and_review_owner(
+    async_client_integration, user_a, user_b
+):
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    parent = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "padre"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+    await async_client_integration.post(
+        f"/api/comments/{parent['id']}/replies",
+        json={"body": "respondo"},
+        cookies=user_a.cookies,
+    )
+    # El autor del comentario padre (user_b) recibe comment_reply.
+    notifs_b = (
+        await async_client_integration.get(
+            "/api/notifications", cookies=user_b.cookies
+        )
+    ).json()["items"]
+    assert any(n["kind"] == "comment_reply" for n in notifs_b)
+    # El autor de la reseña (user_a) que también respondió no se autonotifica:
+    # como la reply la creó user_a, ni el comment ni el comment_reply le llegan
+    # a sí mismo.
