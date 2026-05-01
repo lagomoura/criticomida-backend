@@ -107,6 +107,107 @@ async def test_only_author_or_admin_can_delete(
 
 
 @pytest.mark.asyncio
+async def test_edit_own_comment(async_client_integration, user_a, user_b):
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    created = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "primera version"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+
+    r = await async_client_integration.patch(
+        f"/api/comments/{created['id']}",
+        json={"body": "version corregida"},
+        cookies=user_b.cookies,
+    )
+    assert r.status_code == 200
+    edited = r.json()
+    assert edited["body"] == "version corregida"
+    assert edited["can_edit"] is True
+    assert edited["updated_at"] >= created["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_only_author_can_edit(async_client_integration, user_a, user_b):
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    created = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "ajeno"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+
+    # user_a is not the author
+    r = await async_client_integration.patch(
+        f"/api/comments/{created['id']}",
+        json={"body": "intento de hijack"},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_edit_missing_or_deleted_comment_404(
+    async_client_integration, user_a, user_b
+):
+    # Missing
+    r = await async_client_integration.patch(
+        f"/api/comments/{uuid.uuid4()}",
+        json={"body": "nope"},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 404
+
+    # Soft-deleted
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    created = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "to delete"},
+            cookies=user_b.cookies,
+        )
+    ).json()
+    await async_client_integration.delete(
+        f"/api/comments/{created['id']}", cookies=user_b.cookies
+    )
+    r = await async_client_integration.patch(
+        f"/api/comments/{created['id']}",
+        json={"body": "ressuscitar"},
+        cookies=user_b.cookies,
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_edit_validates_body_length(async_client_integration, user_a):
+    review_id = await create_review(async_client_integration, user_a.cookies)
+    created = (
+        await async_client_integration.post(
+            f"/api/reviews/{review_id}/comments",
+            json={"body": "ok"},
+            cookies=user_a.cookies,
+        )
+    ).json()
+
+    r = await async_client_integration.patch(
+        f"/api/comments/{created['id']}",
+        json={"body": ""},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 422
+
+    r = await async_client_integration.patch(
+        f"/api/comments/{created['id']}",
+        json={"body": "x" * 501},
+        cookies=user_a.cookies,
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_create_comment_on_missing_review_404(
     async_client_integration, user_a
 ):

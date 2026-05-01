@@ -18,6 +18,7 @@ from app.schemas.comment import (
     CommentCreate,
     CommentResponse,
     CommentsPage,
+    CommentUpdate,
 )
 from app.services.notification_service import record_comment_notification
 
@@ -69,6 +70,7 @@ def _comment_response(
         id=comment.id,
         review_id=comment.review_id,
         created_at=comment.created_at,
+        updated_at=comment.updated_at,
         body=comment.body,
         author=CommentAuthor(
             id=author.id,
@@ -77,6 +79,7 @@ def _comment_response(
             avatar_url=author.avatar_url,
         ),
         can_delete=is_owner or is_admin,
+        can_edit=is_owner,
         can_report=viewer is not None and not is_owner,
     )
 
@@ -157,6 +160,43 @@ async def create_comment(
     await db.refresh(comment)
 
     return _comment_response(comment, current_user, viewer=current_user)
+
+
+@router.patch(
+    "/api/comments/{comment_id}", response_model=CommentResponse
+)
+async def update_comment(
+    comment_id: uuid.UUID,
+    payload: CommentUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CommentResponse:
+    """Edit body of own comment. Admins cannot edit other users' comments."""
+    result = await db.execute(
+        select(Comment, User).join(User, Comment.user_id == User.id).where(
+            Comment.id == comment_id
+        )
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Comentario no encontrado")
+    comment, author = row
+    if comment.removed_at is not None:
+        raise HTTPException(status_code=404, detail="Comentario no encontrado")
+    if comment.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No podés editar este comentario")
+
+    body = payload.body.strip()
+    if body == comment.body:
+        return _comment_response(comment, author, viewer=current_user)
+
+    await _anti_spam_check(db, user_id=current_user.id, body=body)
+
+    comment.body = body
+    await db.commit()
+    await db.refresh(comment)
+
+    return _comment_response(comment, author, viewer=current_user)
 
 
 @router.delete(

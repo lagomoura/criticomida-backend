@@ -8,6 +8,10 @@ class CommentCreate(BaseModel):
     body: str = Field(min_length=1, max_length=500)
 
 
+class CommentUpdate(BaseModel):
+    body: str = Field(min_length=1, max_length=500)
+
+
 class CommentAuthor(BaseModel):
     id: uuid.UUID
     display_name: str
@@ -19,9 +23,11 @@ class CommentResponse(BaseModel):
     id: uuid.UUID
     review_id: uuid.UUID
     created_at: datetime
+    updated_at: datetime
     author: CommentAuthor
     body: str
     can_delete: bool = False
+    can_edit: bool = False
     can_report: bool = False
 
     model_config = {"from_attributes": True}
