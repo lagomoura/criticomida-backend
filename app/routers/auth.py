@@ -25,6 +25,8 @@ from app.middleware.auth import (
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.user import (
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
     TokenRefresh,
     TokenResponse,
     UserCreate,
@@ -35,6 +37,10 @@ from app.services.email_verification_service import (
     consume_verification_token,
     create_verification_token,
     send_verification_email,
+)
+from app.services.password_reset_service import (
+    request_password_reset,
+    reset_password_with_token,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -334,6 +340,37 @@ async def verify_email(
     consume el token. Idempotente para el usuario ya verificado: si el token
     coincide y el user ya tenía email_verified_at, devuelve OK igual."""
     user = await consume_verification_token(db, token)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token inválido o expirado",
+        )
+    return user
+
+
+@router.post("/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    """Devuelve 204 SIEMPRE — no leak de cuáles emails están registrados.
+    Si el email existe en la base, dispara el envío del email con el link
+    de reset. Si no, completa silente (el caller no puede distinguir)."""
+    await request_password_reset(db, email=payload.email)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/reset-password", response_model=UserResponse)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    """Cambia la contraseña usando un token válido. Revoca todas las
+    sesiones activas del user — si la cuenta estaba comprometida, las
+    sesiones del atacante quedan inutilizadas."""
+    user = await reset_password_with_token(
+        db, token=payload.token, new_password=payload.new_password
+    )
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

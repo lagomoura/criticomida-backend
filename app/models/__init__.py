@@ -18,6 +18,7 @@ from app.models.owner_content import (
     RestaurantOfficialPhoto,
 )
 from app.models.email_verification import EmailVerificationToken
+from app.models.password_reset import PasswordResetToken
 from app.models.dish import (
     Dish,
     DishReview,
@@ -47,6 +48,7 @@ __all__ = [
     "DishReviewOwnerResponse",
     "RestaurantOfficialPhoto",
     "EmailVerificationToken",
+    "PasswordResetToken",
     "Dish",
     "DishReview",
     "DishReviewProsCons",
