@@ -1,6 +1,6 @@
 # CritiComida — Backend
 
-FastAPI + Postgres. Submódulo del monorepo del front [criticomida-nextjs](https://github.com/lagomoura/criticomida_production).
+FastAPI + Postgres. Submódulo del monorepo del frontend (`criticomida_production`).
 
 ## Quickstart
 
@@ -21,6 +21,11 @@ Si es la primera vez y no tenés snapshot, mirá [docs/ENVIRONMENTS.md → Snaps
 - **Hybrid**: db en compose, uvicorn en host. `DATABASE_URL=...@localhost:5433/...`.
 
 `docker-compose.yml` mapea host `:8002 → container :8000`. El `:8000` del host queda libre para otros proyectos.
+
+## Cookies + CORS (prod)
+
+- En prod (Vercel ↔ Railway) el auth usa cookies cross-site: `SameSite=None; Secure` cuando `COOKIE_SECURE=true`.
+- `CORS_ORIGINS` debe incluir el dominio de Vercel (lista separada por comas, sin espacios y sin trailing slash) porque el frontend usa `credentials: 'include'`.
 
 ## Migraciones
 
