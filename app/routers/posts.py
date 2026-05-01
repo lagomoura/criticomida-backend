@@ -22,6 +22,7 @@ from app.models.category import Category
 from app.models.dish import (
     Dish,
     DishReview,
+    DishReviewImage,
     DishReviewProsCons,
     DishReviewProsConsType,
     DishReviewTag,
@@ -292,6 +293,15 @@ async def create_post(
             stripped = raw.strip()
             if stripped:
                 db.add(DishReviewTag(dish_review_id=review.id, tag=stripped))
+        for img in extras.images:
+            db.add(
+                DishReviewImage(
+                    dish_review_id=review.id,
+                    url=img.url,
+                    alt_text=img.alt_text,
+                    display_order=img.display_order,
+                )
+            )
 
     await update_dish_rating(db, dish.id)
     await update_restaurant_rating(db, restaurant.id)

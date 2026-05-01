@@ -107,6 +107,10 @@ class DishReviewUpdate(BaseModel):
     presentation: int | None = Field(None, ge=1, le=3)
     value_prop: int | None = Field(None, ge=1, le=3)
     execution: int | None = Field(None, ge=1, le=3)
+    # When None, leave the existing rows alone. When [], clear all.
+    pros_cons: list[DishReviewProsConsCreate] | None = None
+    tags: list[DishReviewTagCreate] | None = None
+    images: list[DishReviewImageCreate] | None = None
 
 
 class DishReviewResponse(BaseModel):

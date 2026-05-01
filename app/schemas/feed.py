@@ -1,7 +1,7 @@
 """Feed and review-detail schemas consumed by the social UI."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel
@@ -47,9 +47,13 @@ class FeedExtras(BaseModel):
     cons: list[str] = []
     tags: list[str] = []
     date_tasted: date | None = None
+    time_tasted: time | None = None
     visited_with: str | None = None
     is_anonymous: bool | None = None
     price_tier: Literal["$", "$$", "$$$"] | None = None
+    presentation: Literal[1, 2, 3] | None = None
+    value_prop: Literal[1, 2, 3] | None = None
+    execution: Literal[1, 2, 3] | None = None
 
 
 class FeedItem(BaseModel):

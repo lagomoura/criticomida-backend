@@ -8,6 +8,12 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class PostCreateImage(BaseModel):
+    url: str = Field(min_length=1, max_length=500)
+    alt_text: str | None = Field(default=None, max_length=300)
+    display_order: int = 0
+
+
 class PostCreateExtras(BaseModel):
     portion_size: Literal["small", "medium", "large"] | None = None
     would_order_again: bool | None = None
@@ -21,6 +27,7 @@ class PostCreateExtras(BaseModel):
     presentation: int | None = Field(default=None, ge=1, le=3)
     value_prop: int | None = Field(default=None, ge=1, le=3)
     execution: int | None = Field(default=None, ge=1, le=3)
+    images: list[PostCreateImage] = Field(default_factory=list, max_length=10)
 
 
 class RestaurantFromPlace(BaseModel):

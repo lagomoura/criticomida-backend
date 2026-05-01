@@ -351,9 +351,13 @@ async def _build_feed_items(
                 cons=cons,
                 tags=tags_by_review.get(review.id, []),
                 date_tasted=review.date_tasted if isinstance(review.date_tasted, date) else None,
+                time_tasted=review.time_tasted,
                 visited_with=review.visited_with,
                 is_anonymous=review.is_anonymous,
                 price_tier=dish.price_tier.value if dish.price_tier is not None else None,
+                presentation=review.presentation,  # type: ignore[arg-type]
+                value_prop=review.value_prop,  # type: ignore[arg-type]
+                execution=review.execution,  # type: ignore[arg-type]
             )
 
         verified = (

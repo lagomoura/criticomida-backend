@@ -2,7 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -191,9 +191,54 @@ async def update_review(
             detail="You can only update your own reviews",
         )
 
-    update_data = review_data.model_dump(exclude_unset=True)
+    update_data = review_data.model_dump(
+        exclude_unset=True, exclude={"pros_cons", "tags", "images"}
+    )
     for field, value in update_data.items():
         setattr(review, field, value)
+
+    if review_data.pros_cons is not None:
+        await db.execute(
+            delete(DishReviewProsCons).where(
+                DishReviewProsCons.dish_review_id == review.id
+            )
+        )
+        for pc in review_data.pros_cons:
+            db.add(
+                DishReviewProsCons(
+                    dish_review_id=review.id,
+                    type=pc.type,
+                    text=pc.text,
+                )
+            )
+
+    if review_data.tags is not None:
+        await db.execute(
+            delete(DishReviewTag).where(DishReviewTag.dish_review_id == review.id)
+        )
+        for tag_data in review_data.tags:
+            db.add(
+                DishReviewTag(
+                    dish_review_id=review.id,
+                    tag=tag_data.tag,
+                )
+            )
+
+    if review_data.images is not None:
+        await db.execute(
+            delete(DishReviewImage).where(
+                DishReviewImage.dish_review_id == review.id
+            )
+        )
+        for img_data in review_data.images:
+            db.add(
+                DishReviewImage(
+                    dish_review_id=review.id,
+                    url=img_data.url,
+                    alt_text=img_data.alt_text,
+                    display_order=img_data.display_order,
+                )
+            )
 
     await db.flush()
 
