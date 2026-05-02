@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     # URL base usada para construir links absolutos en los emails (verify
     # token, panel del owner). En prod se setea desde la env de Vercel.
     PUBLIC_APP_URL: str = "http://localhost:3000"
+    # Gemini API key — used for embeddings (text-embedding-004) and, in
+    # phase 2, for vision tagging in the Ghostwriter agent. When empty,
+    # semantic search degrades to structured-only ranking.
+    GEMINI_API_KEY: str | None = None
+    # gemini-embedding-2 (2026) replaces the retired text-embedding-004.
+    # Matryoshka-aware: we request ``outputDimensionality=768`` to keep
+    # the existing pgvector(768) schema without a migration.
+    EMBEDDINGS_MODEL: str = "gemini-embedding-2"
+    # Per-agent model override. Falls back to CHAT_MODEL for back-compat.
+    CHAT_MODEL_B2C: str | None = None
+    CHAT_MODEL_B2B: str = "anthropic/claude-sonnet-4-6"
 
     model_config = {
         "env_file": ".env",

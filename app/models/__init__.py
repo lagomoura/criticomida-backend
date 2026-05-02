@@ -32,6 +32,18 @@ from app.models.user_feedback import UserFeedback
 from app.models.follow import Follow
 from app.models.like import CommentLike, Like
 from app.models.social import Bookmark, Comment, Notification, Report
+from app.models.chat import (
+    ChatAgent,
+    ChatConversation,
+    ChatMessage,
+    DishEmbedding,
+    DishReviewEmbedding,
+    PriceBand,
+    TastePillar,
+    UserTasteProfile,
+)
+from app.models.dish_list import DishList, DishListItem
+from app.models.reservation_request import ReservationRequest, ReservationStatus
 
 __all__ = [
     "User",
@@ -64,4 +76,16 @@ __all__ = [
     "Notification",
     "Bookmark",
     "Report",
+    "ChatAgent",
+    "ChatConversation",
+    "ChatMessage",
+    "UserTasteProfile",
+    "TastePillar",
+    "PriceBand",
+    "DishReviewEmbedding",
+    "DishEmbedding",
+    "DishList",
+    "DishListItem",
+    "ReservationRequest",
+    "ReservationStatus",
 ]

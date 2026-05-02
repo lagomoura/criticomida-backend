@@ -1,9 +1,9 @@
-
-version: "3.9"
-
 services:
   db:
-    image: postgres:18
+    # pgvector/pgvector:pgXX is the official image: it's plain Postgres XX
+    # with the `vector` extension preinstalled. Drop-in replacement for
+    # `postgres:18` — same data layout, same env vars, same pgdata volume.
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-criticomida}
@@ -25,17 +25,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Load every key from backend/.env into the container. ``environment``
+    # below only overrides values that need to be computed (DATABASE_URL
+    # has to point at the compose-internal hostname ``db``, not whatever
+    # the host's ``.env`` says) or have meaningful in-compose defaults.
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-criticomida}:${POSTGRES_PASSWORD:-criticomida_secret}@db:5432/${POSTGRES_DB:-criticomida}
-      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-secret-in-production}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
-      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      CHAT_MODEL: ${CHAT_MODEL:-anthropic/claude-haiku-4-5-20251001}
-      CHAT_API_KEY: ${CHAT_API_KEY:-}
-      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
-      GOOGLE_CACHE_TTL_HOURS: ${GOOGLE_CACHE_TTL_HOURS:-168}
     ports:
       # Host :8002 → container :8000. El 8000 del host queda libre para otros
       # proyectos locales. El frontend apunta a http://localhost:8002.

@@ -66,7 +66,8 @@ class Notification(Base):
     __table_args__ = (
         CheckConstraint(
             "kind IN ('like','comment','follow','claim_approved',"
-            "'claim_rejected','claim_revoked','comment_like','comment_reply')",
+            "'claim_rejected','claim_revoked','comment_like','comment_reply',"
+            "'reservation_requested')",
             name="ck_notifications_kind",
         ),
     )

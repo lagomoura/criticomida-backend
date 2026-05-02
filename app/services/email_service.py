@@ -183,3 +183,62 @@ def render_claim_revoked(
         f"Revocamos tu verificación de {restaurant_name}. Motivo: {reason}"
     )
     return subject, html, text
+
+
+def render_reservation_requested(
+    *,
+    restaurant_name: str,
+    restaurant_slug: str,
+    requester_name: str,
+    party_size: int,
+    requested_for_human: str,
+    message: str | None,
+) -> tuple[str, str, str]:
+    """Email sent to a verified owner when a chatbot user requests a
+    reservation at their restaurant.
+    """
+    panel_url = f"{settings.PUBLIC_APP_URL}/restaurants/{restaurant_slug}/owner"
+    subject = (
+        f"Nueva solicitud de reserva en {restaurant_name} ({party_size} pax)"
+    )
+    quote_block = (
+        f"""
+    <blockquote style=\"border-left:3px solid #a04a3c;padding:8px 16px;
+                       margin:16px 0;background:#fff5ef;color:#5a4a40;\">
+      {message}
+    </blockquote>
+    """
+        if message
+        else ""
+    )
+    html = _wrap(
+        f"""
+    <p style="font-size:16px;line-height:1.5;">
+      <strong>{requester_name}</strong> pidió una mesa para
+      <strong>{party_size}</strong> personas el
+      <strong>{requested_for_human}</strong> a través del Sommelier de
+      CritiComida.
+    </p>
+    {quote_block}
+    <p style="margin-top:24px;">
+      <a href="{panel_url}"
+         style="display:inline-block;background:#a04a3c;color:#fff;
+                padding:12px 20px;border-radius:8px;text-decoration:none;
+                font-weight:600;">
+        Ver el detalle en el panel
+      </a>
+    </p>
+    <p style="font-size:13px;color:#5a4a40;margin-top:18px;">
+      Esta es una solicitud informativa. Confirmá o rechazala desde el
+      panel para mantener la conversación trazable.
+    </p>
+    """
+    )
+    text_lines = [
+        f"{requester_name} pidió una mesa para {party_size} personas el "
+        f"{requested_for_human}.",
+    ]
+    if message:
+        text_lines.append(f"Mensaje: {message}")
+    text_lines.append(f"Panel del restaurante: {panel_url}")
+    return subject, html, "\n\n".join(text_lines)

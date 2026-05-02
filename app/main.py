@@ -23,11 +23,13 @@ from app.routers import (
     comment_likes,
     comments,
     discovery,
+    dish_lists,
     dishes,
     dishes_social,
     feed,
     feedback,
     follows,
+    ghostwriter,
     images,
     likes,
     menus,
@@ -118,6 +120,7 @@ def create_app(
     # específicos (/api/dishes/discover, /api/dishes/duel) son matcheados
     # por la ruta paramétrica /api/dishes/{dish_id} si esta se registra primero.
     application.include_router(discovery.router)
+    application.include_router(dish_lists.router)
     application.include_router(dishes.router)
     application.include_router(dishes_social.router)
     application.include_router(ratings.router)
@@ -127,6 +130,7 @@ def create_app(
     application.include_router(admin.router)
     application.include_router(claims.router)
     application.include_router(owner_content.router)
+    application.include_router(ghostwriter.router)
 
     uploads_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
