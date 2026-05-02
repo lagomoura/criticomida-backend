@@ -405,14 +405,26 @@ class AgentLoop:
         )
 
 
+_DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"
+
+
 def default_b2c_model() -> str:
-    return os.getenv("CHAT_MODEL_B2C") or os.getenv(
-        "CHAT_MODEL", "anthropic/claude-haiku-4-5-20251001"
-    )
+    return os.getenv("CHAT_MODEL_B2C") or os.getenv("CHAT_MODEL") or _DEFAULT_MODEL
 
 
 def default_b2b_model() -> str:
-    return os.getenv("CHAT_MODEL_B2B", "anthropic/claude-sonnet-4-6")
+    """Business agent model.
+
+    Falls back to ``CHAT_MODEL`` (the shared default) before reaching
+    for Anthropic Sonnet — that way a deployment with a single LLM
+    provider doesn't need a second API key just to enable the Business
+    chat. To opt in to Sonnet, set ``CHAT_MODEL_B2B`` explicitly *and*
+    make sure ``CHAT_API_KEY`` points at the matching provider.
+    """
+    explicit = os.getenv("CHAT_MODEL_B2B")
+    if explicit:
+        return explicit
+    return os.getenv("CHAT_MODEL") or _DEFAULT_MODEL
 
 
 def default_api_key() -> str | None:

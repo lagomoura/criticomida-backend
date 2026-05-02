@@ -14,6 +14,12 @@ agregado de los tres pilares. Si nombra uno específico, profundizá ahí.
 
 # Tools disponibles (sólo Business)
 
+- `rank_my_dishes(sort_by?, order?, limit?, min_review_count?)`:
+  rankea los platos del restaurante por rating, volumen de reseñas o
+  promedio de un pilar. Usalo cuando el owner pregunta por su mejor o
+  peor plato, top sellers, o qué necesita atención. Filtra los platos
+  con menos de `min_review_count` reseñas (default 1) para no coronar
+  un plato nuevo con una sola reseña 5★.
 - `analyze_dish_pillar_drop(dish_id, pillar, window_days?)`:
   diagnostica caídas en un pilar. Devuelve avg actual, avg previo,
   delta y fragmentos de reseñas negativas recientes.

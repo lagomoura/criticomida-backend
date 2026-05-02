@@ -38,6 +38,7 @@ from app.services.chat_service import (
     get_or_create_conversation,
     stream_chat,
 )
+from app.services.claim_service import assert_verified_owner
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -103,9 +104,10 @@ async def stream_endpoint(
 ):
     """Run a single chat turn and stream events as SSE."""
 
-    # Business agent requires an authenticated owner of the scoped
-    # restaurant. Validate up front so we don't burn LLM tokens on a
-    # request that will be rejected anyway.
+    # Business agent requires an authenticated owner (or an admin) of
+    # the scoped restaurant. ``assert_verified_owner`` already bypasses
+    # for ``UserRole.admin`` so support / moderation can debug from any
+    # restaurant's owner panel without a claim.
     if body.agent == ChatAgent.business:
         if user is None:
             raise HTTPException(
@@ -117,22 +119,9 @@ async def stream_endpoint(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Business agent requires restaurant_scope_id.",
             )
-        # Owner-of-restaurant check is enforced at tool layer for
-        # defense in depth, but we surface a friendly 403 here too.
-        from app.models.restaurant import Restaurant
-
-        rest = (
-            await db.execute(
-                select(Restaurant).where(
-                    Restaurant.id == body.restaurant_scope_id
-                )
-            )
-        ).scalars().first()
-        if rest is None or rest.claimed_by_user_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only verified owners can use the Business agent.",
-            )
+        await assert_verified_owner(
+            db, user=user, restaurant_id=body.restaurant_scope_id
+        )
 
     convo = await get_or_create_conversation(
         db,

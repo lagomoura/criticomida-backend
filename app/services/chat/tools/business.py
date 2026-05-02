@@ -436,6 +436,167 @@ def make_benchmark_dish_tool(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+#   rank_my_dishes
+# ──────────────────────────────────────────────────────────────────────────
+
+
+_RANK_SORT_OPTIONS = {
+    "rating": "rating",
+    "review_count": "review_count",
+    "presentation": "presentation",
+    "execution": "execution",
+    "value_prop": "value_prop",
+}
+
+
+RANK_MY_DISHES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sort_by": {
+            "type": "string",
+            "enum": list(_RANK_SORT_OPTIONS.keys()),
+            "default": "rating",
+            "description": (
+                "Field to rank by. ``rating`` is the aggregate computed "
+                "rating; ``review_count`` ranks by volume; the three "
+                "pillars rank by their per-dish average."
+            ),
+        },
+        "order": {
+            "type": "string",
+            "enum": ["desc", "asc"],
+            "default": "desc",
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "default": 10,
+        },
+        "min_review_count": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 1,
+            "description": (
+                "Drop dishes with fewer reviews than this. Useful so a "
+                "single 5-star review doesn't crown a brand-new dish."
+            ),
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+def make_rank_my_dishes_tool(
+    db: AsyncSession, *, restaurant_scope_id: str | None
+) -> ToolSpec:
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        if restaurant_scope_id is None:
+            return {"error": "Business scope is required."}
+
+        sort_by = args.get("sort_by", "rating")
+        order = args.get("order", "desc")
+        limit = int(args.get("limit", 10))
+        min_count = int(args.get("min_review_count", 1))
+
+        # Pre-aggregate the three pillar averages per dish in a single
+        # round trip — avoids a join blow-up if a dish has many reviews.
+        pillar_avgs = (
+            select(
+                DishReview.dish_id.label("dish_id"),
+                func.avg(DishReview.presentation).label("avg_presentation"),
+                func.avg(DishReview.execution).label("avg_execution"),
+                func.avg(DishReview.value_prop).label("avg_value_prop"),
+            )
+            .group_by(DishReview.dish_id)
+            .subquery()
+        )
+
+        sort_column = {
+            "rating": Dish.computed_rating,
+            "review_count": Dish.review_count,
+            "presentation": pillar_avgs.c.avg_presentation,
+            "execution": pillar_avgs.c.avg_execution,
+            "value_prop": pillar_avgs.c.avg_value_prop,
+        }[sort_by]
+        order_clause = (
+            sort_column.desc().nullslast()
+            if order == "desc"
+            else sort_column.asc().nullsfirst()
+        )
+
+        stmt = (
+            select(
+                Dish,
+                pillar_avgs.c.avg_presentation,
+                pillar_avgs.c.avg_execution,
+                pillar_avgs.c.avg_value_prop,
+            )
+            .outerjoin(pillar_avgs, pillar_avgs.c.dish_id == Dish.id)
+            .where(
+                and_(
+                    Dish.restaurant_id == restaurant_scope_id,
+                    Dish.review_count >= min_count,
+                )
+            )
+            .order_by(order_clause, Dish.review_count.desc())
+            .limit(limit)
+        )
+        rows = list((await db.execute(stmt)).all())
+
+        items: list[dict[str, Any]] = []
+        for dish, p_pres, p_exec, p_value in rows:
+            items.append(
+                {
+                    "dish_id": str(dish.id),
+                    "name": dish.name,
+                    "rating": (
+                        float(dish.computed_rating)
+                        if dish.computed_rating is not None
+                        else None
+                    ),
+                    "review_count": dish.review_count,
+                    "price_tier": (
+                        dish.price_tier.value if dish.price_tier else None
+                    ),
+                    "avg_presentation": (
+                        round(float(p_pres), 2) if p_pres is not None else None
+                    ),
+                    "avg_execution": (
+                        round(float(p_exec), 2) if p_exec is not None else None
+                    ),
+                    "avg_value_prop": (
+                        round(float(p_value), 2) if p_value is not None else None
+                    ),
+                }
+            )
+
+        return {
+            "restaurant_id": restaurant_scope_id,
+            "sort_by": sort_by,
+            "order": order,
+            "min_review_count": min_count,
+            "count": len(items),
+            "dishes": items,
+        }
+
+    return ToolSpec(
+        name="rank_my_dishes",
+        description=(
+            "Rank the dishes of this restaurant by rating, review "
+            "volume, or any of the three pillars (presentation, "
+            "execution, value_prop). Use it when the owner asks about "
+            "their best/worst plato, top sellers, or which dishes need "
+            "attention. Filters out dishes with fewer than "
+            "``min_review_count`` reviews to avoid crowning untested "
+            "items."
+        ),
+        input_schema=RANK_MY_DISHES_SCHEMA,
+        handler=handler,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
 #   list_pending_reviews
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -471,12 +632,12 @@ def make_list_pending_reviews_tool(
             .join(Dish, DishReview.dish_id == Dish.id)
             .outerjoin(
                 DishReviewOwnerResponse,
-                DishReviewOwnerResponse.dish_review_id == DishReview.id,
+                DishReviewOwnerResponse.review_id == DishReview.id,
             )
             .where(
                 and_(
                     Dish.restaurant_id == restaurant_scope_id,
-                    DishReviewOwnerResponse.id.is_(None),
+                    DishReviewOwnerResponse.review_id.is_(None),
                 )
             )
             .order_by(DishReview.created_at.desc())
