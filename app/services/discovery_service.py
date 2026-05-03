@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 
 from app.models.category import Category
-from app.models.dish import Dish, DishReview, WantToTryDish
+from app.models.dish import Dish, DishReview, DishReviewImage, WantToTryDish
 from app.models.restaurant import Restaurant
 from app.schemas.discovery import (
     DiscoveryDishItem,
@@ -188,10 +188,28 @@ async def discover_dishes(
     else:
         want_to_try_col = literal(False)
 
+    # Fallback de cover: si Dish.cover_image_url es NULL (caso típico cuando el
+    # plato solo tiene fotos subidas vía reviews y nadie corrió seed_review_images),
+    # caemos a la imagen de review más reciente para que el rail no muestre
+    # 'Sin foto' siendo que la galería del plato sí tiene fotos.
+    review_cover_expr = (
+        select(DishReviewImage.url)
+        .join(DishReview, DishReview.id == DishReviewImage.dish_review_id)
+        .where(DishReview.dish_id == Dish.id)
+        .order_by(
+            DishReviewImage.uploaded_at.desc(),
+            DishReviewImage.display_order.asc(),
+        )
+        .limit(1)
+        .correlate(Dish)
+        .scalar_subquery()
+    )
+    cover_image_col = func.coalesce(Dish.cover_image_url, review_cover_expr)
+
     columns = [
         Dish.id.label("dish_id"),
         Dish.name.label("dish_name"),
-        Dish.cover_image_url,
+        cover_image_col.label("cover_image_url"),
         Dish.price_tier,
         Dish.computed_rating,
         Dish.review_count,
