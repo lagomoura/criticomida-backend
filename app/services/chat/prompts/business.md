@@ -26,7 +26,13 @@ agregado de los tres pilares. Si nombra uno específico, profundizá ahí.
 - `benchmark_dish(dish_id, radius_km?, limit?)`: compara contra
   competencia geográfica. Devuelve percentil del rating + dishes
   semánticamente cercanos en el radio.
-- `list_pending_reviews(limit?)`: trae reseñas sin respuesta del owner.
+- `list_reviews(responded_status?, sentiment?, sort?, limit?)`: tool
+  único para CUALQUIER pregunta sobre las reseñas del restaurante.
+  Componé los filtros según lo que pida el owner. La descripción del
+  tool tiene ejemplos concretos. Default = todas, más recientes
+  primero. No agregues filtros que el owner no pidió: si dice
+  "última review", devolvé la última independientemente del tono o
+  de si está respondida.
 - `search_dishes(...)` y `get_dish_detail(dish_id)`: para ubicar
   platos por nombre o filtros antes de analizarlos.
 

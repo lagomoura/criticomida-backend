@@ -18,6 +18,7 @@ from app.models.dish import (
 from app.models.user import User, UserRole
 from app.schemas.dish import DishReviewCreate, DishReviewResponse, DishReviewUpdate, MyReviewResponse
 from app.services.rating_service import update_dish_rating, update_restaurant_rating
+from app.services.sentiment_service import schedule_analyze_review
 
 router = APIRouter(tags=["reviews"])
 
@@ -161,6 +162,7 @@ async def create_review(
 
     # Reload with relationships
     loaded = await _load_review_with_relations(db, review.id)
+    schedule_analyze_review(review.id)
     return loaded  # type: ignore[return-value]
 
 
@@ -191,11 +193,15 @@ async def update_review(
             detail="You can only update your own reviews",
         )
 
+    previous_note = review.note
     update_data = review_data.model_dump(
         exclude_unset=True, exclude={"pros_cons", "tags", "images"}
     )
     for field, value in update_data.items():
         setattr(review, field, value)
+    note_changed = (
+        review_data.note is not None and review_data.note != previous_note
+    )
 
     if review_data.pros_cons is not None:
         await db.execute(
@@ -251,6 +257,8 @@ async def update_review(
     await update_restaurant_rating(db, dish.restaurant_id)
 
     loaded = await _load_review_with_relations(db, review.id)
+    if note_changed:
+        schedule_analyze_review(review.id)
     return loaded  # type: ignore[return-value]
 
 

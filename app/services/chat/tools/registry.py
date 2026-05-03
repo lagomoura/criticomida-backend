@@ -24,7 +24,7 @@ from app.services.chat.agent_loop import ToolRegistry
 from app.services.chat.tools.business import (
     make_analyze_dish_pillar_drop_tool,
     make_benchmark_dish_tool,
-    make_list_pending_reviews_tool,
+    make_list_reviews_tool,
     make_rank_my_dishes_tool,
 )
 from app.services.chat.tools.map import make_open_in_map_tool
@@ -105,7 +105,7 @@ def build_registry(
             )
         )
         registry.register(
-            make_list_pending_reviews_tool(
+            make_list_reviews_tool(
                 db, restaurant_scope_id=restaurant_scope_id
             )
         )

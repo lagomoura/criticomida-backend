@@ -10,13 +10,13 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import desc, func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.dish import Dish, DishReview
+from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import (
     DishReviewOwnerResponse,
     RestaurantOfficialPhoto,
@@ -239,10 +239,30 @@ async def list_owner_reviews(
     slug: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    sentiment: Annotated[
+        SentimentLabel | None,
+        Query(
+            description=(
+                "Filtrá por sentimiento detectado. Reviews todavía no "
+                "analizadas no aparecen cuando se aplica el filtro."
+            )
+        ),
+    ] = None,
+    sort: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Orden alternativo. ``sentiment_asc`` ordena por score "
+                "ascendente (lo más negativo primero); por defecto se "
+                "ordena por fecha de creación descendente."
+            )
+        ),
+    ] = None,
 ) -> dict:
     """Lista plana de todas las reseñas del restaurant para el dashboard del
     owner. Incluye has_owner_response para que el frontend resalte cuáles
-    siguen sin contestar.
+    siguen sin contestar y sentiment_label/score para priorizar las
+    negativas.
 
     Solo accesible al verified owner."""
     from app.models.dish import Dish, DishReview
@@ -264,6 +284,8 @@ async def list_owner_reviews(
             DishReview.note,
             DishReview.is_anonymous,
             DishReview.date_tasted,
+            DishReview.sentiment_label,
+            DishReview.sentiment_score,
             UserModel.display_name,
             UserModel.handle,
             DishReviewOwnerResponse.review_id.label("response_review_id"),
@@ -275,8 +297,22 @@ async def list_owner_reviews(
             DishReviewOwnerResponse.review_id == DishReview.id,
         )
         .where(Dish.restaurant_id == restaurant.id)
-        .order_by(DishReview.created_at.desc())
     )
+
+    if sentiment is not None:
+        stmt = stmt.where(DishReview.sentiment_label == sentiment)
+
+    if sort == "sentiment_asc":
+        # NULLs last — analyzed-negative bubbles to the top, unanalyzed
+        # rows fall to the bottom rather than masquerading as the
+        # most-negative slot.
+        stmt = stmt.order_by(
+            asc(DishReview.sentiment_score).nullslast(),
+            DishReview.created_at.desc(),
+        )
+    else:
+        stmt = stmt.order_by(DishReview.created_at.desc())
+
     rows = (await db.execute(stmt)).all()
 
     items: list[OwnerReviewItem] = []
@@ -297,6 +333,12 @@ async def list_owner_reviews(
                 is_anonymous=row.is_anonymous,
                 date_tasted=row.date_tasted.isoformat(),
                 has_owner_response=has_resp,
+                sentiment_label=row.sentiment_label,
+                sentiment_score=(
+                    float(row.sentiment_score)
+                    if row.sentiment_score is not None
+                    else None
+                ),
             )
         )
     return {

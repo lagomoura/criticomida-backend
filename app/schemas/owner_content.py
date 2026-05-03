@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.models.dish import SentimentLabel
+
 
 # ----- Dish review owner response -----
 
@@ -58,7 +60,9 @@ class OwnerReviewItem(BaseModel):
     """Vista plana de cada reseña del restaurant para el dashboard del dueño.
 
     Incluye el flag has_owner_response para que el frontend pueda destacar
-    rápido cuáles requieren atención sin un fetch extra por reseña."""
+    rápido cuáles requieren atención sin un fetch extra por reseña, y el
+    sentimiento detectado para priorizar las negativas. ``sentiment_*``
+    es interno: nunca se expone en la vista pública de la reseña."""
 
     id: uuid.UUID
     dish_id: uuid.UUID
@@ -70,6 +74,8 @@ class OwnerReviewItem(BaseModel):
     is_anonymous: bool
     date_tasted: str
     has_owner_response: bool
+    sentiment_label: SentimentLabel | None = None
+    sentiment_score: float | None = None
 
 
 class OwnerReviewsListResponse(BaseModel):

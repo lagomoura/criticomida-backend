@@ -14,9 +14,10 @@ Three tools shipped:
 - ``benchmark_dish`` — finds dishes within ``radius_km`` whose
   embedding is closest to ``dish_id`` (semantic peers) and computes
   percentile ranks for each pillar across that cohort.
-- ``list_pending_reviews`` — lightweight wrapper over the existing
-  ``owner_content`` view: returns reviews on this restaurant that the
-  owner hasn't responded to yet.
+- ``list_reviews`` — single composable tool over the restaurant's
+  reviews. Combines filters (responded status, sentiment) and sort
+  order so any review-listing question the owner asks is one tool
+  call, no per-question tools.
 """
 
 from __future__ import annotations
@@ -26,12 +27,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, asc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.chat import DishEmbedding
-from app.models.dish import Dish, DishReview
+from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
@@ -597,13 +598,43 @@ def make_rank_my_dishes_tool(
 
 
 # ──────────────────────────────────────────────────────────────────────────
-#   list_pending_reviews
+#   list_reviews — single composable tool for any review-listing question
 # ──────────────────────────────────────────────────────────────────────────
 
 
-LIST_PENDING_REVIEWS_SCHEMA: dict[str, Any] = {
+LIST_REVIEWS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "responded_status": {
+            "type": "string",
+            "enum": ["any", "pending", "responded"],
+            "default": "any",
+            "description": (
+                "Filter by whether the owner has already replied. "
+                "'pending' = sin responder; 'responded' = ya respondida; "
+                "'any' = ambas."
+            ),
+        },
+        "sentiment": {
+            "type": "string",
+            "enum": ["any", "positive", "neutral", "negative"],
+            "default": "any",
+            "description": (
+                "Filter by detected sentiment of the review text. "
+                "Reviews still un-classified are excluded whenever this "
+                "is set to anything other than 'any'."
+            ),
+        },
+        "sort": {
+            "type": "string",
+            "enum": ["recent", "oldest", "most_negative"],
+            "default": "recent",
+            "description": (
+                "'recent' = newest first (default). 'oldest' = oldest "
+                "first. 'most_negative' = lowest sentiment score first; "
+                "use it to triage harshest reviews."
+            ),
+        },
         "limit": {
             "type": "integer",
             "minimum": 1,
@@ -615,35 +646,62 @@ LIST_PENDING_REVIEWS_SCHEMA: dict[str, Any] = {
 }
 
 
-def make_list_pending_reviews_tool(
+def make_list_reviews_tool(
     db: AsyncSession, *, restaurant_scope_id: str | None
 ) -> ToolSpec:
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         if restaurant_scope_id is None:
             return {"error": "Business scope is required."}
 
+        responded_arg = args.get("responded_status", "any")
+        sentiment_arg = args.get("sentiment", "any")
+        sort_arg = args.get("sort", "recent")
         limit = int(args.get("limit", 10))
 
-        # Reviews on this restaurant's dishes that don't have an owner
-        # response yet. We left-join the response table and keep rows
-        # where it's NULL.
+        if responded_arg not in ("any", "pending", "responded"):
+            return {"error": "Invalid responded_status."}
+        if sort_arg not in ("recent", "oldest", "most_negative"):
+            return {"error": "Invalid sort."}
+        try:
+            sentiment_filter = (
+                SentimentLabel(sentiment_arg)
+                if sentiment_arg and sentiment_arg != "any"
+                else None
+            )
+        except ValueError:
+            return {"error": "Invalid sentiment."}
+
         stmt = (
-            select(DishReview, Dish)
+            select(DishReview, Dish, DishReviewOwnerResponse.review_id)
             .join(Dish, DishReview.dish_id == Dish.id)
             .outerjoin(
                 DishReviewOwnerResponse,
                 DishReviewOwnerResponse.review_id == DishReview.id,
             )
-            .where(
-                and_(
-                    Dish.restaurant_id == restaurant_scope_id,
-                    DishReviewOwnerResponse.review_id.is_(None),
-                )
-            )
-            .order_by(DishReview.created_at.desc())
-            .limit(limit)
+            .where(Dish.restaurant_id == restaurant_scope_id)
         )
-        rows = list((await db.execute(stmt)).all())
+
+        if responded_arg == "pending":
+            stmt = stmt.where(DishReviewOwnerResponse.review_id.is_(None))
+        elif responded_arg == "responded":
+            stmt = stmt.where(DishReviewOwnerResponse.review_id.is_not(None))
+
+        if sentiment_filter is not None:
+            stmt = stmt.where(DishReview.sentiment_label == sentiment_filter)
+
+        if sort_arg == "most_negative":
+            # Lowest score first; NULLS last so unanalysed rows don't
+            # masquerade as the most-negative slot.
+            stmt = stmt.order_by(
+                asc(DishReview.sentiment_score).nullslast(),
+                DishReview.created_at.desc(),
+            )
+        elif sort_arg == "oldest":
+            stmt = stmt.order_by(DishReview.created_at.asc())
+        else:  # "recent"
+            stmt = stmt.order_by(DishReview.created_at.desc())
+
+        rows = list((await db.execute(stmt.limit(limit))).all())
 
         items = [
             {
@@ -655,23 +713,48 @@ def make_list_pending_reviews_tool(
                 "presentation": rev.presentation,
                 "execution": rev.execution,
                 "value_prop": rev.value_prop,
+                "sentiment_label": (
+                    rev.sentiment_label.value
+                    if rev.sentiment_label is not None
+                    else None
+                ),
+                "sentiment_score": (
+                    float(rev.sentiment_score)
+                    if rev.sentiment_score is not None
+                    else None
+                ),
+                "has_owner_response": resp_id is not None,
                 "excerpt": (rev.note or "")[:240],
             }
-            for rev, dish in rows
+            for rev, dish, resp_id in rows
         ]
         return {
             "restaurant_id": restaurant_scope_id,
-            "pending_count": len(items),
+            "count": len(items),
+            "filter": {
+                "responded_status": responded_arg,
+                "sentiment": sentiment_arg,
+                "sort": sort_arg,
+            },
             "reviews": items,
         }
 
     return ToolSpec(
-        name="list_pending_reviews",
+        name="list_reviews",
         description=(
-            "List recent reviews on this restaurant that the owner has "
-            "not responded to yet. Use it when the owner asks 'what's "
-            "pending', 'cuáles me faltan responder', etc."
+            "Single tool for ANY question about reviews of this "
+            "restaurant — pending, responded, by sentiment, by date, "
+            "or any combination. Compose ``responded_status``, "
+            "``sentiment`` and ``sort`` to match the owner's "
+            "question. Examples: 'qué me falta responder' → "
+            "responded_status='pending'; 'última review positiva' → "
+            "sentiment='positive'; 'pendientes con tono más duro' → "
+            "responded_status='pending', sentiment='negative', "
+            "sort='most_negative'; 'qué dijeron las negativas que ya "
+            "contesté' → responded_status='responded', "
+            "sentiment='negative'. Always pick the loosest filter that "
+            "matches — don't add filters the owner didn't ask for."
         ),
-        input_schema=LIST_PENDING_REVIEWS_SCHEMA,
+        input_schema=LIST_REVIEWS_SCHEMA,
         handler=handler,
     )

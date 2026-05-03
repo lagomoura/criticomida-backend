@@ -42,6 +42,12 @@ class DishReviewProsConsType(str, enum.Enum):
     con = "con"
 
 
+class SentimentLabel(str, enum.Enum):
+    positive = "positive"
+    neutral = "neutral"
+    negative = "negative"
+
+
 class Dish(Base):
     __tablename__ = "dishes"
 
@@ -127,6 +133,16 @@ class DishReview(Base):
     presentation: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     value_prop: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     execution: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    sentiment_label: Mapped[SentimentLabel | None] = mapped_column(
+        Enum(SentimentLabel, name="sentiment_label", create_type=False),
+        nullable=True,
+    )
+    sentiment_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(3, 2), nullable=True
+    )
+    sentiment_analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
