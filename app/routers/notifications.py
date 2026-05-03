@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
+from app.models.restaurant import Restaurant
 from app.models.social import Notification
 from app.models.user import User
 from app.schemas.notification import (
@@ -35,8 +36,11 @@ async def list_notifications(
             raise HTTPException(status_code=400, detail="Cursor inválido")
 
     stmt = (
-        select(Notification, User)
+        select(Notification, User, Restaurant.slug)
         .join(User, Notification.actor_user_id == User.id)
+        .outerjoin(
+            Restaurant, Restaurant.id == Notification.target_restaurant_id
+        )
         .where(Notification.recipient_user_id == current_user.id)
         .order_by(Notification.created_at.desc())
         .limit(limit + 1)
@@ -63,10 +67,11 @@ async def list_notifications(
             target_review_id=n.target_review_id,
             target_user_id=n.target_user_id,
             target_restaurant_id=n.target_restaurant_id,
+            target_restaurant_slug=restaurant_slug,
             target_comment_id=n.target_comment_id,
             text=n.text,
         )
-        for n, actor in trimmed
+        for n, actor, restaurant_slug in trimmed
     ]
     next_cursor = trimmed[-1][0].created_at.isoformat() if has_more and trimmed else None
     return NotificationsPage(items=items, next_cursor=next_cursor)

@@ -242,3 +242,51 @@ def render_reservation_requested(
         text_lines.append(f"Mensaje: {message}")
     text_lines.append(f"Panel del restaurante: {panel_url}")
     return subject, html, "\n\n".join(text_lines)
+
+
+def render_review_on_owned_restaurant(
+    *,
+    restaurant_name: str,
+    restaurant_slug: str,
+    dish_name: str,
+    rating: float,
+    reviewer_display_name: str,
+    review_id: str,
+    is_anonymous: bool = False,
+) -> tuple[str, str, str]:
+    """Email al verified owner cuando un usuario sube una reseña de un plato
+    de su restaurante. El CTA lleva al panel /owner con la reseña abierta
+    en modal vía query param ``?review={id}``.
+    """
+    panel_url = (
+        f"{settings.PUBLIC_APP_URL}/restaurants/{restaurant_slug}/owner"
+        f"?review={review_id}"
+    )
+    subject = f"Nueva reseña en {restaurant_name}: {dish_name} ({rating:.1f}★)"
+    author_label = "Un comensal anónimo" if is_anonymous else reviewer_display_name
+    html = _wrap(
+        f"""
+    <p style="font-size:16px;line-height:1.5;">
+      <strong>{author_label}</strong> publicó una reseña de
+      <strong>{dish_name}</strong> en {restaurant_name} con una calificación
+      de <strong>{rating:.1f}★</strong>.
+    </p>
+    <p style="margin-top:24px;">
+      <a href="{panel_url}"
+         style="display:inline-block;background:#a04a3c;color:#fff;
+                padding:12px 20px;border-radius:8px;text-decoration:none;
+                font-weight:600;">
+        Ver la reseña en el panel
+      </a>
+    </p>
+    <p style="font-size:13px;color:#5a4a40;margin-top:18px;">
+      Podés responderle desde el panel para que tu respuesta quede pegada
+      a la reseña en la ficha pública.
+    </p>
+    """
+    )
+    text = (
+        f"{author_label} publicó una reseña de {dish_name} en "
+        f"{restaurant_name} ({rating:.1f}★).\n\nVer en el panel: {panel_url}"
+    )
+    return subject, html, text

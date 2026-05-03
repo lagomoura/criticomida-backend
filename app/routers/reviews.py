@@ -15,8 +15,17 @@ from app.models.dish import (
     DishReviewProsCons,
     DishReviewTag,
 )
+from app.models.owner_preferences import OwnerNotificationPreference
+from app.models.restaurant import Restaurant
 from app.models.user import User, UserRole
 from app.schemas.dish import DishReviewCreate, DishReviewResponse, DishReviewUpdate, MyReviewResponse
+from app.services.email_service import (
+    render_review_on_owned_restaurant,
+    send_email,
+)
+from app.services.notification_service import (
+    record_review_on_owned_restaurant_notification,
+)
 from app.services.rating_service import update_dish_rating, update_restaurant_rating
 from app.services.sentiment_service import schedule_analyze_review
 
@@ -159,6 +168,45 @@ async def create_review(
     # Recompute ratings
     await update_dish_rating(db, dish_id)
     await update_restaurant_rating(db, dish.restaurant_id)
+
+    # Notificar al verified owner del restaurant si la preferencia lo permite.
+    # Default ON: si no hay row en owner_notification_preferences se asume
+    # que quiere enterarse. Email + in-app van con el mismo toggle.
+    restaurant = await db.get(Restaurant, dish.restaurant_id)
+    if (
+        restaurant is not None
+        and restaurant.claimed_by_user_id is not None
+        and restaurant.claimed_by_user_id != current_user.id
+    ):
+        pref = await db.get(
+            OwnerNotificationPreference,
+            (restaurant.claimed_by_user_id, restaurant.id),
+        )
+        notify = pref.notify_on_review if pref is not None else True
+        if notify:
+            await record_review_on_owned_restaurant_notification(
+                db,
+                actor_id=current_user.id,
+                review_id=review.id,
+                restaurant_id=restaurant.id,
+                owner_user_id=restaurant.claimed_by_user_id,
+                dish_name=dish.name,
+                rating=float(review_data.rating),
+            )
+            owner = await db.get(User, restaurant.claimed_by_user_id)
+            if owner is not None and owner.email:
+                subject, html, text = render_review_on_owned_restaurant(
+                    restaurant_name=restaurant.name,
+                    restaurant_slug=restaurant.slug,
+                    dish_name=dish.name,
+                    rating=float(review_data.rating),
+                    reviewer_display_name=current_user.display_name,
+                    review_id=str(review.id),
+                    is_anonymous=bool(review_data.is_anonymous),
+                )
+                await send_email(
+                    to=owner.email, subject=subject, html=html, text=text
+                )
 
     # Reload with relationships
     loaded = await _load_review_with_relations(db, review.id)

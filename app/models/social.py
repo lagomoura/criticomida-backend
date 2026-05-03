@@ -85,7 +85,7 @@ class Notification(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
     target_review_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("dish_reviews.id", ondelete="CASCADE"),

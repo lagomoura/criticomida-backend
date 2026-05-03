@@ -199,3 +199,33 @@ async def record_follow_notification(
             text="empezó a seguirte.",
         )
     )
+
+
+async def record_review_on_owned_restaurant_notification(
+    db: AsyncSession,
+    *,
+    actor_id: uuid.UUID,
+    review_id: uuid.UUID,
+    restaurant_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+    dish_name: str,
+    rating: float,
+) -> None:
+    """Avisa al verified owner cuando un comensal sube una reseña en su
+    restaurante. No-op si el autor es el mismo owner."""
+    if actor_id == owner_user_id:
+        return
+    text = (
+        f"publicó una reseña de {dish_name} ({rating:.1f}★). "
+        "¿Responder esta reseña?"
+    )
+    db.add(
+        Notification(
+            recipient_user_id=owner_user_id,
+            actor_user_id=actor_id,
+            kind="review_on_owned_restaurant",
+            target_review_id=review_id,
+            target_restaurant_id=restaurant_id,
+            text=text,
+        )
+    )
