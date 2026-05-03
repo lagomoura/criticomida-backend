@@ -3,7 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.dish import SentimentLabel
+from app.models.dish import PortionSize, SentimentLabel
+from app.models.user import Gender, UserRole
 
 
 # ----- Dish review owner response -----
@@ -62,7 +63,13 @@ class OwnerReviewItem(BaseModel):
     Incluye el flag has_owner_response para que el frontend pueda destacar
     rápido cuáles requieren atención sin un fetch extra por reseña, y el
     sentimiento detectado para priorizar las negativas. ``sentiment_*``
-    es interno: nunca se expone en la vista pública de la reseña."""
+    es interno: nunca se expone en la vista pública de la reseña.
+
+    Los campos ``author_*`` se omiten (None) cuando ``is_anonymous`` es
+    True para respetar end-to-end la decisión del cliente de reseñar
+    de forma anónima. ``author_age_range`` es un bucket derivado de
+    ``birth_date`` — la fecha exacta nunca sale del backend.
+    """
 
     id: uuid.UUID
     dish_id: uuid.UUID
@@ -76,6 +83,14 @@ class OwnerReviewItem(BaseModel):
     has_owner_response: bool
     sentiment_label: SentimentLabel | None = None
     sentiment_score: float | None = None
+    presentation: int | None = None
+    execution: int | None = None
+    value_prop: int | None = None
+    portion_size: PortionSize | None = None
+    would_order_again: bool | None = None
+    author_role: UserRole | None = None
+    author_gender: Gender | None = None
+    author_age_range: str | None = None
 
 
 class OwnerReviewsListResponse(BaseModel):

@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.user import UserRole
+from app.models.user import Gender, UserRole
 
 MasteryLevel = Literal["apprentice", "sommelier", "master"]
 
@@ -35,6 +35,21 @@ class UserProfileUpdate(BaseModel):
     bio: str | None = Field(None, max_length=500)
     location: str | None = Field(None, max_length=200)
     avatar_url: str | None = None
+    gender: Gender | None = None
+    birth_date: date | None = None
+
+    @field_validator("birth_date")
+    @classmethod
+    def _validate_birth_date(cls, v: date | None) -> date | None:
+        if v is None:
+            return v
+        today = date.today()
+        if v > today:
+            raise ValueError("birth_date cannot be in the future")
+        # Reject implausibly old dates (>120 years).
+        if (today.year - v.year) > 120:
+            raise ValueError("birth_date is more than 120 years ago")
+        return v
 
 
 class UserResponse(BaseModel):
@@ -46,6 +61,8 @@ class UserResponse(BaseModel):
     bio: str | None = None
     location: str | None = None
     role: UserRole
+    gender: Gender | None = None
+    birth_date: date | None = None
     created_at: datetime
     updated_at: datetime
     # Migración 028: si el user ya confirmó el link enviado al registrarse.

@@ -1,8 +1,8 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import DateTime, Enum, String
+from sqlalchemy import Date, DateTime, Enum, String
 from sqlalchemy.dialects.postgresql import CITEXT, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +13,13 @@ class UserRole(str, enum.Enum):
     admin = "admin"
     critic = "critic"
     user = "user"
+
+
+class Gender(str, enum.Enum):
+    female = "female"
+    male = "male"
+    non_binary = "non_binary"
+    prefer_not_to_say = "prefer_not_to_say"
 
 
 class User(Base):
@@ -33,6 +40,10 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role"), default=UserRole.user, nullable=False
     )
+    gender: Mapped[Gender | None] = mapped_column(
+        Enum(Gender, name="user_gender"), nullable=True
+    )
+    birth_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

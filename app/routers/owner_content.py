@@ -33,6 +33,7 @@ from app.schemas.owner_content import (
     OwnerReviewsListResponse,
 )
 from app.services.claim_service import assert_verified_owner
+from app.services.demographics import derive_age_range
 
 
 router = APIRouter(tags=["owner-content"])
@@ -286,8 +287,16 @@ async def list_owner_reviews(
             DishReview.date_tasted,
             DishReview.sentiment_label,
             DishReview.sentiment_score,
+            DishReview.presentation,
+            DishReview.execution,
+            DishReview.value_prop,
+            DishReview.portion_size,
+            DishReview.would_order_again,
             UserModel.display_name,
             UserModel.handle,
+            UserModel.role.label("author_role"),
+            UserModel.gender.label("author_gender"),
+            UserModel.birth_date.label("author_birth_date"),
             DishReviewOwnerResponse.review_id.label("response_review_id"),
         )
         .join(Dish, DishReview.dish_id == Dish.id)
@@ -321,6 +330,17 @@ async def list_owner_reviews(
         has_resp = row.response_review_id is not None
         if not has_resp:
             pending_count += 1
+        # Reseñas anónimas no exponen NADA del autor al owner — ni rol,
+        # ni género, ni rango etario. El cliente eligió ese opt-out y se
+        # respeta end-to-end.
+        if row.is_anonymous:
+            author_role = None
+            author_gender = None
+            author_age_range = None
+        else:
+            author_role = row.author_role
+            author_gender = row.author_gender
+            author_age_range = derive_age_range(row.author_birth_date)
         items.append(
             OwnerReviewItem(
                 id=row.id,
@@ -339,6 +359,14 @@ async def list_owner_reviews(
                     if row.sentiment_score is not None
                     else None
                 ),
+                presentation=row.presentation,
+                execution=row.execution,
+                value_prop=row.value_prop,
+                portion_size=row.portion_size,
+                would_order_again=row.would_order_again,
+                author_role=author_role,
+                author_gender=author_gender,
+                author_age_range=author_age_range,
             )
         )
     return {
