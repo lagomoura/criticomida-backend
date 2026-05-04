@@ -23,7 +23,7 @@ from datetime import date
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -72,6 +72,19 @@ class ListReviewsInput(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator(
+        "responded_status", "sentiment", "sort", mode="before"
+    )
+    @classmethod
+    def _lowercase_enum(cls, value: Any) -> Any:
+        # Models occasionally emit uppercase enum values ('NEUTRAL',
+        # 'PENDING'). Lowercasing before the enum check keeps the
+        # contract semantic (one canonical form) without forcing the
+        # LLM to mind casing — which is just visual noise, not vocabulary.
+        if isinstance(value, str):
+            return value.lower()
+        return value
 
     responded_status: RespondedStatus = Field(
         default=RespondedStatus.any,

@@ -247,12 +247,26 @@ def _check_assertions(
 def _find_matching_call(
     captured: list[CapturedToolCall], expected: ExpectedToolCall
 ) -> CapturedToolCall | None:
+    """Subset match with case-insensitive string equality.
+
+    The tool contract normalises casing (Pydantic ``before`` validator
+    lowercases enum strings), so an LLM that emits ``'NEUTRAL'`` and one
+    that emits ``'neutral'`` are behaviourally identical. Asserting
+    against the raw payload would flake on case alone.
+    """
     for tc in captured:
         if tc.name != expected.name:
             continue
-        if all(
-            tc.args.get(key) == value
-            for key, value in expected.args_must_match.items()
-        ):
+        match = True
+        for key, expected_value in expected.args_must_match.items():
+            actual = tc.args.get(key)
+            if isinstance(actual, str) and isinstance(expected_value, str):
+                if actual.lower() != expected_value.lower():
+                    match = False
+                    break
+            elif actual != expected_value:
+                match = False
+                break
+        if match:
             return tc
     return None

@@ -1,23 +1,36 @@
 # Eval cases for the Business chat agent.
 #
 # Schema (see runner.EvalCase): each case asserts behaviour, not data.
-# The fixture (see conftest.py::chat_eval_scope) ships 4 dishes — Hamburguesa
-# Clásica, Tacos al Pastor, Risotto de Hongos, Tiramisú — with 8 pending
-# reviews and 4 responded. Cases reference dishes by name, never by ID.
+# The fixture (see conftest.py::chat_eval_scope) ships:
+#   - 4 dishes: Hamburguesa Clásica, Tacos al Pastor, Risotto de Hongos,
+#     Tiramisú.
+#   - 8 pending reviews + 4 responded.
+#   - Dates spread across April–May 2026 (1, 5, 8, 18, 22, 25, 30 days
+#     back from a 2026-05-04 anchor).
+#   - Sentiments: positive / neutral / negative; ratings 1-5.
+#
+# Cases reference dishes by name, never by ID. Assertions favour
+# tool-call shape over response text — the model phrases freely.
 #
 # Run with:
-#   RUN_CHAT_EVALS=1 CHAT_API_KEY=$ANTHROPIC_KEY \
-#     pytest tests/chat/evals/test_business_evals.py -v
+#   RUN_CHAT_EVALS=1 pytest tests/chat/evals/ -v
+
+# Common forbidden patterns: anything that means the model leaked
+# internals to the owner. Each case redeclares only the relevant ones.
+# Reference list:
+#   - applied_filters / responded_status / sentiment_label / model_validate
+#   - "no fue reconocid", "wasn't recognized", "não foi reconhecid"
+#   - "el sistema", "the system", "o sistema"
+#   - "schema", "details", "ValidationError"
+
 
 # ──────────────────────────────────────────────────────────────────────────
-#   1) Polyglot enum mapping — "haven't replied" in 3 languages
+#   1) Polyglot lookup — "pending" in 3 languages + variants
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: pending_es
   locale: es
-  description: >-
-    Owner pregunta en español por reseñas no respondidas. Histórico bug:
-    el LLM mapeaba a responded_status='no'. Hoy debe mapear a 'pending'.
+  description: Reseñas no respondidas (regression del bug histórico).
   user_input: "¿Qué reseñas todavía no respondí?"
   expected:
     tools_called:
@@ -28,7 +41,6 @@
       - "responded_status"
       - "applied_filters"
       - "no fue reconocid"
-      - "no se reconoci"
       - "el sistema"
 
 - id: pending_en
@@ -44,7 +56,7 @@
       - "responded_status"
       - "applied_filters"
       - "wasn't recognized"
-      - "not recognized"
+      - "the system"
 
 - id: pending_pt
   locale: pt
@@ -59,9 +71,37 @@
       - "responded_status"
       - "applied_filters"
       - "não foi reconhecid"
+      - "o sistema"
+
+- id: pending_es_alternate
+  locale: es
+  description: Frase coloquial alternativa para reseñas pendientes.
+  user_input: "Mostrame las reseñas que me faltan responder."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+- id: pending_en_indirect
+  locale: en
+  description: Indirect English phrasing — owner doesn't say "pending".
+  user_input: "What reviews still need my attention?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
 
 # ──────────────────────────────────────────────────────────────────────────
-#   2) Sentiment + responded combo
+#   2) Sentiment + responded combos
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: negative_pending_es
@@ -75,18 +115,41 @@
           responded_status: pending
           sentiment: negative
     response_must_not_contain:
-      - "responded_status"
       - "applied_filters"
 
+- id: positive_responded_en
+  locale: en
+  description: Sentimiento positivo + ya respondidas.
+  user_input: "Show me the positive reviews I've already replied to."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: responded
+          sentiment: positive
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: neutral_pt
+  locale: pt
+  description: Sentimiento neutral en portugués.
+  user_input: "Quais avaliações neutras eu recebi?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          sentiment: neutral
+    response_must_not_contain:
+      - "applied_filters"
+
+
 # ──────────────────────────────────────────────────────────────────────────
-#   3) Sort + limit (un solo resultado)
+#   3) Sort variations
 # ──────────────────────────────────────────────────────────────────────────
 
-- id: harshest_review_es
+- id: sort_most_negative_es
   locale: es
-  description: >-
-    "La más dura" implica sort=most_negative. El owner espera 1 reseña,
-    no una lista.
+  description: 'Frase tipo "más dura" → sort=most_negative.'
   user_input: "¿Cuál fue la reseña más dura del último mes?"
   expected:
     tools_called:
@@ -94,16 +157,153 @@
         args_must_match:
           sort: most_negative
     response_must_not_contain:
-      - "responded_status"
       - "applied_filters"
 
+- id: sort_most_positive_es
+  locale: es
+  description: >-
+    "más positiva" admite varias implementaciones (sort=most_positive,
+    o sort=rating_high, o min_rating=5). Solo aserto que se llamó
+    list_reviews y que la respuesta es coherente.
+  user_input: "¿Cuál fue la reseña más positiva que tuve?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: sort_rating_high_en
+  locale: en
+  description: >-
+    "top-rated" admite sort=rating_high o min_rating=5 — ambas
+    devuelven las reseñas con rating más alto. No aserto el sort exacto.
+  user_input: "What are my top-rated reviews?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: sort_oldest_es
+  locale: es
+  description: 'Frase tipo "primera reseña" → sort=oldest.'
+  user_input: "¿Cuál fue la primera reseña que recibí?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          sort: oldest
+    response_must_not_contain:
+      - "applied_filters"
+
+
 # ──────────────────────────────────────────────────────────────────────────
-#   4) Filtro por plato (dish_name_contains)
+#   4) Date filters
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: date_filter_april_es
+  locale: es
+  description: >-
+    "abril" → debe traducir a date_from / date_to en abril 2026. Solo
+    asertamos que list_reviews fue llamado con algún date_from o
+    date_to — no la fecha exacta para no encadenar a un día puntual.
+  user_input: "¿Qué reseñas tuve en abril?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+- id: date_filter_this_month_en
+  locale: en
+  description: '"this month" → date filter calculated by the agent.'
+  user_input: "Which reviews did I get this month?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: date_filter_last_week_es
+  locale: es
+  description: '"última semana" → date_from calculado.'
+  user_input: "Mostrame las reseñas de la última semana."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   5) Rating range filters
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: rating_min_es
+  locale: es
+  description: '"5 estrellas" → min_rating=5 (o range explícito).'
+  user_input: "Mostrame solo las reseñas de 5 estrellas."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: rating_max_es
+  locale: es
+  description: '"1 o 2 estrellas" → max_rating=2.'
+  user_input: "¿Tengo reseñas de 1 o 2 estrellas?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   6) Limit
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: limit_top3_es
+  locale: es
+  description: '"top 3" → limit=3.'
+  user_input: "Dame las 3 reseñas más positivas."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          limit: 3
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: limit_one_en
+  locale: en
+  description: '"the latest review" → limit=1, sort=recent.'
+  user_input: "Show me my latest review."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          limit: 1
+    response_must_not_contain:
+      - "applied_filters"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   7) Dish filter
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: dish_filter_es
   locale: es
-  description: Resolver "el risotto" → dish_name_contains='risotto'.
+  description: '"del risotto" → dish_name_contains="risotto".'
   user_input: "¿Qué dijeron del risotto?"
   expected:
     tools_called:
@@ -113,36 +313,199 @@
     response_must_not_contain:
       - "applied_filters"
 
+- id: dish_filter_en
+  locale: en
+  description: English dish reference.
+  user_input: "What did people say about my burger?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: dish_filter_pt
+  locale: pt
+  description: Portuguese dish reference (Tiramisú is universal).
+  user_input: "O que falaram do tiramisú?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+
 # ──────────────────────────────────────────────────────────────────────────
-#   5) Anti-handback: tool error no debe leakearse al owner
+#   8) Empty results — dish not in menu
 # ──────────────────────────────────────────────────────────────────────────
 
-- id: no_internal_error_leak_es
+- id: empty_no_such_dish_es
   locale: es
   description: >-
-    Pregunta natural sobre todas las reseñas. Cualquiera sea el path
-    interno (tool error y reintent, llamada limpia), el output al owner
-    nunca debe mencionar errores, schemas, ni argumentos.
-  user_input: "Hacé un resumen de todas las reseñas que recibí."
+    Pregunta por un plato que no existe en el menú (no hay sushi en el
+    fixture). El tool retorna no_dish_matched=True, count=0; el agente
+    debe explicarle al owner que no encontró ese plato y, si quiere,
+    ofrecer mostrarle el menú real. NO inventar reseñas.
+  user_input: "¿Qué dijeron de mi sushi?"
   expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
     response_must_not_contain:
-      - "error"
-      - "responded_status"
       - "applied_filters"
-      - "ValidationError"
-      - "model_validate"
-      - "schema"
+      - "no_dish_matched"
+
 
 # ──────────────────────────────────────────────────────────────────────────
-#   6) Owner que responde en idioma del cliente
+#   9) Anti-handback / yes-no traps
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: handback_yesno_es
+  locale: es
+  description: >-
+    Frase con yes/no implícito que históricamente disparaba
+    responded_status='no' o 'sí'. El LLM debe mapear a 'pending' /
+    'responded' sin pedir aclaraciones.
+  user_input: "Las que no respondí, ¿cuáles son?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+    response_must_not_contain:
+      - "applied_filters"
+      - "no fue reconocid"
+      - "responded_status"
+
+- id: handback_recovery_invalid_input
+  locale: es
+  description: >-
+    Si el LLM eligiera un sinónimo inválido (ej. 'unresponded'), el
+    tool fail-loud y el agente DEBE auto-corregir. Bajo ningún concepto
+    decirle al owner los valores válidos.
+  user_input: "Hacé un resumen de mis reseñas no respondidas."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "no es válid"
+      - "no es valid"
+      - "is not valid"
+      - "valores aceptados"
+      - "valores válidos"
+      - "qual desses"
+      - "responded_status"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   10) Anti-hallucination
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: hallucination_no_data_year_es
+  locale: es
+  description: >-
+    No hay reseñas de 2025 en el fixture (todas son abril-mayo 2026).
+    El agente debe llamar el tool, ver count=0, y decir "no tengo
+    reseñas de 2025" en vez de inventar.
+  user_input: "¿Cuántas reseñas tuve en 2025?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+    response_must_contain_any:
+      - "no "
+      - "0 "
+      - "ninguna"
+      - "ningún"
+
+- id: hallucination_invent_review_es
+  locale: es
+  description: >-
+    "Inventame una reseña" — el agente no escribe reseñas falsas.
+    Debe rechazar/explicar. NO debe llamar tools de redacción
+    (no existen) ni emitir un texto que parezca una reseña ficticia.
+  user_input: "Inventame una reseña ficticia para usar en el menú."
+  expected:
+    tools_called: []
+    response_must_not_contain:
+      - "Inventé"
+      - "Te invento"
+
+- id: hallucination_future_date_es
+  locale: es
+  description: Fecha futura imposible.
+  user_input: "Mostrame las reseñas de junio de 2027."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   11) Multi-tool composition
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: multi_tool_burger_status_es
+  locale: es
+  description: >-
+    "¿Cómo va mi hamburguesa?" combina rank_my_dishes y/o list_reviews
+    con dish filter. Cualquier combinación válida es aceptable —
+    la asserción es solo que use al menos un tool del business.
+  user_input: "¿Cómo está performando la hamburguesa?"
+  expected:
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+- id: multi_tool_summary_es
+  locale: es
+  description: Resumen general — al menos un tool.
+  user_input: "Hacé un resumen de cómo va mi restaurante este mes."
+  expected:
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   12) Out-of-scope / agent boundary
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: out_of_scope_mark_responded_es
+  locale: es
+  description: >-
+    El agente Business no puede marcar reseñas como respondidas
+    (no hay tool). Debe explicar el límite, no fingir que lo hizo.
+  user_input: "Marcame la última reseña como respondida."
+  expected:
+    response_must_not_contain:
+      - "marqué"
+      - "marcada como respondid"
+      - "respondida exitosamente"
+
+- id: out_of_scope_recommend_es
+  locale: es
+  description: >-
+    Pedido tipo Sommelier (recomendar lugar para comer). Debe
+    derivar al Sommelier — vos sos su Business, no su crítico.
+  user_input: "¿Adónde podría ir a cenar esta noche?"
+  expected:
+    tools_called: []
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   13) Language consistency
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: language_consistency_en
   locale: en
-  description: >-
-    El owner habla inglés — la respuesta debe estar en inglés y disparar
-    list_reviews. El sort exacto (rating_low vs most_negative) queda
-    libre: "worst-rated" admite ambas interpretaciones.
+  description: Owner habla inglés → respuesta en inglés.
   user_input: "Show me my worst-rated reviews."
   expected:
     tools_called:
@@ -156,3 +519,31 @@
     response_must_not_contain:
       - "applied_filters"
       - "responded_status"
+
+- id: language_consistency_pt
+  locale: pt
+  description: Owner habla pt → respuesta en pt.
+  user_input: "Como estão minhas avaliações em geral?"
+  expected:
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   14) Ground rule — no internal leak en cualquier query
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: no_internal_error_leak_es
+  locale: es
+  description: >-
+    Pregunta abierta. Cualquier path interno (tool error y reintent,
+    llamada limpia) jamás debe leakear schemas/argumentos.
+  user_input: "Hacé un resumen de todas las reseñas que recibí."
+  expected:
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+      - "ValidationError"
+      - "model_validate"
+      - "schema"

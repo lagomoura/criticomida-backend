@@ -303,7 +303,15 @@ def make_get_dish_detail_tool(db: AsyncSession) -> ToolSpec:
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         from app.models.dish import DishReview, DishReviewProsCons
 
-        dish_id = args["dish_id"]
+        dish_id = args.get("dish_id")
+        if not dish_id:
+            return {
+                "error": (
+                    "get_dish_detail requires 'dish_id' (a UUID). To look "
+                    "up a dish by name, use search_dishes first and pass "
+                    "the resulting id here."
+                )
+            }
         stmt = (
             select(Dish)
             .where(Dish.id == dish_id)
