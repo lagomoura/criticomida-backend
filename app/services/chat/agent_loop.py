@@ -405,7 +405,13 @@ class AgentLoop:
         )
 
 
-_DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"
+# Default chat model for both Sommelier (B2C) and Business (B2B). The
+# 3.1 Flash Lite preview hits the right point on the quality/latency
+# curve for our eval suite: comparable pass rate to 2.5 Flash, snappier
+# than 3.1 Pro Preview (which spends large completion budgets on
+# thinking and ended up *worse* in tool-use accuracy). Override per
+# agent with ``CHAT_MODEL_B2C`` / ``CHAT_MODEL_B2B`` if needed.
+_DEFAULT_MODEL = "gemini/gemini-3.1-flash-lite-preview"
 
 
 def default_b2c_model() -> str:
@@ -413,14 +419,6 @@ def default_b2c_model() -> str:
 
 
 def default_b2b_model() -> str:
-    """Business agent model.
-
-    Falls back to ``CHAT_MODEL`` (the shared default) before reaching
-    for Anthropic Sonnet — that way a deployment with a single LLM
-    provider doesn't need a second API key just to enable the Business
-    chat. To opt in to Sonnet, set ``CHAT_MODEL_B2B`` explicitly *and*
-    make sure ``CHAT_API_KEY`` points at the matching provider.
-    """
     explicit = os.getenv("CHAT_MODEL_B2B")
     if explicit:
         return explicit
