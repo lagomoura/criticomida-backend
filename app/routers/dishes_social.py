@@ -234,20 +234,33 @@ async def get_dish_timeline(
     db: Annotated[AsyncSession, Depends(get_db)],
     granularity: Literal["quarter", "month"] = Query(default="quarter"),
 ) -> DishTimelineResponse:
-    """Evolución del plato a lo largo del tiempo: rating + 3 pilares por bucket.
+    """Evolución del plato a lo largo del tiempo: rating + 3 pilares + precio.
 
     Agrupa por trimestre (default) o mes usando `date_tasted`. Reseñas sin
     `date_tasted` se ignoran (en la práctica son raras: el form lo pide).
     El frontend muestra esto como narrativa del gastronerd ("¿cómo cambió este
     plato a lo largo del tiempo?") — el quick-win clave del anzuelo.
+
+    `price_avg` se calcula sobre las reseñas con `price_paid` no nulo; reseñas
+    sin precio no aportan al avg. `delta_price_avg` compara contra el último
+    bucket que sí tenía precio (no contra el inmediatamente anterior si ese era
+    NULL), así dos buckets aislados con precio comparan correctamente. El
+    `currency_code` se hereda del restaurante del plato; si es NULL la UI
+    muestra un símbolo genérico.
     """
-    exists = (
-        await db.execute(select(Dish.id).where(Dish.id == dish_id).limit(1))
-    ).scalar_one_or_none()
-    if exists is None:
+    dish_row = (
+        await db.execute(
+            select(Dish.id, Restaurant.currency_code)
+            .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+            .where(Dish.id == dish_id)
+            .limit(1)
+        )
+    ).first()
+    if dish_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Dish not found"
         )
+    currency_code = dish_row.currency_code
 
     if granularity == "quarter":
         period_expr = func.concat(
@@ -258,6 +271,14 @@ async def get_dish_timeline(
     else:
         period_expr = func.to_char(DishReview.date_tasted, "YYYY-MM")
 
+    # Excluimos del avg los precios marcados como sospechosos por el detector
+    # de outlier (capa 2 anti-fraude). Cuando un humano resuelva el flag, una
+    # iteración futura puede decidir si reincorpora ese precio o lo deja
+    # excluido; por ahora `price_flagged_at IS NULL` es la única condición.
+    price_for_avg = case(
+        (DishReview.price_flagged_at.is_(None), DishReview.price_paid),
+        else_=None,
+    )
     rows = (
         await db.execute(
             select(
@@ -267,6 +288,7 @@ async def get_dish_timeline(
                 func.avg(DishReview.presentation).label("presentation_avg"),
                 func.avg(DishReview.value_prop).label("value_prop_avg"),
                 func.avg(DishReview.execution).label("execution_avg"),
+                func.avg(price_for_avg).label("price_avg"),
             )
             .where(
                 DishReview.dish_id == dish_id,
@@ -279,10 +301,19 @@ async def get_dish_timeline(
 
     buckets: list[DishTimelineBucket] = []
     prev_avg: float | None = None
+    prev_price_avg: float | None = None
     for r in rows:
         avg_f = float(r.avg_rating) if r.avg_rating is not None else 0.0
         delta = (
             Decimal(str(round(avg_f - prev_avg, 2))) if prev_avg is not None else None
+        )
+        price_avg_f = (
+            round(float(r.price_avg), 2) if r.price_avg is not None else None
+        )
+        delta_price_avg = (
+            round(price_avg_f - prev_price_avg, 2)
+            if price_avg_f is not None and prev_price_avg is not None
+            else None
         )
         buckets.append(
             DishTimelineBucket(
@@ -305,11 +336,19 @@ async def get_dish_timeline(
                     else None
                 ),
                 delta_rating=delta,
+                price_avg=price_avg_f,
+                delta_price_avg=delta_price_avg,
             )
         )
         prev_avg = avg_f
+        if price_avg_f is not None:
+            prev_price_avg = price_avg_f
 
-    return DishTimelineResponse(granularity=granularity, buckets=buckets)
+    return DishTimelineResponse(
+        granularity=granularity,
+        buckets=buckets,
+        currency_code=currency_code,
+    )
 
 
 @router.get("/{dish_id}/diary-stats", response_model=DishDiaryStats)

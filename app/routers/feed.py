@@ -355,6 +355,7 @@ async def _build_feed_items(
                 visited_with=review.visited_with,
                 is_anonymous=review.is_anonymous,
                 price_tier=dish.price_tier.value if dish.price_tier is not None else None,
+                price_paid=review.price_paid,
                 presentation=review.presentation,  # type: ignore[arg-type]
                 value_prop=review.value_prop,  # type: ignore[arg-type]
                 execution=review.execution,  # type: ignore[arg-type]

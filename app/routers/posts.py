@@ -34,6 +34,10 @@ from app.models.user import User
 from app.routers.feed import _build_feed_items
 from app.schemas.feed import FeedItem
 from app.schemas.post_create import PostCreate, RestaurantFromPlace
+from app.services.price_validation import (
+    evaluate_price_outlier,
+    validate_price_paid,
+)
 from app.services.rating_service import (
     update_dish_rating,
     update_restaurant_rating,
@@ -251,12 +255,25 @@ async def create_post(
     if extras and extras.portion_size:
         portion_model = ModelPortionSize(extras.portion_size)
 
+    # Cap del precio según la moneda del restaurante. El restaurante puede ser
+    # recién creado en este request — en ese caso `currency_code` es NULL y
+    # cae al rango fallback amplio.
+    price_paid_value = extras.price_paid if extras else None
+    validate_price_paid(price_paid_value, restaurant.currency_code)
+    # Capa 2: outlier vs histórico del plato. Soft-flag, no rechaza.
+    price_flagged_at, price_flag_reason = await evaluate_price_outlier(
+        db, dish_id=dish.id, price_paid=price_paid_value,
+    )
+
     review = DishReview(
         dish_id=dish.id,
         user_id=current_user.id,
         date_tasted=(extras.date_tasted if extras and extras.date_tasted else date.today()),
         note=payload.text.strip(),
         rating=payload.score,
+        price_paid=price_paid_value,
+        price_flagged_at=price_flagged_at,
+        price_flag_reason=price_flag_reason,
         portion_size=portion_model,
         would_order_again=(extras.would_order_again if extras else None),
         visited_with=(extras.visited_with if extras else None),

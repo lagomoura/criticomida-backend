@@ -68,7 +68,7 @@ class User(Base):
         back_populates="creator", foreign_keys="Restaurant.created_by"
     )
     dish_reviews: Mapped[list["DishReview"]] = relationship(  # noqa: F821
-        back_populates="user"
+        back_populates="user", foreign_keys="DishReview.user_id"
     )
     dimension_ratings: Mapped[list["RestaurantRatingDimension"]] = relationship(  # noqa: F821
         back_populates="user"

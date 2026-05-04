@@ -26,6 +26,10 @@ from app.services.email_service import (
 from app.services.notification_service import (
     record_review_on_owned_restaurant_notification,
 )
+from app.services.price_validation import (
+    evaluate_price_outlier,
+    validate_price_paid,
+)
 from app.services.rating_service import update_dish_rating, update_restaurant_rating
 from app.services.sentiment_service import schedule_analyze_review
 
@@ -121,6 +125,18 @@ async def create_review(
             detail="Dish not found",
         )
 
+    # Sanity-cap del precio según la moneda del restaurante. Si la BD aún no
+    # tiene la moneda, cae al rango fallback amplio.
+    restaurant_for_currency = await db.get(Restaurant, dish.restaurant_id)
+    validate_price_paid(
+        review_data.price_paid,
+        restaurant_for_currency.currency_code if restaurant_for_currency else None,
+    )
+    # Capa 2: outlier vs histórico del plato. Soft-flag, no rechaza.
+    flagged_at, flag_reason = await evaluate_price_outlier(
+        db, dish_id=dish_id, price_paid=review_data.price_paid,
+    )
+
     review = DishReview(
         dish_id=dish_id,
         user_id=current_user.id,
@@ -128,6 +144,9 @@ async def create_review(
         time_tasted=review_data.time_tasted,
         note=review_data.note,
         rating=review_data.rating,
+        price_paid=review_data.price_paid,
+        price_flagged_at=flagged_at,
+        price_flag_reason=flag_reason,
         portion_size=review_data.portion_size,
         would_order_again=review_data.would_order_again,
         visited_with=review_data.visited_with,
@@ -241,12 +260,63 @@ async def update_review(
             detail="You can only update your own reviews",
         )
 
+    # Cuando viene `price_paid` en el payload, aplicamos capa 1 (cap por
+    # moneda — puede tirar 422) y capa 2 (re-evaluación del outlier flag).
+    # Si el cliente NO mandó `price_paid`, no tocamos nada.
+    price_payload_present = "price_paid" in review_data.model_fields_set
+    # Capturamos el valor previo ANTES del setattr para alimentar el detector
+    # con el self-delta (catchea edits drásticos del propio crítico aunque no
+    # haya histórico suficiente del plato).
+    previous_price = review.price_paid
+    if price_payload_present:
+        if review_data.price_paid is not None:
+            currency_row = (
+                await db.execute(
+                    select(Restaurant.currency_code)
+                    .join(Dish, Dish.restaurant_id == Restaurant.id)
+                    .where(Dish.id == review.dish_id)
+                    .limit(1)
+                )
+            ).first()
+            validate_price_paid(
+                review_data.price_paid,
+                currency_row[0] if currency_row else None,
+            )
+
     previous_note = review.note
     update_data = review_data.model_dump(
         exclude_unset=True, exclude={"pros_cons", "tags", "images"}
     )
     for field, value in update_data.items():
         setattr(review, field, value)
+
+    # Re-evaluamos el flag DESPUÉS del setattr, así `review.price_paid` ya
+    # está actualizado. Si el precio se vació a NULL, el flag también se
+    # limpia (no tiene sentido conservarlo). Si el precio quedó igual al de
+    # antes, igual recomputamos — es barato y mantiene el flag consistente
+    # con el histórico actual del plato.
+    if price_payload_present:
+        if review.price_paid is None:
+            review.price_flagged_at = None
+            review.price_flag_reason = None
+            review.price_flag_resolved_at = None
+            review.price_flag_resolved_by = None
+        else:
+            flagged_at, flag_reason = await evaluate_price_outlier(
+                db,
+                dish_id=review.dish_id,
+                price_paid=review.price_paid,
+                exclude_review_id=review.id,
+                previous_price=previous_price,
+            )
+            review.price_flagged_at = flagged_at
+            review.price_flag_reason = flag_reason
+            # Si el flag se borra (volvió a un valor razonable), también
+            # limpiamos los campos de resolución previa para que no quede
+            # información huérfana.
+            if flagged_at is None:
+                review.price_flag_resolved_at = None
+                review.price_flag_resolved_by = None
     note_changed = (
         review_data.note is not None and review_data.note != previous_note
     )

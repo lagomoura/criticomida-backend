@@ -131,9 +131,9 @@ class DishEditorialBlurb(BaseModel):
 class DishTimelineBucket(BaseModel):
     """Resumen agregado de un período (trimestre o mes) en la evolución del plato.
 
-    Los averages de pilares solo se calculan sobre reseñas que tienen el pilar
-    seteado (no NULL); `review_count` es el total de reseñas del bucket
-    independiente de los pilares.
+    Los averages de pilares (y de precio) solo se calculan sobre reseñas que
+    tienen ese campo seteado (no NULL); `review_count` es el total de reseñas
+    del bucket independiente de los pilares o el precio.
     """
 
     period: str  # "2025-Q1" o "2025-03" según granularity
@@ -143,11 +143,14 @@ class DishTimelineBucket(BaseModel):
     value_prop_avg: float | None = None
     execution_avg: float | None = None
     delta_rating: Decimal | None = None  # vs bucket anterior; None en el primero
+    price_avg: float | None = None  # avg sobre reseñas con price_paid no nulo
+    delta_price_avg: float | None = None  # vs bucket anterior con precio
 
 
 class DishTimelineResponse(BaseModel):
     granularity: Literal["quarter", "month"]
     buckets: list[DishTimelineBucket]
+    currency_code: str | None = None  # ISO 4217 heredado del restaurante
 
 
 class DishSocialDetailEnriched(BaseModel):

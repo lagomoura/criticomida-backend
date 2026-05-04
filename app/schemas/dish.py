@@ -83,6 +83,9 @@ class DishReviewCreate(BaseModel):
     time_tasted: time | None = None
     note: str
     rating: Decimal = Field(ge=1, le=5, decimal_places=1)
+    price_paid: Decimal | None = Field(
+        None, gt=0, max_digits=12, decimal_places=2
+    )
     portion_size: PortionSize | None = None
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
@@ -100,6 +103,9 @@ class DishReviewUpdate(BaseModel):
     time_tasted: time | None = None
     note: str | None = None
     rating: Decimal | None = Field(None, ge=1, le=5, decimal_places=1)
+    price_paid: Decimal | None = Field(
+        None, gt=0, max_digits=12, decimal_places=2
+    )
     portion_size: PortionSize | None = None
     would_order_again: bool | None = None
     visited_with: str | None = Field(None, max_length=200)
@@ -122,6 +128,12 @@ class DishReviewResponse(BaseModel):
     time_tasted: time | None
     note: str
     rating: Decimal
+    price_paid: Decimal | None = None
+    # Capa 2 anti-fraude: el precio queda flageado cuando difiere mucho del
+    # histórico del plato. La review se sigue mostrando, pero el precio queda
+    # excluido del avg del timeline hasta que un humano lo revise.
+    price_flagged_at: datetime | None = None
+    price_flag_reason: str | None = None
     portion_size: PortionSize | None
     would_order_again: bool | None
     visited_with: str | None

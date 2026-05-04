@@ -21,6 +21,9 @@ class PostCreateExtras(BaseModel):
     is_anonymous: bool | None = None
     date_tasted: date | None = None
     price_tier: Literal["$", "$$", "$$$"] | None = None
+    price_paid: Decimal | None = Field(
+        default=None, gt=0, max_digits=12, decimal_places=2
+    )
     pros: list[str] = Field(default_factory=list, max_length=20)
     cons: list[str] = Field(default_factory=list, max_length=20)
     tags: list[str] = Field(default_factory=list, max_length=20)

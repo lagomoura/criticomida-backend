@@ -136,6 +136,9 @@ class RestaurantUpdate(BaseModel):
     reservation_url: str | None = None
     reservation_provider: str | None = Field(None, max_length=32)
     reservation_partner_meta: dict | None = None
+    currency_code: str | None = Field(
+        None, pattern=r"^[A-Z]{3}$", description="ISO 4217 (ej. ARS, BRL, USD)"
+    )
 
 
 class OfficialPhotoEmbedded(BaseModel):
@@ -173,6 +176,7 @@ class RestaurantResponse(BaseModel):
     google_maps_url: str | None = None
     price_level: int | None = None
     opening_hours: list[str] | None = None
+    currency_code: str | None = None
     # Fase B — Google Places enrichment
     google_rating: Decimal | None = None
     google_user_ratings_total: int | None = None

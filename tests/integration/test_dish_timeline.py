@@ -41,6 +41,7 @@ async def _post_review(
     presentation: int | None = None,
     value_prop: int | None = None,
     execution: int | None = None,
+    price_paid: float | None = None,
 ) -> str:
     extras: dict[str, Any] = {"date_tasted": date_tasted.isoformat()}
     if presentation is not None:
@@ -49,6 +50,8 @@ async def _post_review(
         extras["value_prop"] = value_prop
     if execution is not None:
         extras["execution"] = execution
+    if price_paid is not None:
+        extras["price_paid"] = price_paid
 
     payload = {
         "restaurant": {
@@ -207,6 +210,174 @@ async def test_timeline_pillars_avg_when_present(async_client_integration):
     assert float(bucket["value_prop_avg"]) == pytest.approx(3.0, abs=0.01)
     # avg de execution: (2+3)/2 = 2.5
     assert float(bucket["execution_avg"]) == pytest.approx(2.5, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_timeline_price_avg_with_delta(async_client_integration):
+    """Reseñas con price_paid en distintos trimestres → cada bucket trae
+    price_avg y delta_price_avg vs el bucket anterior con precio. Reseñas sin
+    price_paid no aportan al avg. El campo currency_code aparece en la
+    respuesta (puede ser null si el restaurante recién creado no tiene moneda
+    aún — el backfill por city solo corre en la migración 039 y restaurantes
+    nuevos no la heredan automáticamente todavía)."""
+    place_id = f"pytest_place_{uuid.uuid4().hex[:10]}"
+    rest_name = f"Resto Timeline Price {uuid.uuid4().hex[:6]}"
+    dish_name = f"Plato Timeline Price {uuid.uuid4().hex[:4]}"
+
+    user1 = await register_and_login(async_client_integration)
+    user2 = await register_and_login(async_client_integration)
+    user3 = await register_and_login(async_client_integration)
+    user4 = await register_and_login(async_client_integration)
+
+    # Q1 2024: precios 4000 y 4500 → avg 4250
+    await _post_review(
+        async_client_integration, user1.cookies,
+        place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+        score=4.0, date_tasted=date(2024, 2, 15), price_paid=4000,
+    )
+    await _post_review(
+        async_client_integration, user2.cookies,
+        place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+        score=4.0, date_tasted=date(2024, 3, 1), price_paid=4500,
+    )
+    # Q3 2024: una con precio 6000 y una sin precio (no aporta al avg).
+    await _post_review(
+        async_client_integration, user3.cookies,
+        place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+        score=4.0, date_tasted=date(2024, 8, 10), price_paid=6000,
+    )
+    await _post_review(
+        async_client_integration, user4.cookies,
+        place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+        score=4.0, date_tasted=date(2024, 9, 1),  # sin price_paid
+    )
+
+    dish_id = await _find_dish_id(async_client_integration, rest_name, dish_name)
+    r = await async_client_integration.get(
+        f"/api/social/dishes/{dish_id}/timeline"
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    # currency_code está siempre presente en la respuesta (puede ser null).
+    assert "currency_code" in body
+
+    buckets = body["buckets"]
+    assert len(buckets) == 2
+
+    # Q1: avg(4000, 4500) = 4250; primer bucket → delta None.
+    assert buckets[0]["period"] == "2024-Q1"
+    assert buckets[0]["price_avg"] == pytest.approx(4250.0, abs=0.01)
+    assert buckets[0]["delta_price_avg"] is None
+
+    # Q3: avg(6000) = 6000; delta vs Q1 = +1750.
+    assert buckets[1]["period"] == "2024-Q3"
+    assert buckets[1]["review_count"] == 2  # incluye la sin precio
+    assert buckets[1]["price_avg"] == pytest.approx(6000.0, abs=0.01)
+    assert buckets[1]["delta_price_avg"] == pytest.approx(1750.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_timeline_price_null_when_no_reviews_have_price(
+    async_client_integration,
+):
+    """Si ninguna reseña del bucket trae price_paid → price_avg y
+    delta_price_avg quedan en None."""
+    place_id = f"pytest_place_{uuid.uuid4().hex[:10]}"
+    rest_name = f"Resto Timeline NoPrice {uuid.uuid4().hex[:6]}"
+    dish_name = f"Plato Timeline NoPrice {uuid.uuid4().hex[:4]}"
+
+    user = await register_and_login(async_client_integration)
+    await _post_review(
+        async_client_integration, user.cookies,
+        place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+        score=4.0, date_tasted=date(2024, 2, 15),  # sin price_paid
+    )
+
+    dish_id = await _find_dish_id(async_client_integration, rest_name, dish_name)
+    r = await async_client_integration.get(
+        f"/api/social/dishes/{dish_id}/timeline"
+    )
+    body = r.json()
+    assert body["buckets"][0]["price_avg"] is None
+    assert body["buckets"][0]["delta_price_avg"] is None
+
+
+@pytest.mark.asyncio
+async def test_timeline_excludes_outlier_flagged_prices_from_avg(
+    async_client_integration,
+):
+    """Capa 2 anti-fraude end-to-end: 3 reseñas con precios estables (5000)
+    establecen un baseline; una 4ª reseña con 99999 (>3× la mediana) se
+    soft-flagea automáticamente y queda excluida del `price_avg`.
+
+    El precio en la BD se mantiene (puede revisarlo un admin), pero el
+    timeline no se contamina con el outlier."""
+    place_id = f"pytest_place_{uuid.uuid4().hex[:10]}"
+    rest_name = f"Resto Outlier {uuid.uuid4().hex[:6]}"
+    dish_name = f"Plato Outlier {uuid.uuid4().hex[:4]}"
+
+    user1 = await register_and_login(async_client_integration)
+    user2 = await register_and_login(async_client_integration)
+    user3 = await register_and_login(async_client_integration)
+    user4 = await register_and_login(async_client_integration)
+
+    # Baseline: 3 reseñas en Q1 con precios cercanos.
+    for u in (user1, user2, user3):
+        await _post_review(
+            async_client_integration, u.cookies,
+            place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+            score=4.0, date_tasted=date(2024, 2, 15), price_paid=5000,
+        )
+    # Outlier: 99999 en el mismo bucket.
+    await _post_review(
+        async_client_integration, user4.cookies,
+        place_id=place_id, restaurant_name=rest_name, dish_name=dish_name,
+        score=4.0, date_tasted=date(2024, 2, 20), price_paid=99999,
+    )
+
+    dish_id = await _find_dish_id(async_client_integration, rest_name, dish_name)
+    r = await async_client_integration.get(
+        f"/api/social/dishes/{dish_id}/timeline"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    bucket = body["buckets"][0]
+    # 4 reseñas pero el avg solo cuenta las 3 con precio razonable → 5000.
+    assert bucket["review_count"] == 4
+    assert bucket["price_avg"] == pytest.approx(5000.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_post_review_rejects_price_above_cap(async_client_integration):
+    """`/api/posts` con `price_paid` fuera del rango fallback (>1B) responde
+    422. La capa 1 anti-fraude (caps por moneda) pega antes de tocar la BD."""
+    user = await register_and_login(async_client_integration)
+    payload = {
+        "restaurant": {
+            "place_id": f"pytest_place_{uuid.uuid4().hex[:10]}",
+            "name": f"Resto Cap {uuid.uuid4().hex[:6]}",
+            "formatted_address": "BA",
+            "city": "Buenos Aires",
+            "latitude": -34.6,
+            "longitude": -58.4,
+        },
+        "dish_name": f"Plato Cap {uuid.uuid4().hex[:4]}",
+        "score": 4.0,
+        "text": "Cap test review.",
+        "extras": {
+            "date_tasted": date(2024, 5, 1).isoformat(),
+            "price_paid": 9999999999,  # > fallback max (1B)
+        },
+    }
+    r = await async_client_integration.post(
+        "/api/posts", json=payload, cookies=user.cookies
+    )
+    assert r.status_code == 422
+    body = r.json()
+    detail = body.get("detail")
+    # detail puede ser dict (cap por moneda) o lista (Pydantic) — ambos OK
+    assert detail is not None
 
 
 @pytest.mark.asyncio

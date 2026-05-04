@@ -109,6 +109,10 @@ class DishReview(Base):
             "execution IS NULL OR execution BETWEEN 1 AND 3",
             name="ck_dish_reviews_execution_range",
         ),
+        CheckConstraint(
+            "price_paid IS NULL OR price_paid > 0",
+            name="ck_dish_reviews_price_paid_positive",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -124,6 +128,17 @@ class DishReview(Base):
     time_tasted: Mapped[time | None] = mapped_column(Time, nullable=True)
     note: Mapped[str] = mapped_column(Text, nullable=False)
     rating: Mapped[Decimal] = mapped_column(Numeric(2, 1), nullable=False)
+    price_paid: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price_flagged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    price_flag_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    price_flag_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    price_flag_resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     portion_size: Mapped[PortionSize | None] = mapped_column(
         Enum(PortionSize, name="portion_size"), nullable=True
     )
@@ -157,7 +172,9 @@ class DishReview(Base):
 
     # Relationships
     dish: Mapped["Dish"] = relationship(back_populates="reviews")
-    user: Mapped["User"] = relationship(back_populates="dish_reviews")  # noqa: F821
+    user: Mapped["User"] = relationship(  # noqa: F821
+        back_populates="dish_reviews", foreign_keys=[user_id]
+    )
     pros_cons: Mapped[list["DishReviewProsCons"]] = relationship(
         back_populates="dish_review", cascade="all, delete-orphan"
     )

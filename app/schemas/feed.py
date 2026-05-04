@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel
@@ -51,6 +52,7 @@ class FeedExtras(BaseModel):
     visited_with: str | None = None
     is_anonymous: bool | None = None
     price_tier: Literal["$", "$$", "$$$"] | None = None
+    price_paid: Decimal | None = None
     presentation: Literal[1, 2, 3] | None = None
     value_prop: Literal[1, 2, 3] | None = None
     execution: Literal[1, 2, 3] | None = None
