@@ -93,6 +93,39 @@ async def get_or_create_conversation(
     return convo
 
 
+def _sanitize_for_strict_turn_grammar(
+    rows: list[ChatMessage],
+) -> list[ChatMessage]:
+    """Vertex Gemini enforces strict turn grammar — a ``function_call``
+    (= assistant message with ``tool_calls``) must follow either a
+    ``user`` or a ``function_response`` (= ``role='tool'``) turn, never
+    an assistant text. Two cleanups defend the slice:
+
+    1. **Leading non-user rows** — when the ``[-N:]`` slice cuts mid
+       tool sequence, the head is an orphan ``tool`` or
+       ``assistant(tool_calls)`` row. Drop until the first ``user``.
+    2. **Trailing orphan ``assistant(tool_calls)``** — happens when a
+       previous turn crashed mid-stream after persisting the assistant
+       row but before the tool responses landed. Appending the next
+       user message would yield ``function_call → user``, invalid.
+       Drop the orphan assistant.
+
+    Both shapes were valid for OpenAI and Google AI Studio direct
+    (which is why this only surfaced after switching to a Vertex Beta
+    preview model). Defensive sanitisation is provider-agnostic — we
+    don't want to depend on the upstream tolerance.
+    """
+    while rows and rows[0].role != "user":
+        rows = rows[1:]
+
+    if rows:
+        last = rows[-1]
+        if last.role == "assistant" and last.tool_calls:
+            rows = rows[:-1]
+
+    return rows
+
+
 async def _load_history(
     db: AsyncSession, conversation_id: uuid.UUID
 ) -> list[dict[str, Any]]:
@@ -102,9 +135,8 @@ async def _load_history(
         .order_by(ChatMessage.created_at.asc())
     )
     rows = list((await db.execute(stmt)).scalars().all())
-    # Drop the oldest if we exceed the cap; always keep tool/result
-    # pairs together (they reference each other by ID).
     rows = rows[-HISTORY_TURNS:]
+    rows = _sanitize_for_strict_turn_grammar(rows)
 
     out: list[dict[str, Any]] = []
     for r in rows:
