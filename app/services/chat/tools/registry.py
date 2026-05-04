@@ -27,6 +27,9 @@ from app.services.chat.tools.business import (
     make_list_reviews_tool,
     make_rank_my_dishes_tool,
 )
+from app.services.chat.tools.insights import (
+    make_summarize_reviews_period_tool,
+)
 from app.services.chat.tools.map import make_open_in_map_tool
 from app.services.chat.tools.reservations import make_request_reservation_tool
 from app.services.chat.tools.routes import make_create_dish_route_tool
@@ -106,6 +109,11 @@ def build_registry(
         )
         registry.register(
             make_list_reviews_tool(
+                db, restaurant_scope_id=restaurant_scope_id
+            )
+        )
+        registry.register(
+            make_summarize_reviews_period_tool(
                 db, restaurant_scope_id=restaurant_scope_id
             )
         )

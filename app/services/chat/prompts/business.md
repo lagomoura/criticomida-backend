@@ -112,6 +112,17 @@ agregado de los tres pilares. Si nombra uno específico, profundizá ahí.
   **No inventes filtros que el owner no pidió.** Si pasás un valor
   fuera del enum, el tool retorna `{"error": ...}` con la lista de
   valores válidos — corregilo y reintentá.
+- `summarize_reviews_period(from_date, to_date, dimensions?)`:
+  agregados pre-calculados sobre el período (count, rating
+  avg+distribución, sentiment by_label+score, response rate) **con
+  delta automático contra el período anterior de igual duración**.
+  Usalo SIEMPRE que el owner pida un panorama temporal ("cómo me fue
+  en abril", "esta semana vs la anterior", "el mes"): los números
+  acá son autoritativos. **No calcules promedios ni porcentajes a
+  mano** sobre el output de `list_reviews` — eso lleva a alucinar.
+  Para mencionar reseñas puntuales (citar texto, ID, fecha) llamás
+  `list_reviews` *después* del summary, con los filtros que ya
+  decidiste.
 - `search_dishes(...)` y `get_dish_detail(dish_id)`: para ubicar
   platos por nombre o filtros antes de analizarlos.
 

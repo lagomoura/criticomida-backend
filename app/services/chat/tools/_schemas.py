@@ -59,6 +59,14 @@ class ReviewSort(str, Enum):
     most_positive = "most_positive"
 
 
+class SummaryDimension(str, Enum):
+    """Aspectos que ``summarize_reviews_period`` puede calcular."""
+
+    sentiment = "sentiment"
+    rating = "rating"
+    responded = "responded"
+
+
 # ──────────────────────────────────────────────────────────────────────────
 #   Tool input models
 # ──────────────────────────────────────────────────────────────────────────
@@ -138,6 +146,43 @@ class ListReviewsInput(BaseModel):
         ge=1,
         le=50,
         description="Cantidad máxima de reseñas a devolver (1-50).",
+    )
+
+
+class SummarizeReviewsInput(BaseModel):
+    """Inputs del tool ``summarize_reviews_period`` (agente Business).
+
+    Devuelve agregados pre-calculados sobre las reseñas del restaurante
+    en el período pedido, con delta automático contra el período
+    inmediatamente anterior de la misma duración.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("dimensions", mode="before")
+    @classmethod
+    def _lowercase_dimensions(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [v.lower() if isinstance(v, str) else v for v in value]
+        return value
+
+    from_date: date = Field(
+        description="Inicio del período inclusive, ISO YYYY-MM-DD.",
+    )
+    to_date: date = Field(
+        description="Fin del período inclusive, ISO YYYY-MM-DD.",
+    )
+    dimensions: list[SummaryDimension] = Field(
+        default_factory=lambda: [
+            SummaryDimension.sentiment,
+            SummaryDimension.rating,
+            SummaryDimension.responded,
+        ],
+        description=(
+            "Aspectos a calcular. Default: los tres "
+            "(sentiment, rating, responded)."
+        ),
+        min_length=1,
     )
 
 

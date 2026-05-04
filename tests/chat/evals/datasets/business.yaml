@@ -531,7 +531,54 @@
 
 
 # ──────────────────────────────────────────────────────────────────────────
-#   14) Ground rule — no internal leak en cualquier query
+#   14) summarize_reviews_period — agregados pre-calculados
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: summary_april_es
+  locale: es
+  description: >-
+    Pregunta tipo panorama temporal — debería disparar
+    summarize_reviews_period para abril, no list_reviews + agregación
+    a mano. La regla del prompt dice explícitamente "no calcules
+    promedios a mano".
+  user_input: "¿Cómo me fue en abril?"
+  expected:
+    tools_called:
+      - name: summarize_reviews_period
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+- id: summary_this_month_en
+  locale: en
+  description: '"This month" panorama — same intent in English.'
+  user_input: "How did I do this month?"
+  expected:
+    tools_called:
+      - name: summarize_reviews_period
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: summary_then_listing_es
+  locale: es
+  description: >-
+    Pregunta que pide panorama + ejemplos. Patrón natural: primero
+    summarize_reviews_period (números), después list_reviews
+    (citas concretas). Solo aserto que summary se llamó al menos.
+  user_input: "Dame un resumen del mes pasado con un par de reseñas representativas."
+  expected:
+    tools_called:
+      - name: summarize_reviews_period
+        args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   15) Ground rule — no internal leak en cualquier query
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: no_internal_error_leak_es
