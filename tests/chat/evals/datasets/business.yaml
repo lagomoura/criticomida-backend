@@ -1,0 +1,158 @@
+# Eval cases for the Business chat agent.
+#
+# Schema (see runner.EvalCase): each case asserts behaviour, not data.
+# The fixture (see conftest.py::chat_eval_scope) ships 4 dishes — Hamburguesa
+# Clásica, Tacos al Pastor, Risotto de Hongos, Tiramisú — with 8 pending
+# reviews and 4 responded. Cases reference dishes by name, never by ID.
+#
+# Run with:
+#   RUN_CHAT_EVALS=1 CHAT_API_KEY=$ANTHROPIC_KEY \
+#     pytest tests/chat/evals/test_business_evals.py -v
+
+# ──────────────────────────────────────────────────────────────────────────
+#   1) Polyglot enum mapping — "haven't replied" in 3 languages
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: pending_es
+  locale: es
+  description: >-
+    Owner pregunta en español por reseñas no respondidas. Histórico bug:
+    el LLM mapeaba a responded_status='no'. Hoy debe mapear a 'pending'.
+  user_input: "¿Qué reseñas todavía no respondí?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+    response_must_not_contain:
+      - "responded_status"
+      - "applied_filters"
+      - "no fue reconocid"
+      - "no se reconoci"
+      - "el sistema"
+
+- id: pending_en
+  locale: en
+  description: Same intent in English.
+  user_input: "Which reviews haven't I replied to yet?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+    response_must_not_contain:
+      - "responded_status"
+      - "applied_filters"
+      - "wasn't recognized"
+      - "not recognized"
+
+- id: pending_pt
+  locale: pt
+  description: Same intent in Portuguese.
+  user_input: "Quais reviews eu ainda não respondi?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+    response_must_not_contain:
+      - "responded_status"
+      - "applied_filters"
+      - "não foi reconhecid"
+
+# ──────────────────────────────────────────────────────────────────────────
+#   2) Sentiment + responded combo
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: negative_pending_es
+  locale: es
+  description: Combina sentimiento negativo + pendiente de respuesta.
+  user_input: "Mostrame las reseñas negativas que todavía no contesté."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          responded_status: pending
+          sentiment: negative
+    response_must_not_contain:
+      - "responded_status"
+      - "applied_filters"
+
+# ──────────────────────────────────────────────────────────────────────────
+#   3) Sort + limit (un solo resultado)
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: harshest_review_es
+  locale: es
+  description: >-
+    "La más dura" implica sort=most_negative. El owner espera 1 reseña,
+    no una lista.
+  user_input: "¿Cuál fue la reseña más dura del último mes?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          sort: most_negative
+    response_must_not_contain:
+      - "responded_status"
+      - "applied_filters"
+
+# ──────────────────────────────────────────────────────────────────────────
+#   4) Filtro por plato (dish_name_contains)
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: dish_filter_es
+  locale: es
+  description: Resolver "el risotto" → dish_name_contains='risotto'.
+  user_input: "¿Qué dijeron del risotto?"
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match:
+          dish_name_contains: risotto
+    response_must_not_contain:
+      - "applied_filters"
+
+# ──────────────────────────────────────────────────────────────────────────
+#   5) Anti-handback: tool error no debe leakearse al owner
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: no_internal_error_leak_es
+  locale: es
+  description: >-
+    Pregunta natural sobre todas las reseñas. Cualquiera sea el path
+    interno (tool error y reintent, llamada limpia), el output al owner
+    nunca debe mencionar errores, schemas, ni argumentos.
+  user_input: "Hacé un resumen de todas las reseñas que recibí."
+  expected:
+    response_must_not_contain:
+      - "error"
+      - "responded_status"
+      - "applied_filters"
+      - "ValidationError"
+      - "model_validate"
+      - "schema"
+
+# ──────────────────────────────────────────────────────────────────────────
+#   6) Owner que responde en idioma del cliente
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: language_consistency_en
+  locale: en
+  description: >-
+    El owner habla inglés — la respuesta debe estar en inglés y disparar
+    list_reviews. El sort exacto (rating_low vs most_negative) queda
+    libre: "worst-rated" admite ambas interpretaciones.
+  user_input: "Show me my worst-rated reviews."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+    response_must_contain_any:
+      - " review"
+      - "rating"
+      - "rated"
+      - "star"
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
