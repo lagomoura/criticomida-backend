@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import and_, asc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -37,6 +38,13 @@ from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
+from app.services.chat.tools._schemas import (
+    ListReviewsInput,
+    RespondedStatus,
+    ReviewSort,
+    Sentiment,
+    pydantic_to_anthropic_schema,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -827,151 +835,12 @@ def make_rank_my_dishes_tool(
 # ──────────────────────────────────────────────────────────────────────────
 
 
-# Synonym tables — accept generously, normalise to canonical. The LLM
-# (and humans triggering it) speak natural language; the tool meets
-# them where they are instead of failing a strict enum check.
-
-_RESPONDED_SYNONYMS: dict[str, str] = {
-    "any": "any", "all": "any", "todas": "any", "todos": "any", "todas_las": "any", "all_reviews": "any",
-    "pending": "pending", "unanswered": "pending", "unresponded": "pending",
-    "without_response": "pending", "no_response": "pending",
-    "sin_responder": "pending", "sin_respuesta": "pending", "pendientes": "pending",
-    "responded": "responded", "answered": "responded", "replied": "responded",
-    "with_response": "responded", "respondidas": "responded",
-}
-
-_SENTIMENT_SYNONYMS: dict[str, str] = {
-    "any": "any", "all": "any", "cualquiera": "any", "todas": "any",
-    "positive": "positive", "happy": "positive", "good": "positive", "positivas": "positive",
-    "neutral": "neutral", "mixed": "neutral", "neutras": "neutral", "neutrales": "neutral",
-    "negative": "negative", "bad": "negative", "harsh": "negative",
-    "negativas": "negative", "malas": "negative",
-}
-
-_SORT_SYNONYMS: dict[str, str] = {
-    "recent": "recent", "newest": "recent", "latest": "recent", "newest_first": "recent",
-    "last": "recent", "last_review": "recent", "lastest": "recent",
-    "most_recent": "recent", "mas_reciente": "recent", "mas_recientes": "recent",
-    "ultima": "recent", "ultimo": "recent", "ultimas": "recent", "ultimos": "recent",
-    "oldest": "oldest", "earliest": "oldest", "first": "oldest", "first_review": "oldest",
-    "mas_vieja": "oldest", "mas_antigua": "oldest", "primera": "oldest", "primero": "oldest",
-    "rating_high": "rating_high", "best_rating": "rating_high", "highest_rated": "rating_high",
-    "best": "rating_high", "top_rated": "rating_high", "highest": "rating_high",
-    "mejor_calificacion": "rating_high", "mejores": "rating_high", "mejor": "rating_high",
-    "rating_low": "rating_low", "worst_rating": "rating_low", "lowest_rated": "rating_low",
-    "lowest": "rating_low", "peor_calificacion": "rating_low",
-    "most_negative": "most_negative", "harshest": "most_negative", "worst": "most_negative",
-    "mas_duras": "most_negative", "peores": "most_negative", "negative_first": "most_negative",
-    "most_positive": "most_positive", "happiest": "most_positive", "warmest": "most_positive",
-    "best_sentiment": "most_positive", "mas_calidas": "most_positive", "positive_first": "most_positive",
-}
-
-
-def _norm_key(s: str) -> str:
-    """Lowercase, replace spaces / hyphens / accents so synonyms match."""
-    return _normalize_for_search(s).replace(" ", "_").replace("-", "_")
-
-
-LIST_REVIEWS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "responded_status": {
-            "type": "string",
-            "default": "any",
-            "description": (
-                "Filtrá por respuesta del owner. Acepta: 'any', "
-                "'pending' (sin responder, también: unanswered, "
-                "sin_responder), 'responded' (ya respondida, también: "
-                "answered, replied, respondidas)."
-            ),
-        },
-        "sentiment": {
-            "type": "string",
-            "default": "any",
-            "description": (
-                "Filtrá por sentimiento detectado. Acepta: 'any', "
-                "'positive' (también: positivas), 'neutral' (también: "
-                "mixed, neutrales), 'negative' (también: bad, "
-                "negativas, malas). Reviews todavía no analizadas se "
-                "excluyen cuando es distinto de 'any'."
-            ),
-        },
-        "dish_name_contains": {
-            "type": "string",
-            "description": (
-                "Substring (acento-insensible) que tiene que aparecer "
-                "en el nombre del plato. Útil para 'reseñas de mi "
-                "hamburguesa', 'qué dijeron del risotto'. Resuelve "
-                "varios platos a la vez (no único)."
-            ),
-        },
-        "min_rating": {
-            "type": "number",
-            "minimum": 1,
-            "maximum": 5,
-            "description": "Rating mínimo del cliente, escala 1-5.",
-        },
-        "max_rating": {
-            "type": "number",
-            "minimum": 1,
-            "maximum": 5,
-            "description": "Rating máximo del cliente, escala 1-5.",
-        },
-        "date_from": {
-            "type": "string",
-            "format": "date",
-            "description": (
-                "ISO date (YYYY-MM-DD). Filtra reseñas creadas a "
-                "partir de esta fecha inclusive."
-            ),
-        },
-        "date_to": {
-            "type": "string",
-            "format": "date",
-            "description": (
-                "ISO date (YYYY-MM-DD). Filtra reseñas creadas hasta "
-                "esta fecha inclusive."
-            ),
-        },
-        "sort": {
-            "type": "string",
-            "default": "recent",
-            "description": (
-                "Orden. Acepta: 'recent' (newest, latest, más "
-                "reciente), 'oldest' (earliest, más vieja), "
-                "'rating_high' (best, top_rated, mejores), "
-                "'rating_low' (worst_rating), 'most_negative' "
-                "(harshest, peores), 'most_positive' (happiest)."
-            ),
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50,
-            "default": 10,
-        },
-    },
-    "additionalProperties": False,
-}
-
-
-def _resolve_synonym(
-    value: Any, synonyms: dict[str, str], default: str
-) -> tuple[str, bool]:
-    """Returns (canonical, was_recognised). Falls back to default when
-    the input is missing or unrecognised — the tool always proceeds
-    with a sane default so the LLM gets data, not an error."""
-    if value is None:
-        return default, True
-    if not isinstance(value, str):
-        return default, False
-    key = _norm_key(value)
-    if not key:
-        return default, True
-    canonical = synonyms.get(key)
-    if canonical is None:
-        return default, False
-    return canonical, True
+# Contract is enforced by ``ListReviewsInput`` (Pydantic). Provider-side
+# enum validation rejects out-of-range values before the call ever lands
+# here; if one slips through, ``model_validate`` raises and the agent loop
+# surfaces the error to the model so it can retry. We do not maintain
+# synonym tables — natural-language → enum is the LLM's job, in any
+# language.
 
 
 def make_list_reviews_tool(
@@ -981,67 +850,19 @@ def make_list_reviews_tool(
         if restaurant_scope_id is None:
             return {"error": "Business scope is required."}
 
-        notes: list[str] = []  # surface input issues without failing.
+        try:
+            inputs = ListReviewsInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for list_reviews.",
+                "details": exc.errors(include_url=False),
+            }
 
-        responded_arg, ok = _resolve_synonym(
-            args.get("responded_status"), _RESPONDED_SYNONYMS, "any"
-        )
-        if not ok:
-            notes.append(
-                f"responded_status={args.get('responded_status')!r} no "
-                f"matchea ninguna opción; usé 'any'."
-            )
-
-        sentiment_canonical, ok = _resolve_synonym(
-            args.get("sentiment"), _SENTIMENT_SYNONYMS, "any"
-        )
-        if not ok:
-            notes.append(
-                f"sentiment={args.get('sentiment')!r} no matchea; usé 'any'."
-            )
         sentiment_filter = (
-            SentimentLabel(sentiment_canonical)
-            if sentiment_canonical != "any"
+            SentimentLabel(inputs.sentiment.value)
+            if inputs.sentiment is not Sentiment.any
             else None
         )
-
-        sort_arg, ok = _resolve_synonym(args.get("sort"), _SORT_SYNONYMS, "recent")
-        if not ok:
-            notes.append(
-                f"sort={args.get('sort')!r} no matchea; usé 'recent'."
-            )
-
-        try:
-            limit = max(1, min(50, int(args.get("limit", 10))))
-        except (TypeError, ValueError):
-            limit = 10
-            notes.append("limit no era un entero; usé 10.")
-
-        # Optional structured filters
-        dish_name = args.get("dish_name_contains")
-        min_rating = args.get("min_rating")
-        max_rating = args.get("max_rating")
-        date_from_raw = args.get("date_from")
-        date_to_raw = args.get("date_to")
-
-        from datetime import date
-
-        date_from: date | None = None
-        date_to: date | None = None
-        if date_from_raw:
-            try:
-                date_from = date.fromisoformat(str(date_from_raw))
-            except ValueError:
-                notes.append(
-                    f"date_from={date_from_raw!r} no es ISO YYYY-MM-DD; ignoré."
-                )
-        if date_to_raw:
-            try:
-                date_to = date.fromisoformat(str(date_to_raw))
-            except ValueError:
-                notes.append(
-                    f"date_to={date_to_raw!r} no es ISO YYYY-MM-DD; ignoré."
-                )
 
         stmt = (
             select(DishReview, Dish, DishReviewOwnerResponse.review_id)
@@ -1053,16 +874,23 @@ def make_list_reviews_tool(
             .where(Dish.restaurant_id == restaurant_scope_id)
         )
 
-        if responded_arg == "pending":
+        if inputs.responded_status is RespondedStatus.pending:
             stmt = stmt.where(DishReviewOwnerResponse.review_id.is_(None))
-        elif responded_arg == "responded":
+        elif inputs.responded_status is RespondedStatus.responded:
             stmt = stmt.where(DishReviewOwnerResponse.review_id.is_not(None))
 
         if sentiment_filter is not None:
             stmt = stmt.where(DishReview.sentiment_label == sentiment_filter)
 
-        if dish_name and isinstance(dish_name, str) and dish_name.strip():
-            # Pull all dish IDs in scope whose name matches (accent-insensitive).
+        applied: dict[str, Any] = {
+            "responded_status": inputs.responded_status.value,
+            "sentiment": inputs.sentiment.value,
+            "sort": inputs.sort.value,
+            "limit": inputs.limit,
+        }
+
+        if inputs.dish_name_contains and inputs.dish_name_contains.strip():
+            applied["dish_name_contains"] = inputs.dish_name_contains
             all_dishes = list(
                 (
                     await db.execute(
@@ -1072,75 +900,66 @@ def make_list_reviews_tool(
                     )
                 ).all()
             )
-            needle = _normalize_for_search(dish_name)
+            needle = _normalize_for_search(inputs.dish_name_contains)
             matching_ids = [
                 row.id
                 for row in all_dishes
                 if needle in _normalize_for_search(row.name)
             ]
             if not matching_ids:
+                # Empty-result branch: no dishes match the filter. We tell
+                # the LLM what happened so it can suggest the menu instead
+                # of inventing platos. This is a *factual* status, not a
+                # tool error — the call succeeded with zero rows.
                 return {
+                    "restaurant_id": restaurant_scope_id,
                     "count": 0,
-                    "applied_filters": {
-                        "responded_status": responded_arg,
-                        "sentiment": sentiment_canonical,
-                        "dish_name_contains": dish_name,
-                        "sort": sort_arg,
-                        "limit": limit,
-                    },
-                    "notes": notes
-                    + [
-                        f"Ningún plato del restaurante matchea "
-                        f"'{dish_name}'. Mostrale al owner los platos "
-                        "del menú (rank_my_dishes) y preguntale a "
-                        "cuál se refería."
-                    ],
+                    "applied_filters": applied,
+                    "no_dish_matched": True,
                     "reviews": [],
                 }
             stmt = stmt.where(DishReview.dish_id.in_(matching_ids))
 
-        if min_rating is not None:
-            try:
-                stmt = stmt.where(DishReview.rating >= float(min_rating))
-            except (TypeError, ValueError):
-                notes.append(f"min_rating={min_rating!r} inválido; ignoré.")
-        if max_rating is not None:
-            try:
-                stmt = stmt.where(DishReview.rating <= float(max_rating))
-            except (TypeError, ValueError):
-                notes.append(f"max_rating={max_rating!r} inválido; ignoré.")
+        if inputs.min_rating is not None:
+            stmt = stmt.where(DishReview.rating >= inputs.min_rating)
+            applied["min_rating"] = inputs.min_rating
+        if inputs.max_rating is not None:
+            stmt = stmt.where(DishReview.rating <= inputs.max_rating)
+            applied["max_rating"] = inputs.max_rating
 
-        if date_from is not None:
-            stmt = stmt.where(func.date(DishReview.created_at) >= date_from)
-        if date_to is not None:
-            stmt = stmt.where(func.date(DishReview.created_at) <= date_to)
+        if inputs.date_from is not None:
+            stmt = stmt.where(func.date(DishReview.created_at) >= inputs.date_from)
+            applied["date_from"] = inputs.date_from.isoformat()
+        if inputs.date_to is not None:
+            stmt = stmt.where(func.date(DishReview.created_at) <= inputs.date_to)
+            applied["date_to"] = inputs.date_to.isoformat()
 
-        if sort_arg == "most_negative":
+        if inputs.sort is ReviewSort.most_negative:
             stmt = stmt.order_by(
                 asc(DishReview.sentiment_score).nullslast(),
                 DishReview.created_at.desc(),
             )
-        elif sort_arg == "most_positive":
+        elif inputs.sort is ReviewSort.most_positive:
             stmt = stmt.order_by(
                 DishReview.sentiment_score.desc().nullslast(),
                 DishReview.created_at.desc(),
             )
-        elif sort_arg == "rating_high":
+        elif inputs.sort is ReviewSort.rating_high:
             stmt = stmt.order_by(
                 DishReview.rating.desc(),
                 DishReview.created_at.desc(),
             )
-        elif sort_arg == "rating_low":
+        elif inputs.sort is ReviewSort.rating_low:
             stmt = stmt.order_by(
                 DishReview.rating.asc(),
                 DishReview.created_at.desc(),
             )
-        elif sort_arg == "oldest":
+        elif inputs.sort is ReviewSort.oldest:
             stmt = stmt.order_by(DishReview.created_at.asc())
-        else:  # "recent"
+        else:  # ReviewSort.recent
             stmt = stmt.order_by(DishReview.created_at.desc())
 
-        rows = list((await db.execute(stmt.limit(limit))).all())
+        rows = list((await db.execute(stmt.limit(inputs.limit))).all())
 
         items = [
             {
@@ -1167,32 +986,13 @@ def make_list_reviews_tool(
             }
             for rev, dish, resp_id in rows
         ]
-        applied = {
-            "responded_status": responded_arg,
-            "sentiment": sentiment_canonical,
-            "sort": sort_arg,
-            "limit": limit,
-        }
-        if dish_name:
-            applied["dish_name_contains"] = dish_name
-        if min_rating is not None:
-            applied["min_rating"] = min_rating
-        if max_rating is not None:
-            applied["max_rating"] = max_rating
-        if date_from is not None:
-            applied["date_from"] = date_from.isoformat()
-        if date_to is not None:
-            applied["date_to"] = date_to.isoformat()
 
-        result: dict[str, Any] = {
+        return {
             "restaurant_id": restaurant_scope_id,
             "count": len(items),
             "applied_filters": applied,
             "reviews": items,
         }
-        if notes:
-            result["notes"] = notes
-        return result
 
     return ToolSpec(
         name="list_reviews",
@@ -1201,21 +1001,17 @@ def make_list_reviews_tool(
             "restaurant. Compose filters: ``responded_status``, "
             "``sentiment``, ``dish_name_contains`` (substring "
             "accent-insensitive), ``min_rating``/``max_rating`` (1-5), "
-            "``date_from``/``date_to`` (ISO YYYY-MM-DD). Choose order "
-            "with ``sort`` (recent/oldest/rating_high/rating_low/"
-            "most_negative/most_positive — many synonyms accepted). "
+            "``date_from``/``date_to`` (ISO YYYY-MM-DD). Order with "
+            "``sort``. Each parameter accepts only the enum values "
+            "documented in its schema — translate the owner's natural "
+            "language into the right enum yourself, in any language. "
             "Examples: 'última review' → sort='recent', limit=1; "
-            "'qué dijeron de mi hamburguesa' → "
-            "dish_name_contains='hamburguesa'; 'reseñas duras de "
-            "abril' → date_from='2026-04-01', date_to='2026-04-30', "
-            "sort='most_negative'; 'top 3 mejores' → "
-            "sort='rating_high', limit=3. The tool is **forgiving**: "
-            "synonyms work, unrecognised inputs fall back to defaults "
-            "and surface in ``notes``. The response always includes "
-            "``applied_filters`` so you can see exactly what ran. "
-            "Always pick the loosest filters the owner asked for — "
+            "'reseñas duras de abril' → date_from='2026-04-01', "
+            "date_to='2026-04-30', sort='most_negative'. The response "
+            "always includes ``applied_filters`` so you can see exactly "
+            "what ran. Pick the loosest filters the owner asked for — "
             "don't invent constraints."
         ),
-        input_schema=LIST_REVIEWS_SCHEMA,
+        input_schema=pydantic_to_anthropic_schema(ListReviewsInput),
         handler=handler,
     )
