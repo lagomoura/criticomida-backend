@@ -21,6 +21,7 @@ language) tells us whether the polyglot mapping actually works.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -59,6 +60,20 @@ class CaseExpectations(BaseModel):
     response_must_contain_any: list[str] = Field(default_factory=list)
     response_must_not_contain: list[str] = Field(default_factory=list)
     no_tool_errors: bool = True
+    # Cross-checks numeric literals in the final text against tool
+    # outputs. Off by default — turn on per case where the agent is
+    # expected to quote concrete metrics (rating, response rate,
+    # review counts). See ``_check_numeric_groundedness``.
+    validate_numbers: bool = False
+    # Tolerance window for decimal comparisons. Ratings round to 1
+    # decimal; response rates often quoted ±1pp. Wider than 0.05
+    # tends to mask real fabrications.
+    number_tolerance: float = 0.05
+    # Numbers the model is allowed to mention without a tool source —
+    # e.g. ``5`` for "out of 5 stars" or ``30`` for "last 30 days"
+    # when those framings are baked into the prompt. Keep this list
+    # tight: every entry weakens the check.
+    numbers_allowed: list[float] = Field(default_factory=list)
 
 
 class EvalCase(BaseModel):
@@ -249,6 +264,191 @@ def _check_assertions(
                 f"{final_text[:200]!r}"
             )
 
+    if case.expected.validate_numbers:
+        failures.extend(
+            _check_numeric_groundedness(
+                final_text=final_text,
+                tool_calls=tool_calls,
+                tolerance=case.expected.number_tolerance,
+                allowed=case.expected.numbers_allowed,
+            )
+        )
+
+    return failures
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   Numeric groundedness
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Match decimals, percentages, and integers with an optional thousands
+# separator. We look at numbers ≥ 10 OR decimals with a fractional
+# part: small integers like ``1``, ``2``, ``5`` show up everywhere
+# (lists, "out of 5 stars", "in 1 day") and would drown the check in
+# noise. Cases that *do* care about a small integer can pin it via
+# ``response_must_contain_any``.
+_NUMBER_RE = re.compile(
+    r"""
+    (?<![\w/.-])              # not part of a slug, path, or hyphen-id
+    (?P<num>\d{1,3}(?:[\.,]\d{3})+|\d+(?:[.,]\d+)?)  # the number itself
+    (?P<suffix>%)?            # optional percent
+    (?![\w/])
+    """,
+    re.VERBOSE,
+)
+
+
+def _parse_number(raw: str) -> float | None:
+    """Parse a single number captured by ``_NUMBER_RE`` into a float.
+
+    The regex tolerates either ``,`` or ``.`` as the decimal mark
+    (Spanish/Portuguese reviews quote ``4,2``; English quote ``4.2``).
+    Thousands separators we treat as group separators and strip.
+    """
+    if not raw:
+        return None
+    has_comma = "," in raw
+    has_dot = "." in raw
+    if has_comma and has_dot:
+        # Either "1.234,5" (es/pt: dot=thousands, comma=decimal) or
+        # "1,234.5" (en: comma=thousands, dot=decimal). Heuristic:
+        # whichever appears LAST is the decimal mark.
+        last_comma = raw.rfind(",")
+        last_dot = raw.rfind(".")
+        if last_comma > last_dot:
+            cleaned = raw.replace(".", "").replace(",", ".")
+        else:
+            cleaned = raw.replace(",", "")
+    elif has_comma:
+        # Single comma: decimal mark when followed by 1–2 digits,
+        # thousands separator when followed by exactly 3 digits.
+        idx = raw.rfind(",")
+        tail = raw[idx + 1 :]
+        cleaned = (
+            raw.replace(",", ".") if 1 <= len(tail) <= 2 else raw.replace(",", "")
+        )
+    else:
+        cleaned = raw
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _is_check_worthy(value: float, raw: str, suffix: str | None) -> bool:
+    """Filter for numbers worth verifying.
+
+    Skip:
+    - small integers 0..9 (drowns the signal — see regex docstring).
+    - 4-digit numbers in 2020..2099 (years).
+    The percent suffix forces a check regardless of value (a fabricated
+    "85% response rate" is exactly the bug we're chasing).
+    """
+    if suffix == "%":
+        return True
+    has_fraction = "." in raw or "," in raw
+    if has_fraction:
+        return True
+    if 0 <= value < 10:
+        return False
+    if 2020 <= value <= 2099:
+        return False
+    return True
+
+
+def _collect_numbers(value: Any) -> list[float]:
+    """Walk a tool output recursively and collect every numeric leaf.
+
+    Strings are scanned for embedded numbers too — the LLM might quote
+    "4.2" from a tool that returned the rating in a sentence rather
+    than as a JSON number.
+    """
+    out: list[float] = []
+    if isinstance(value, bool):
+        return out  # bools are ints in Python; meaningless here
+    if isinstance(value, (int, float)):
+        out.append(float(value))
+        return out
+    if isinstance(value, str):
+        for match in _NUMBER_RE.finditer(value):
+            parsed = _parse_number(match.group("num"))
+            if parsed is not None:
+                out.append(parsed)
+        return out
+    if isinstance(value, dict):
+        for sub in value.values():
+            out.extend(_collect_numbers(sub))
+        return out
+    if isinstance(value, (list, tuple)):
+        for sub in value:
+            out.extend(_collect_numbers(sub))
+        return out
+    return out
+
+
+def _matches_any(
+    value: float, *, suffix: str | None, sources: list[float], tolerance: float
+) -> bool:
+    """Check if ``value`` is justified by any number a tool returned.
+
+    Percent values match against either the percent form (``85`` vs
+    tool's ``85``) or the fractional form (``85`` vs tool's ``0.85``).
+    Plain numbers accept the percent form too in case the tool stored
+    a fraction and the model rendered it with a ``%`` suffix.
+    """
+    candidates: list[float] = [value]
+    if suffix == "%":
+        candidates.append(value / 100.0)
+    else:
+        candidates.append(value * 100.0)
+    for cand in candidates:
+        for source in sources:
+            if abs(cand - source) <= tolerance:
+                return True
+    return False
+
+
+def _check_numeric_groundedness(
+    *,
+    final_text: str,
+    tool_calls: list[CapturedToolCall],
+    tolerance: float,
+    allowed: list[float],
+) -> list[str]:
+    """Verify every notable number in ``final_text`` traces to a tool
+    output (or to the explicit ``allowed`` whitelist).
+
+    Returns a list of failure messages, one per fabricated literal.
+    """
+    sources: list[float] = []
+    for tc in tool_calls:
+        sources.extend(_collect_numbers(tc.output))
+
+    allowed_set: set[float] = set(allowed)
+
+    failures: list[str] = []
+    for match in _NUMBER_RE.finditer(final_text):
+        raw = match.group("num")
+        suffix = match.group("suffix")
+        value = _parse_number(raw)
+        if value is None:
+            continue
+        if not _is_check_worthy(value, raw, suffix):
+            continue
+        if value in allowed_set:
+            continue
+        if _matches_any(
+            value, suffix=suffix, sources=sources, tolerance=tolerance
+        ):
+            continue
+        rendered = f"{raw}{suffix}" if suffix else raw
+        failures.append(
+            f"unverified_number: {rendered!r} appears in the final "
+            "text but no tool output justifies it within tolerance "
+            f"±{tolerance}. Source numbers: {sources!r}. "
+            f"Final text: {final_text[:200]!r}"
+        )
     return failures
 
 
