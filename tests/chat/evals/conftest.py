@@ -248,6 +248,20 @@ async def _cleanup_chat_eval_data(_gate_chat_evals):
     if not _evals_enabled():
         return
     async with engine.begin() as conn:
+        # owner_chat_preferences cascades from users/restaurants; we
+        # delete it explicitly anyway in case the cascade order leaves
+        # orphans during a partial failure.
+        await conn.execute(
+            text(
+                "DELETE FROM owner_chat_preferences "
+                "WHERE user_id IN (SELECT id FROM users WHERE email LIKE :prefix) "
+                "OR restaurant_id IN (SELECT id FROM restaurants WHERE google_place_id = :pid)"
+            ),
+            {
+                "pid": CHAT_EVAL_PLACE_ID,
+                "prefix": f"{CHAT_EVAL_USER_PREFIX}%@test.com",
+            },
+        )
         await conn.execute(
             text(
                 "DELETE FROM restaurants WHERE google_place_id = :pid"

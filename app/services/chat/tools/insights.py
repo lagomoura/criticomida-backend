@@ -38,7 +38,12 @@ from app.services.chat.tools._schemas import (
     SuggestReviewResponseInput,
     SummarizeReviewsInput,
     SummaryDimension,
+    UpdateOwnerPreferencesInput,
     pydantic_to_anthropic_schema,
+)
+from app.services.owner_chat_preferences_service import (
+    get_chat_preferences,
+    upsert_chat_preference,
 )
 # Reuse the geometry + percentile helpers already battle-tested in
 # benchmark_dish — same restaurant-discovery logic, same fairness
@@ -282,12 +287,15 @@ _TONE_GUIDANCE: dict[ResponseTone, str] = {
         "específico que el cliente mencionó. Cerrá ofreciendo seguimiento "
         "(no compensación material — eso lo decide el owner)."
     ),
-    ResponseTone.match_brand: (
-        "Sin perfil de marca todavía registrado para este restaurante "
-        "(roadmap F5). Caigo a tono profesional cortés. Mencioná esto al "
-        "owner como nota cuando le presentes el draft."
-    ),
 }
+
+
+_MATCH_BRAND_FALLBACK_GUIDANCE = (
+    "Sin perfil de tono persistente registrado para este owner. "
+    "Cayendo a tono profesional cortés. El owner puede fijar uno con "
+    "el tool update_owner_preferences si quiere que futuras respuestas "
+    "lo respeten."
+)
 
 
 def _infer_tone(sentiment: SentimentLabel | None) -> ResponseTone:
@@ -315,7 +323,10 @@ _REPLY_HARD_RULES = [
 
 
 def make_suggest_review_response_tool(
-    db: AsyncSession, *, restaurant_scope_id: str | None
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID | None,
+    restaurant_scope_id: str | None,
 ) -> ToolSpec:
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         if restaurant_scope_id is None:
@@ -382,9 +393,37 @@ def make_suggest_review_response_tool(
         # from the review's sentiment so the tool stays useful even when
         # the model omits the optional parameter (Gemini Flash Lite
         # tends to skip optionals — pragmatic recovery beats forcing it
-        # to retry).
+        # to retry). ``match_brand`` resolves to the owner's persisted
+        # preference when one exists.
         effective_tone = inputs.tone or _infer_tone(review.sentiment_label)
         tone_was_inferred = inputs.tone is None
+        guidance_override: str | None = None
+
+        if effective_tone is ResponseTone.match_brand:
+            persisted = None
+            if user_id is not None:
+                try:
+                    restaurant_uuid = uuid.UUID(restaurant_scope_id)
+                    prefs = await get_chat_preferences(
+                        db,
+                        user_id=user_id,
+                        restaurant_id=restaurant_uuid,
+                    )
+                    if prefs and prefs.tone_preference:
+                        try:
+                            persisted = ResponseTone(prefs.tone_preference)
+                        except ValueError:
+                            # Preference stores a tone value that isn't
+                            # in our reply enum (e.g. ``concise``);
+                            # treat as "no usable preference".
+                            persisted = None
+                except (TypeError, ValueError):
+                    persisted = None
+            if persisted is not None and persisted is not ResponseTone.match_brand:
+                effective_tone = persisted
+            else:
+                effective_tone = ResponseTone.professional
+                guidance_override = _MATCH_BRAND_FALLBACK_GUIDANCE
 
         return {
             "review_id": str(review.id),
@@ -407,7 +446,7 @@ def make_suggest_review_response_tool(
             },
             "tone": effective_tone.value,
             "tone_inferred_from_sentiment": tone_was_inferred,
-            "tone_guidance": _TONE_GUIDANCE[effective_tone],
+            "tone_guidance": guidance_override or _TONE_GUIDANCE[effective_tone],
             "language_hint": (
                 "Detectá el idioma del campo review.note y respondé en "
                 "ese idioma exactamente. No traduzcas el draft al idioma "
@@ -741,3 +780,112 @@ async def _competition_metric(
         "cohort_avg": cohort_avg,
         "cohort_values": cohort_values,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   update_owner_preferences
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def make_update_owner_preferences_tool(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID | None,
+    restaurant_scope_id: str | None,
+) -> ToolSpec:
+    """Tool que el agente Business llama cuando el owner pide algo
+    persistente sobre el chat: tono fijo, idioma de respuesta, KPIs
+    prioritarios. Una conversación nueva levanta este state vía el
+    system prompt, así que el efecto es entre sesiones, no solo en
+    el turno actual.
+    """
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        if user_id is None:
+            return {
+                "error": (
+                    "update_owner_preferences requires an authenticated "
+                    "owner. The current conversation is anonymous."
+                )
+            }
+        if restaurant_scope_id is None:
+            return {
+                "error": (
+                    "update_owner_preferences requires a restaurant "
+                    "scope (this tool only applies to the Business "
+                    "agent on a verified owner conversation)."
+                )
+            }
+
+        try:
+            inputs = UpdateOwnerPreferencesInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for update_owner_preferences.",
+                "details": exc.errors(include_url=False),
+            }
+
+        if (
+            inputs.tone is None
+            and inputs.language is None
+            and inputs.kpi_focus is None
+        ):
+            return {
+                "error": (
+                    "Pass at least one of tone, language, or kpi_focus. "
+                    "If the owner didn't ask to change anything "
+                    "persistent, don't call this tool."
+                )
+            }
+
+        try:
+            restaurant_uuid = uuid.UUID(restaurant_scope_id)
+        except (TypeError, ValueError):
+            return {"error": "Internal scope is not a valid UUID."}
+
+        # The service treats ``None`` as "don't touch this field". We
+        # only forward the fields the LLM actually populated, so each
+        # call updates a partial set without overwriting the rest.
+        prefs = await upsert_chat_preference(
+            db,
+            user_id=user_id,
+            restaurant_id=restaurant_uuid,
+            tone_preference=inputs.tone.value if inputs.tone else None,
+            language_preference=(
+                inputs.language.value if inputs.language else None
+            ),
+            kpi_focus=inputs.kpi_focus,
+        )
+
+        return {
+            "saved": True,
+            "preferences": {
+                "tone": prefs.tone_preference,
+                "language": prefs.language_preference,
+                "kpi_focus": prefs.kpi_focus,
+            },
+            "note": (
+                "La preferencia ya está guardada. Aplica desde la "
+                "PRÓXIMA sesión también; en ESTE turno seguís usando el "
+                "tono/idioma vigente al inicio de la conversación. "
+                "Confirmá al owner en una frase corta y seguí con su "
+                "pregunta original si la había."
+            ),
+        }
+
+    return ToolSpec(
+        name="update_owner_preferences",
+        description=(
+            "Persists owner preferences for the chat (tone, language, "
+            "KPI focus) so future sessions remember them. Call this "
+            "ONLY when the owner explicitly says something persistent "
+            "(e.g. 'always reply in Portuguese', 'siempre tono formal', "
+            "'mostrame siempre la tasa de respuesta'). Do NOT call it "
+            "when they make a one-off request — for that, just answer "
+            "in the current turn. Pass only the fields the owner "
+            "mentioned; existing preferences for other fields stay. "
+            "To replace a preference, set it to a new explicit value."
+        ),
+        input_schema=pydantic_to_anthropic_schema(UpdateOwnerPreferencesInput),
+        handler=handler,
+    )

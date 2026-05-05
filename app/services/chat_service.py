@@ -45,6 +45,10 @@ from app.services.chat.agent_loop import (
 from app.services.chat.prompts.loader import build_user_block, load_agent_prompt
 from app.services.chat.tools.registry import build_registry
 from app.services.embeddings_service import embed_query
+from app.services.owner_chat_preferences_service import (
+    get_chat_preferences,
+    render_preferences_block,
+)
 from app.services.taste_profile_service import get_taste_profile
 
 logger = logging.getLogger(__name__)
@@ -207,6 +211,23 @@ async def stream_chat(
     user_block = build_user_block(user, profile)
     if user_block:
         system_prompt = f"{system_prompt}\n\n{user_block}"
+
+    # Business agent: append the per-restaurant chat preferences (tone,
+    # language, KPI focus) the owner has tweaked in past sessions. Sin
+    # fila → bloque omitido y el agente cae a defaults del prompt.
+    if (
+        conversation.agent == ChatAgent.business
+        and user is not None
+        and conversation.restaurant_scope_id is not None
+    ):
+        prefs = await get_chat_preferences(
+            db,
+            user_id=user.id,
+            restaurant_id=conversation.restaurant_scope_id,
+        )
+        prefs_block = render_preferences_block(prefs)
+        if prefs_block:
+            system_prompt = f"{system_prompt}\n\n{prefs_block}"
 
     history = await _load_history(db, conversation.id)
     messages = list(history)

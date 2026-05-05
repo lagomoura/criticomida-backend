@@ -93,6 +93,24 @@ class BaselineKind(str, Enum):
     competition = "competition"
 
 
+class OwnerPreferenceTone(str, Enum):
+    """Tono que el owner pidió persistir para el chat Business."""
+
+    warm = "warm"
+    professional = "professional"
+    concise = "concise"
+    match_brand = "match_brand"
+
+
+class OwnerPreferenceLanguage(str, Enum):
+    """Idioma persistente preferido por el owner para las respuestas
+    del agente. ``None`` (no persistir) significa adaptar al input."""
+
+    es = "es"
+    en = "en"
+    pt = "pt"
+
+
 # ──────────────────────────────────────────────────────────────────────────
 #   Tool input models
 # ──────────────────────────────────────────────────────────────────────────
@@ -211,6 +229,52 @@ class SuggestReviewResponseInput(BaseModel):
             "owner (roadmap F5). Si lo omitís, el tool lo infiere del "
             "sentimiento de la reseña: negative → apologetic, "
             "positive → warm, neutral → professional."
+        ),
+    )
+
+
+class UpdateOwnerPreferencesInput(BaseModel):
+    """Inputs para actualizar las preferencias persistentes del owner.
+
+    Cada campo es opcional: el owner puede pedir cambiar UNA cosa
+    sola. Pasá solo los campos que el owner mencionó explícitamente
+    en su mensaje. Para limpiar una preferencia (ej. "no fijes idioma,
+    adaptate al que use") pasá la cadena vacía ``""``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("tone", "language", mode="before")
+    @classmethod
+    def _lowercase(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+    tone: OwnerPreferenceTone | None = Field(
+        default=None,
+        description=(
+            "Tono que el owner quiere por default en TODAS las "
+            "interacciones futuras: 'warm', 'professional', 'concise', "
+            "'match_brand'. Solo pasalo si el owner lo dijo explícito "
+            "('siempre tono formal', 'respondé corto')."
+        ),
+    )
+    language: OwnerPreferenceLanguage | None = Field(
+        default=None,
+        description=(
+            "Idioma fijo preferido para las respuestas del agente: "
+            "'es', 'en', 'pt'. Solo pasalo si el owner lo dijo explícito "
+            "('respondé siempre en portugués'). NO lo derives de en qué "
+            "idioma vino el mensaje actual."
+        ),
+    )
+    kpi_focus: list[str] | None = Field(
+        default=None,
+        description=(
+            "Lista corta de KPIs que el owner quiere ver siempre en "
+            "saludos / resúmenes ('rating_avg', 'response_rate', "
+            "'review_count_30d', etc.). Lista vacía [] = limpiar."
         ),
     )
 

@@ -32,11 +32,14 @@ async def test_business_eval_case(
     eval_db_session,
     chat_api_key: str | None,
 ) -> None:
+    import uuid as _uuid
+
     result = await run_eval_case(
         case,
         db=eval_db_session,
         agent=ChatAgent.business,
         restaurant_scope_id=chat_eval_scope.restaurant_id,
+        user_id=_uuid.UUID(chat_eval_scope.owner_user_id),
         api_key=chat_api_key,
     )
     if not result.passed:

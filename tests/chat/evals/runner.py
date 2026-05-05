@@ -102,6 +102,7 @@ async def run_eval_case(
     db: AsyncSession,
     agent: ChatAgent,
     restaurant_scope_id: str,
+    user_id: Any | None = None,
     model: str | None = None,
     api_key: str | None = None,
     max_iterations: int = 5,
@@ -110,12 +111,15 @@ async def run_eval_case(
 
     Caller is responsible for setting up the DB fixture (restaurant +
     reviews) and tearing it down. We only own the agent invocation.
+    Pass ``user_id`` for tools that bind to an authenticated owner
+    (e.g. ``update_owner_preferences``); leave ``None`` for the
+    anonymous flow that most cases need.
     """
     system_prompt = load_agent_prompt(agent)
     registry = build_registry(
         agent=agent,
         db=db,
-        user_id=None,
+        user_id=user_id,
         embed_query=None,
         restaurant_scope_id=restaurant_scope_id,
     )

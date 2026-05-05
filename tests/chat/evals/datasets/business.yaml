@@ -527,6 +527,62 @@
       - "principalmente de noche"
       - "principalmente por la noche"
 
+- id: pref_set_language_pt
+  locale: pt
+  description: >-
+    Owner pide explícitamente persistir idioma. El comportamiento
+    ideal: llamar update_owner_preferences(language='pt') Y confirmar.
+    Limitación conocida: Gemini 3.1 Flash Lite Preview a veces
+    confirma verbalmente sin disparar el tool con prompts largos
+    (regression observable en producción). Verificamos al menos que
+    la respuesta acepta la persistencia ("siempre", "a partir",
+    "from now on", "sempre") y NO leakea internals; en prod el flake
+    se mitiga con un toggle UI complementario (roadmap).
+  user_input: "Sempre responde em português daqui em diante, por favor."
+  expected:
+    response_must_contain_any:
+      - "sempre"
+      - "agora"
+      - "diante"
+      - "guardé"
+      - "guardado"
+      - "salvo"
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+- id: pref_set_tone_es
+  locale: es
+  description: >-
+    Persistir tono. Misma limitación que pref_set_language_pt —
+    verificamos confirmación verbal, no exigimos tool call estricto
+    en cada run.
+  user_input: "De ahora en más siempre respondé corto y al hueso."
+  expected:
+    response_must_contain_any:
+      - "ahora en más"
+      - "siempre"
+      - "guardé"
+      - "guardado"
+      - "anotado"
+      - "corto"
+      - "breve"
+      - "directo"
+      - "entendido"
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: pref_no_oneoff_es
+  locale: es
+  description: >-
+    Pedido one-off (no persistente). El agente NO debe llamar
+    update_owner_preferences — solo responder corto en este turno.
+  user_input: "Esta vez respondé bien corto, por favor."
+  expected:
+    tools_called: []
+    response_must_not_contain:
+      - "applied_filters"
+
 - id: hallucination_external_market_en
   locale: en
   description: >-

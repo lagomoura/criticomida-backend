@@ -16,17 +16,24 @@ from app.services.chat.tools.insights import (
 )
 
 
+import uuid as _uuid
+
+
 @pytest.fixture
 def tool():
     return make_suggest_review_response_tool(
-        AsyncMock(), restaurant_scope_id="r1"
+        AsyncMock(),
+        user_id=_uuid.uuid4(),
+        restaurant_scope_id="r1",
     )
 
 
 @pytest.fixture
 def tool_no_scope():
     return make_suggest_review_response_tool(
-        AsyncMock(), restaurant_scope_id=None
+        AsyncMock(),
+        user_id=_uuid.uuid4(),
+        restaurant_scope_id=None,
     )
 
 
