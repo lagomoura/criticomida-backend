@@ -16,6 +16,7 @@ deprecated and proxies to the streaming flow internally.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any
@@ -23,7 +24,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -33,13 +34,15 @@ from app.models.chat import (
     ChatConversation,
     ChatMessage,
 )
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.chat_service import (
     get_or_create_conversation,
     stream_chat,
 )
 from app.services.claim_service import assert_verified_owner
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -69,6 +72,10 @@ class ConversationOut(BaseModel):
     started_at: datetime
     last_message_at: datetime
     restaurant_scope_id: uuid.UUID | None
+    # Set when the conversation has been soft-deleted. The FE uses
+    # this to render archived rows in a muted style and offer a
+    # "Restaurar" action when the "Show archived" toggle is on.
+    archived_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -301,6 +308,98 @@ async def archive_conversation(
         raise HTTPException(status_code=404, detail="Not found")
     if convo.archived_at is None:
         convo.archived_at = datetime.now(timezone.utc)
+        await db.flush()
+    return None
+
+
+@router.delete(
+    "/conversations/{conversation_id}/permanent",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def hard_delete_conversation(
+    conversation_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    """Hard-delete a conversation and all its messages.
+
+    Distinct from ``archive_conversation`` (which is the soft-delete
+    every regular user can do): this endpoint actually removes rows
+    from the DB and is the right primitive for a GDPR / right-to-be
+    -forgotten flow.
+
+    Authorisation: the conversation's own owner, or an admin acting
+    on their behalf (support / GDPR ops). Without that gate, an
+    admin-shaped role drift could quietly wipe other users' data.
+
+    The action is logged with structured fields (who, what, when —
+    no message content) so we have a paper trail for compliance
+    audits without hauling the deleted text along.
+    """
+    convo = (
+        await db.execute(
+            select(ChatConversation).where(
+                ChatConversation.id == conversation_id
+            )
+        )
+    ).scalars().first()
+    if convo is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    is_owner = convo.user_id == user.id
+    is_admin = user.role == UserRole.admin
+    if not (is_owner or is_admin):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Delete child messages explicitly. The model relationship may not
+    # have ON DELETE CASCADE wired in, and a stale orphan ChatMessage
+    # is worse than a slightly chattier DELETE — those rows hold the
+    # entire transcript we're trying to scrub.
+    await db.execute(
+        delete(ChatMessage).where(
+            ChatMessage.conversation_id == conversation_id
+        )
+    )
+    await db.delete(convo)
+    await db.flush()
+
+    logger.info(
+        "chat.conversation.hard_delete actor=%s actor_role=%s "
+        "owner=%s conversation=%s admin_override=%s",
+        user.id,
+        user.role.value if hasattr(user.role, "value") else user.role,
+        convo.user_id,
+        conversation_id,
+        is_admin and not is_owner,
+    )
+    return None
+
+
+@router.post(
+    "/conversations/{conversation_id}/unarchive",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def unarchive_conversation(
+    conversation_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    """Inverso de ``archive_conversation``: clear ``archived_at`` so the
+    conversation reappears in the default panel listing.
+
+    Idempotente: desarchivar una conversación que no estaba archivada
+    no rompe nada. Solo el dueño puede desarchivar.
+    """
+    convo = (
+        await db.execute(
+            select(ChatConversation).where(
+                ChatConversation.id == conversation_id
+            )
+        )
+    ).scalars().first()
+    if convo is None or convo.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    if convo.archived_at is not None:
+        convo.archived_at = None
         await db.flush()
     return None
 
