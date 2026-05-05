@@ -21,7 +21,6 @@ language) tells us whether the polyglot mapping actually works.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -234,8 +233,13 @@ def _check_assertions(
                 f"{case.expected.response_must_contain_any!r}. Got: {final_text[:200]!r}"
             )
 
+    text_lower = final_text.lower()
     for forbidden in case.expected.response_must_not_contain:
-        if re.search(forbidden, final_text, re.IGNORECASE):
+        # Plain case-insensitive substring match — using ``re.search``
+        # would interpret ``$``, ``.``, ``(`` etc. as regex anchors and
+        # bite us in cases like asserting "no $ symbol in the reply".
+        # Authors of YAML cases are not expected to think in regex.
+        if forbidden.lower() in text_lower:
             failures.append(
                 f"final response contained forbidden pattern {forbidden!r}: "
                 f"{final_text[:200]!r}"

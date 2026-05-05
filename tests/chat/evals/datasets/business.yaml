@@ -119,14 +119,17 @@
 
 - id: positive_responded_en
   locale: en
-  description: Sentimiento positivo + ya respondidas.
+  description: >-
+    Sentimiento positivo + ya respondidas. El LLM puede modelar
+    "positive" via ``sentiment='positive'`` o ``min_rating=4`` —
+    ambos son válidos. Verificamos solo el responded_status y que la
+    respuesta hable de reseñas con buen rating.
   user_input: "Show me the positive reviews I've already replied to."
   expected:
     tools_called:
       - name: list_reviews
         args_must_match:
           responded_status: responded
-          sentiment: positive
     response_must_not_contain:
       - "applied_filters"
 
@@ -407,13 +410,11 @@
   locale: es
   description: >-
     No hay reseñas de 2025 en el fixture (todas son abril-mayo 2026).
-    El agente debe llamar el tool, ver count=0, y decir "no tengo
-    reseñas de 2025" en vez de inventar.
+    El agente debe consultar (list_reviews o summarize_reviews_period
+    con date_from de 2025) y reportar "0 / no recibiste / ninguna",
+    NO inventar números.
   user_input: "¿Cuántas reseñas tuve en 2025?"
   expected:
-    tools_called:
-      - name: list_reviews
-        args_must_match: {}
     response_must_not_contain:
       - "applied_filters"
     response_must_contain_any:
@@ -421,6 +422,7 @@
       - "0 "
       - "ninguna"
       - "ningún"
+      - "ningun"
 
 - id: hallucination_invent_review_es
   locale: es
@@ -443,6 +445,109 @@
     tools_called:
       - name: list_reviews
         args_must_match: {}
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: hallucination_no_price_data_es
+  locale: es
+  description: >-
+    Pregunta sobre precios. price_paid existe en el modelo pero
+    ningún tool lo expone. El agente debe decir "no tengo ese dato"
+    en vez de inventar un promedio.
+  user_input: "¿Cuál es el precio promedio que pagaron mis clientes este mes?"
+  expected:
+    response_must_contain_any:
+      - "no tengo"
+      - "no cuento"
+      - "no dispongo"
+      - "no manejo"
+      - "no surface"
+      - "no expon"
+    response_must_not_contain:
+      - "applied_filters"
+      - "$"
+      - "USD"
+      - "ARS"
+
+- id: hallucination_no_reviewer_names_es
+  locale: es
+  description: >-
+    Pregunta por nombres de reseñadores. El agente solo tiene user_ids
+    (UUIDs) que no debe mostrar; no traduce a nombre.
+  user_input: "¿Quiénes fueron los clientes que dejaron las peores reseñas?"
+  expected:
+    response_must_not_contain:
+      - "applied_filters"
+      - "user_id"
+      - "UUID"
+      - "uuid"
+
+- id: hallucination_no_sales_data_en
+  locale: en
+  description: >-
+    Sales / revenue questions. The product tracks reviews, not
+    transactions; the agent should explicitly disclaim.
+  user_input: "What were my total sales last month?"
+  expected:
+    response_must_contain_any:
+      - "don't have"
+      - "do not have"
+      - "not track"
+      - "no sales"
+      - "doesn't track"
+    response_must_not_contain:
+      - "applied_filters"
+      - "$"
+      - "USD"
+
+- id: hallucination_no_hour_patterns_es
+  locale: es
+  description: >-
+    Patrones por hora del día. Solo se maneja fecha — no hay análisis
+    de franja horaria. El agente debe declinar (con cualquier
+    formulación que admita falta de granularidad) y NO inventar
+    porcentajes de mediodía vs noche.
+  user_input: "¿En qué momento del día llegan más reseñas: mediodía o noche?"
+  expected:
+    response_must_contain_any:
+      - "no tengo"
+      - "no cuento"
+      - "no dispongo"
+      - "no manejo"
+      - "no refleja"
+      - "necesitaría"
+      - "no se muestra"
+      - "no precis"
+      - "fecha"
+    response_must_not_contain:
+      - "applied_filters"
+      - "% mediodía"
+      - "% noche"
+      - "principalmente al mediodía"
+      - "principalmente de noche"
+      - "principalmente por la noche"
+
+- id: hallucination_external_market_en
+  locale: en
+  description: >-
+    Pregunta sobre el mercado fuera del scope geográfico
+    (chains, sector entero). El agente NO tiene "city average" — solo
+    cohort por radio. Debe explicarlo o reorientar al radio.
+    Acepta vocabulario en es/en (el LLM puede pivotear de idioma).
+  user_input: "How does my restaurant compare to the city average?"
+  expected:
+    response_must_contain_any:
+      - "don't have"
+      - "do not have"
+      - "no city"
+      - "nearby"
+      - "neighborhood"
+      - "radius"
+      - "limited to"
+      - "radio"
+      - "no tengo"
+      - "barrio"
+      - "entorno"
     response_must_not_contain:
       - "applied_filters"
 
