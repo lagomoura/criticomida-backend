@@ -38,6 +38,44 @@ async def get_chat_preferences(
     return (await db.execute(stmt)).scalars().first()
 
 
+async def replace_chat_preference(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    restaurant_id: uuid.UUID,
+    tone_preference: str | None,
+    kpi_focus: list[str] | None,
+    language_preference: str | None,
+) -> OwnerChatPreference:
+    """Replace the full state of the (owner, restaurant) preferences.
+
+    Unlike ``upsert_chat_preference`` (where ``None`` means "don't
+    touch"), this helper writes **all three fields** every time. It's
+    the right primitive for a form-style settings panel: the user
+    submits the complete state and we mirror it.
+
+    ``None`` here is "no preference" (clears the column to NULL).
+    """
+    pref = await get_chat_preferences(
+        db, user_id=user_id, restaurant_id=restaurant_id
+    )
+    if pref is None:
+        pref = OwnerChatPreference(
+            user_id=user_id,
+            restaurant_id=restaurant_id,
+            tone_preference=tone_preference,
+            kpi_focus=kpi_focus,
+            language_preference=language_preference,
+        )
+        db.add(pref)
+    else:
+        pref.tone_preference = tone_preference
+        pref.kpi_focus = kpi_focus
+        pref.language_preference = language_preference
+    await db.flush()
+    return pref
+
+
 async def upsert_chat_preference(
     db: AsyncSession,
     *,
