@@ -654,7 +654,68 @@
 
 
 # ──────────────────────────────────────────────────────────────────────────
-#   16) Ground rule — no internal leak en cualquier query
+#   16) compare_to_baseline — comparación focalizada
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: compare_prior_period_es
+  locale: es
+  description: >-
+    Pregunta comparativa puntual. El agente puede usar
+    compare_to_baseline (ideal) o summarize_reviews_period (también
+    devuelve delta vs período anterior). Cualquiera responde la
+    pregunta — verificamos vocabulario comparativo en la respuesta.
+  user_input: "Comparado contra el mes pasado, ¿cómo viene mi rating?"
+  expected:
+    response_must_contain_any:
+      - "rating"
+      - "calificación"
+      - "promedio"
+      - "delta"
+    response_must_not_contain:
+      - "applied_filters"
+      - "responded_status"
+
+- id: compare_competition_en
+  locale: en
+  description: >-
+    "Compared to other restaurants" debe disparar compare_to_baseline
+    con metric=rating. El campo baseline puede llegar como ``vs``,
+    ``baseline``, ``target_baseline`` o ``compared_to`` — el schema
+    los acepta a todos como aliases. Verificamos que el tool fue
+    llamado con métrica correcta; el alias del baseline lo damos por
+    válido vía la respuesta semántica.
+  user_input: "How does my rating compare to other restaurants nearby?"
+  expected:
+    tools_called:
+      - name: compare_to_baseline
+        args_must_match:
+          metric: rating
+    response_must_contain_any:
+      - "rating"
+      - "compar"
+      - "near"
+      - "percent"
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: compare_response_rate_es
+  locale: es
+  description: >-
+    "Tasa de respuesta histórica vs últimos 30 días" → comparativa
+    explícita con métrica response_rate.
+  user_input: "¿Cuál es mi tasa de respuesta histórica vs los últimos 30 días?"
+  expected:
+    response_must_contain_any:
+      - "tasa"
+      - "respuesta"
+      - "respond"
+      - "%"
+    response_must_not_contain:
+      - "applied_filters"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   17) Ground rule — no internal leak en cualquier query
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: no_internal_error_leak_es

@@ -23,7 +23,7 @@ from datetime import date
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -74,6 +74,23 @@ class ResponseTone(str, Enum):
     professional = "professional"
     apologetic = "apologetic"
     match_brand = "match_brand"
+
+
+class BaselineMetric(str, Enum):
+    """Métrica para ``compare_to_baseline``."""
+
+    rating = "rating"
+    review_count = "review_count"
+    sentiment_score = "sentiment_score"
+    response_rate = "response_rate"
+
+
+class BaselineKind(str, Enum):
+    """Contra qué baseline se compara la métrica."""
+
+    prior_period = "prior_period"
+    all_time = "all_time"
+    competition = "competition"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -198,6 +215,77 @@ class SuggestReviewResponseInput(BaseModel):
     )
 
 
+class CompareToBaselineInput(BaseModel):
+    """Inputs del tool ``compare_to_baseline`` (agente Business).
+
+    Devuelve current vs baseline (con delta absoluto + delta %),
+    eligiendo entre tres tipos de baseline: período anterior, historia
+    completa del restaurante, o competidores geográficos. Una sola
+    llamada reemplaza dos o tres calls que el LLM tendría que componer
+    a mano para responder "¿estoy mejor o peor que…?".
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @field_validator("metric", "vs", mode="before")
+    @classmethod
+    def _lowercase(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+    metric: BaselineMetric = Field(
+        description=(
+            "Qué medir: 'rating' (promedio de estrellas, 1-5), "
+            "'review_count' (cantidad de reseñas en el período), "
+            "'sentiment_score' (promedio del score de sentimiento, "
+            "-1 a +1), 'response_rate' (% de reseñas con respuesta "
+            "del owner)."
+        ),
+    )
+    vs: BaselineKind = Field(
+        validation_alias=AliasChoices(
+            "vs", "baseline", "target_baseline", "compared_to"
+        ),
+        description=(
+            "Contra qué se compara: 'prior_period' = mismo length "
+            "inmediatamente antes, 'all_time' = historia completa del "
+            "restaurante, 'competition' = restaurantes en un radio "
+            "geográfico (percentil + cohort_size). 'competition' no "
+            "soporta sentiment_score (la mayoría de competidores no "
+            "tienen sentimiento analizado)."
+        ),
+    )
+    from_date: date | None = Field(
+        default=None,
+        alias="from",
+        validation_alias=AliasChoices("from_date", "from"),
+        description=(
+            "Inicio del período a evaluar, ISO YYYY-MM-DD. Si lo "
+            "omitís, el handler usa los últimos 30 días — útil cuando "
+            "el owner pregunta sin especificar fecha."
+        ),
+    )
+    to_date: date | None = Field(
+        default=None,
+        alias="to",
+        validation_alias=AliasChoices("to_date", "to"),
+        description=(
+            "Fin del período a evaluar, ISO YYYY-MM-DD. Si lo omitís, "
+            "el handler usa la fecha de hoy."
+        ),
+    )
+    radius_km: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=20.0,
+        description=(
+            "Radio en km para buscar competidores. Solo se usa con "
+            "vs='competition'. Default 2.0 — barrio cercano."
+        ),
+    )
+
+
 class SummarizeReviewsInput(BaseModel):
     """Inputs del tool ``summarize_reviews_period`` (agente Business).
 
@@ -206,7 +294,11 @@ class SummarizeReviewsInput(BaseModel):
     inmediatamente anterior de la misma duración.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    # ``populate_by_name=True`` lets the LLM pass either ``from_date``
+    # (canonical) or ``from`` (idiomatic JSON-Schema range shorthand
+    # most models reach for first). Same for to. The handler always
+    # sees ``from_date`` / ``to_date`` once Pydantic normalises.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @field_validator("dimensions", mode="before")
     @classmethod
@@ -216,9 +308,13 @@ class SummarizeReviewsInput(BaseModel):
         return value
 
     from_date: date = Field(
+        alias="from",
+        validation_alias=AliasChoices("from_date", "from"),
         description="Inicio del período inclusive, ISO YYYY-MM-DD.",
     )
     to_date: date = Field(
+        alias="to",
+        validation_alias=AliasChoices("to_date", "to"),
         description="Fin del período inclusive, ISO YYYY-MM-DD.",
     )
     dimensions: list[SummaryDimension] = Field(

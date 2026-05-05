@@ -28,6 +28,7 @@ from app.services.chat.tools.business import (
     make_rank_my_dishes_tool,
 )
 from app.services.chat.tools.insights import (
+    make_compare_to_baseline_tool,
     make_suggest_review_response_tool,
     make_summarize_reviews_period_tool,
 )
@@ -120,6 +121,11 @@ def build_registry(
         )
         registry.register(
             make_suggest_review_response_tool(
+                db, restaurant_scope_id=restaurant_scope_id
+            )
+        )
+        registry.register(
+            make_compare_to_baseline_tool(
                 db, restaurant_scope_id=restaurant_scope_id
             )
         )

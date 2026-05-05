@@ -28,14 +28,22 @@ from sqlalchemy.orm import selectinload
 
 from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
+from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
 from app.services.chat.tools._schemas import (
+    BaselineKind,
+    BaselineMetric,
+    CompareToBaselineInput,
     ResponseTone,
     SuggestReviewResponseInput,
     SummarizeReviewsInput,
     SummaryDimension,
     pydantic_to_anthropic_schema,
 )
+# Reuse the geometry + percentile helpers already battle-tested in
+# benchmark_dish — same restaurant-discovery logic, same fairness
+# semantics for ranking.
+from app.services.chat.tools.business import _haversine_km, _percentile
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -169,14 +177,19 @@ def make_summarize_reviews_period_tool(
 async def _aggregate_period(
     db: AsyncSession,
     restaurant_id: str,
-    from_date: date,
-    to_date: date,
+    from_date: date | None,
+    to_date: date | None,
 ) -> dict[str, Any]:
     """One pass over reviews in [from_date, to_date]. Aggregation is
     done in Python after the fetch — the volumes per restaurant per
     period are small (typically < 200 rows) so the simplicity wins
     over a multi-CTE SQL aggregate. If reviews scale 10x, swap this
-    for a single GROUPING SET query."""
+    for a single GROUPING SET query.
+
+    Passing ``None`` for both dates aggregates over the whole history
+    of the restaurant — used by ``compare_to_baseline`` with
+    ``vs='all_time'``.
+    """
     stmt = (
         select(DishReview, DishReviewOwnerResponse.review_id)
         .join(Dish, DishReview.dish_id == Dish.id)
@@ -184,12 +197,12 @@ async def _aggregate_period(
             DishReviewOwnerResponse,
             DishReviewOwnerResponse.review_id == DishReview.id,
         )
-        .where(
-            Dish.restaurant_id == restaurant_id,
-            func.date(DishReview.created_at) >= from_date,
-            func.date(DishReview.created_at) <= to_date,
-        )
+        .where(Dish.restaurant_id == restaurant_id)
     )
+    if from_date is not None:
+        stmt = stmt.where(func.date(DishReview.created_at) >= from_date)
+    if to_date is not None:
+        stmt = stmt.where(func.date(DishReview.created_at) <= to_date)
     rows = list((await db.execute(stmt)).all())
 
     count = len(rows)
@@ -426,3 +439,305 @@ def make_suggest_review_response_tool(
         input_schema=pydantic_to_anthropic_schema(SuggestReviewResponseInput),
         handler=handler,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   compare_to_baseline
+# ──────────────────────────────────────────────────────────────────────────
+
+
+_METRIC_LABELS_ES = {
+    BaselineMetric.rating: "rating promedio",
+    BaselineMetric.review_count: "cantidad de reseñas",
+    BaselineMetric.sentiment_score: "score de sentimiento",
+    BaselineMetric.response_rate: "tasa de respuesta",
+}
+
+_BASELINE_LABELS_ES = {
+    BaselineKind.prior_period: "período anterior de igual duración",
+    BaselineKind.all_time: "promedio histórico del restaurante",
+    BaselineKind.competition: "promedio del entorno geográfico",
+}
+
+
+def make_compare_to_baseline_tool(
+    db: AsyncSession, *, restaurant_scope_id: str | None
+) -> ToolSpec:
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        if restaurant_scope_id is None:
+            return {"error": "Business scope is required."}
+
+        try:
+            inputs = CompareToBaselineInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for compare_to_baseline.",
+                "details": exc.errors(include_url=False),
+            }
+
+        # Defaults when the LLM omits the period — last 30 days ending
+        # today. Saves the model from guessing dates and racing through
+        # iterations correcting itself.
+        today = date.today()
+        eff_to = inputs.to_date or today
+        eff_from = inputs.from_date or (eff_to - timedelta(days=29))
+
+        if eff_from > eff_to:
+            return {
+                "error": (
+                    "from_date must be on or before to_date "
+                    f"(got {eff_from} > {eff_to})."
+                )
+            }
+
+        if (
+            inputs.vs is BaselineKind.competition
+            and inputs.metric is BaselineMetric.sentiment_score
+        ):
+            return {
+                "error": (
+                    "competition mode does not support sentiment_score "
+                    "(most peers don't have analysed sentiment, the "
+                    "comparison would be misleading). Use rating, "
+                    "review_count, or response_rate instead."
+                )
+            }
+
+        # Current period aggregate
+        current = await _aggregate_period(
+            db,
+            restaurant_scope_id,
+            eff_from,
+            eff_to,
+        )
+        current_value = _extract_metric(current, inputs.metric)
+        if current_value is None:
+            return {
+                "metric": inputs.metric.value,
+                "comparison_kind": inputs.vs.value,
+                "period": {
+                    "from": eff_from.isoformat(),
+                    "to": eff_to.isoformat(),
+                },
+                "current": {"value": None, "sample_size": current["count"]},
+                "note": (
+                    "El restaurante no tiene reseñas en el período pedido, "
+                    "no hay valor actual para comparar."
+                ),
+            }
+
+        # Baseline branch
+        if inputs.vs is BaselineKind.prior_period:
+            period_days = (eff_to - eff_from).days + 1
+            prior_to = eff_from - timedelta(days=1)
+            prior_from = prior_to - timedelta(days=period_days - 1)
+            prior = await _aggregate_period(
+                db, restaurant_scope_id, prior_from, prior_to
+            )
+            baseline_value = _extract_metric(prior, inputs.metric)
+            baseline_payload: dict[str, Any] = {
+                "kind": "prior_period",
+                "label": _BASELINE_LABELS_ES[BaselineKind.prior_period],
+                "value": baseline_value,
+                "sample_size": prior["count"],
+                "from": prior_from.isoformat(),
+                "to": prior_to.isoformat(),
+            }
+            extras: dict[str, Any] = {}
+        elif inputs.vs is BaselineKind.all_time:
+            all_time = await _aggregate_period(
+                db, restaurant_scope_id, None, None
+            )
+            baseline_value = _extract_metric(all_time, inputs.metric)
+            baseline_payload = {
+                "kind": "all_time",
+                "label": _BASELINE_LABELS_ES[BaselineKind.all_time],
+                "value": baseline_value,
+                "sample_size": all_time["count"],
+            }
+            extras = {}
+        else:  # BaselineKind.competition
+            cohort = await _competition_metric(
+                db,
+                restaurant_scope_id,
+                inputs.metric,
+                eff_from,
+                eff_to,
+                inputs.radius_km,
+            )
+            if cohort["cohort_size"] < 3:
+                return {
+                    "metric": inputs.metric.value,
+                    "comparison_kind": inputs.vs.value,
+                    "period": {
+                        "from": eff_from.isoformat(),
+                        "to": eff_to.isoformat(),
+                    },
+                    "current": {
+                        "value": current_value,
+                        "sample_size": current["count"],
+                    },
+                    "note": (
+                        f"Sólo {cohort['cohort_size']} competidores en el "
+                        f"radio de {inputs.radius_km} km tienen datos en "
+                        "este período — la cohort es muy chica para hablar "
+                        "de percentil. Sugerí ampliar el radio."
+                    ),
+                    "cohort_size": cohort["cohort_size"],
+                    "radius_km": inputs.radius_km,
+                }
+            baseline_value = cohort["cohort_avg"]
+            baseline_payload = {
+                "kind": "competition",
+                "label": _BASELINE_LABELS_ES[BaselineKind.competition],
+                "value": baseline_value,
+                "sample_size": cohort["cohort_size"],
+            }
+            extras = {
+                "percentile": _percentile(
+                    cohort["cohort_values"], current_value
+                ),
+                "cohort_size": cohort["cohort_size"],
+                "radius_km": inputs.radius_km,
+            }
+
+        delta_absolute: float | None = None
+        delta_pct: float | None = None
+        if baseline_value is not None and current_value is not None:
+            delta_absolute = round(current_value - baseline_value, 2)
+            if baseline_value != 0:
+                delta_pct = round(
+                    100 * (current_value - baseline_value) / baseline_value,
+                    1,
+                )
+
+        return {
+            "metric": inputs.metric.value,
+            "metric_label": _METRIC_LABELS_ES[inputs.metric],
+            "comparison_kind": inputs.vs.value,
+            "period": {
+                "from": eff_from.isoformat(),
+                "to": eff_to.isoformat(),
+            },
+            "current": {
+                "value": current_value,
+                "sample_size": current["count"],
+            },
+            "baseline": baseline_payload,
+            "delta_absolute": delta_absolute,
+            "delta_pct": delta_pct,
+            **extras,
+        }
+
+    return ToolSpec(
+        name="compare_to_baseline",
+        description=(
+            "Compares one metric (rating, review_count, sentiment_score, "
+            "response_rate) for the restaurant in a given period against "
+            "a chosen baseline: the prior equal-length period, the "
+            "all-time history, or the geographic competition (percentile "
+            "+ cohort size). Use this when the owner explicitly asks "
+            "'how am I doing vs X?' — it returns one focused answer "
+            "instead of forcing the LLM to compose multiple list/summarize "
+            "calls. For a multi-metric panorama, prefer "
+            "summarize_reviews_period instead."
+        ),
+        input_schema=pydantic_to_anthropic_schema(CompareToBaselineInput),
+        handler=handler,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   Helpers for compare_to_baseline
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _extract_metric(
+    aggregate: dict[str, Any], metric: BaselineMetric
+) -> float | None:
+    """Pull one scalar out of an ``_aggregate_period`` payload."""
+    if metric is BaselineMetric.rating:
+        return aggregate["rating_avg"]
+    if metric is BaselineMetric.review_count:
+        return float(aggregate["count"])
+    if metric is BaselineMetric.sentiment_score:
+        return aggregate["sentiment_avg"]
+    if metric is BaselineMetric.response_rate:
+        if aggregate["count"] == 0:
+            return None
+        return round(
+            aggregate["responded_count"] / aggregate["count"], 3
+        )
+    return None
+
+
+async def _competition_metric(
+    db: AsyncSession,
+    restaurant_id: str,
+    metric: BaselineMetric,
+    from_date: date,
+    to_date: date,
+    radius_km: float,
+) -> dict[str, Any]:
+    """Aggregate the metric across geographic peers and return the
+    cohort distribution. Excludes the owner's restaurant itself.
+
+    Restaurants that have zero reviews in the period are excluded —
+    they would skew rating averages and don't represent a meaningful
+    peer for response_rate either.
+    """
+    own = (
+        await db.execute(
+            select(Restaurant).where(Restaurant.id == restaurant_id)
+        )
+    ).scalars().first()
+    if own is None or own.latitude is None or own.longitude is None:
+        return {"cohort_size": 0, "cohort_avg": None, "cohort_values": []}
+
+    own_lat = float(own.latitude)
+    own_lng = float(own.longitude)
+
+    candidates = list(
+        (
+            await db.execute(
+                select(Restaurant.id, Restaurant.latitude, Restaurant.longitude)
+                .where(
+                    Restaurant.id != restaurant_id,
+                    Restaurant.latitude.is_not(None),
+                    Restaurant.longitude.is_not(None),
+                )
+            )
+        ).all()
+    )
+
+    peer_ids: list[str] = []
+    for cand_id, cand_lat, cand_lng in candidates:
+        if cand_lat is None or cand_lng is None:
+            continue
+        distance = _haversine_km(
+            own_lat, own_lng, float(cand_lat), float(cand_lng)
+        )
+        if distance <= radius_km:
+            peer_ids.append(cand_id)
+
+    if not peer_ids:
+        return {"cohort_size": 0, "cohort_avg": None, "cohort_values": []}
+
+    cohort_values: list[float] = []
+    for peer_id in peer_ids:
+        agg = await _aggregate_period(db, peer_id, from_date, to_date)
+        if agg["count"] == 0:
+            continue
+        value = _extract_metric(agg, metric)
+        if value is not None:
+            cohort_values.append(value)
+
+    if not cohort_values:
+        return {"cohort_size": 0, "cohort_avg": None, "cohort_values": []}
+
+    cohort_avg = round(sum(cohort_values) / len(cohort_values), 2)
+    return {
+        "cohort_size": len(cohort_values),
+        "cohort_avg": cohort_avg,
+        "cohort_values": cohort_values,
+    }
