@@ -578,7 +578,83 @@
 
 
 # ──────────────────────────────────────────────────────────────────────────
-#   15) Ground rule — no internal leak en cualquier query
+#   15) suggest_review_response — drafting de respuesta a una reseña
+# ──────────────────────────────────────────────────────────────────────────
+
+- id: draft_response_apologetic_es
+  locale: es
+  description: >-
+    Pedido tipo "ayudame a responder X". El agente encadena
+    list_reviews (review_id del Risotto negativo) +
+    suggest_review_response. NUNCA pedir el review_id al owner.
+    Acepta tone omitido (handler infiere del sentiment negativo →
+    apologetic). Verificamos vocabulario empático en es/en/pt.
+  user_input: "Ayudame a redactar una respuesta empática para la reseña más negativa del risotto."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+      - name: suggest_review_response
+        args_must_match: {}
+    response_must_contain_any:
+      - "lament"
+      - "disculp"
+      - "perdón"
+      - "perdon"
+      - "sorry"
+      - "apolog"
+      - "lamentamos"
+    response_must_not_contain:
+      - "review_id"
+      - "applied_filters"
+      - "responded_status"
+
+- id: draft_response_warm_en
+  locale: en
+  description: >-
+    Owner habla inglés, reseña 5-star en español. El draft va en el
+    idioma de la reseña (probablemente español); las assertions
+    aceptan vocabulario cálido en cualquier idioma.
+  user_input: "Help me draft a warm reply to the latest 5-star review."
+  expected:
+    tools_called:
+      - name: list_reviews
+        args_must_match: {}
+      - name: suggest_review_response
+        args_must_match: {}
+    response_must_contain_any:
+      - "thank"
+      - "gracias"
+      - "obrigad"
+      - "appreciate"
+      - "alegra"
+      - "felices"
+      - "felizes"
+      - "encantó"
+      - "encanta"
+      - "happy"
+    response_must_not_contain:
+      - "review_id"
+      - "applied_filters"
+
+- id: draft_no_id_handback_es
+  locale: es
+  description: >-
+    El owner es vago — no especifica qué reseña. Aceptable pedir
+    UNA aclaración corta sobre cuál reseña, pero NO pedir review_id
+    técnico. La verificación: la respuesta no debe contener "ID",
+    "review_id", "UUID", ni textos similares.
+  user_input: "Quiero responder una reseña."
+  expected:
+    response_must_not_contain:
+      - "review_id"
+      - "UUID"
+      - "uuid"
+      - "applied_filters"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   16) Ground rule — no internal leak en cualquier query
 # ──────────────────────────────────────────────────────────────────────────
 
 - id: no_internal_error_leak_es

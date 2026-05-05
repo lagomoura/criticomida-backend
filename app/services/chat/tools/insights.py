@@ -17,17 +17,21 @@ Subsequent insight tools (``suggest_review_response``,
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models.dish import Dish, DishReview
+from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
 from app.services.chat.agent_loop import ToolSpec
 from app.services.chat.tools._schemas import (
+    ResponseTone,
+    SuggestReviewResponseInput,
     SummarizeReviewsInput,
     SummaryDimension,
     pydantic_to_anthropic_schema,
@@ -234,3 +238,191 @@ def _delta(current: float | None, prior: float | None) -> float | None:
     if current is None or prior is None:
         return None
     return round(current - prior, 2)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   suggest_review_response
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Tone-by-tone guidance the agent applies when drafting. We keep this in
+# Spanish neutral so the prompt template doesn't have to translate
+# anything — the LLM reads the guidance, the LLM writes the draft in
+# the language the review was originally in. ``match_brand`` is a stub
+# until F5 (owner preferences) lands; for now it falls back to
+# ``professional`` semantics with a note explaining why.
+_TONE_GUIDANCE: dict[ResponseTone, str] = {
+    ResponseTone.warm: (
+        "Tono cálido y cercano. Empezá agradeciendo con palabras "
+        "específicas a lo que el cliente menciona. Mostrá que leíste su "
+        "comentario en concreto, no genérico. Cerrá con una invitación "
+        "abierta a volver."
+    ),
+    ResponseTone.professional: (
+        "Tono profesional y cortés. Frases cortas, sin diminutivos ni "
+        "informalismos. Reconocé el feedback puntual. No hagas promesas "
+        "que requieran aprobación del owner."
+    ),
+    ResponseTone.apologetic: (
+        "Tono empático que reconoce el problema. Empezá pidiendo "
+        "disculpas con una sola frase, sin sobreactuar. Validá lo "
+        "específico que el cliente mencionó. Cerrá ofreciendo seguimiento "
+        "(no compensación material — eso lo decide el owner)."
+    ),
+    ResponseTone.match_brand: (
+        "Sin perfil de marca todavía registrado para este restaurante "
+        "(roadmap F5). Caigo a tono profesional cortés. Mencioná esto al "
+        "owner como nota cuando le presentes el draft."
+    ),
+}
+
+
+def _infer_tone(sentiment: SentimentLabel | None) -> ResponseTone:
+    """Pick a sensible tone from the review sentiment when the LLM
+    didn't pass one explicitly. Negative sentiment → apologise;
+    positive → warm; neutral or unanalysed → professional default."""
+    if sentiment is SentimentLabel.negative:
+        return ResponseTone.apologetic
+    if sentiment is SentimentLabel.positive:
+        return ResponseTone.warm
+    return ResponseTone.professional
+
+
+_REPLY_HARD_RULES = [
+    "Nunca prometas un cambio concreto que requiera aprobación del owner "
+    "(devolver dinero, cambiar la receta, etc.).",
+    "No menciones que sos un agente de IA ni que esto es un draft "
+    "automático — escribilo como si fuera el owner respondiendo.",
+    "Mantené la respuesta entre 2 y 5 frases. El cliente lee desde el "
+    "móvil; los párrafos largos se ignoran.",
+    "Respondé en el MISMO idioma del texto original de la reseña, no en "
+    "el idioma del owner. Si la reseña está en portugués, la respuesta "
+    "va en portugués.",
+]
+
+
+def make_suggest_review_response_tool(
+    db: AsyncSession, *, restaurant_scope_id: str | None
+) -> ToolSpec:
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        if restaurant_scope_id is None:
+            return {"error": "Business scope is required."}
+
+        try:
+            inputs = SuggestReviewResponseInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for suggest_review_response.",
+                "details": exc.errors(include_url=False),
+            }
+
+        try:
+            review_uuid = uuid.UUID(inputs.review_id)
+        except (TypeError, ValueError):
+            return {
+                "error": (
+                    f"review_id={inputs.review_id!r} is not a valid UUID. "
+                    "Use a review_id from a previous list_reviews call."
+                )
+            }
+
+        stmt = (
+            select(DishReview, Dish, DishReviewOwnerResponse.review_id)
+            .join(Dish, DishReview.dish_id == Dish.id)
+            .outerjoin(
+                DishReviewOwnerResponse,
+                DishReviewOwnerResponse.review_id == DishReview.id,
+            )
+            .where(
+                DishReview.id == review_uuid,
+                Dish.restaurant_id == restaurant_scope_id,
+            )
+            .options(selectinload(DishReview.dish))
+        )
+        result = (await db.execute(stmt)).first()
+        if result is None:
+            return {
+                "error": (
+                    f"Review {inputs.review_id} not found within this "
+                    "restaurant's scope. Re-check with list_reviews — "
+                    "the review may belong to a different restaurant or "
+                    "may have been deleted."
+                )
+            }
+
+        review, dish, existing_response_id = result
+
+        if existing_response_id is not None:
+            # Already responded to — flag clearly so the agent can
+            # surface that to the owner instead of silently overwriting.
+            return {
+                "review_id": str(review.id),
+                "already_responded": True,
+                "note": (
+                    "Esta reseña ya tiene respuesta del owner registrada. "
+                    "Confirmá con el owner si quiere reemplazarla antes "
+                    "de redactar un draft nuevo."
+                ),
+            }
+
+        # Resolve tone: if the LLM passed one, use it; otherwise infer
+        # from the review's sentiment so the tool stays useful even when
+        # the model omits the optional parameter (Gemini Flash Lite
+        # tends to skip optionals — pragmatic recovery beats forcing it
+        # to retry).
+        effective_tone = inputs.tone or _infer_tone(review.sentiment_label)
+        tone_was_inferred = inputs.tone is None
+
+        return {
+            "review_id": str(review.id),
+            "already_responded": False,
+            "review": {
+                "note": review.note,
+                "rating": float(review.rating)
+                if review.rating is not None
+                else None,
+                "created_at": review.created_at.isoformat(),
+                "sentiment_label": (
+                    review.sentiment_label.value
+                    if review.sentiment_label is not None
+                    else None
+                ),
+            },
+            "dish": {
+                "id": str(dish.id),
+                "name": dish.name,
+            },
+            "tone": effective_tone.value,
+            "tone_inferred_from_sentiment": tone_was_inferred,
+            "tone_guidance": _TONE_GUIDANCE[effective_tone],
+            "language_hint": (
+                "Detectá el idioma del campo review.note y respondé en "
+                "ese idioma exactamente. No traduzcas el draft al idioma "
+                "del owner."
+            ),
+            "must_not": _REPLY_HARD_RULES,
+            "format": (
+                "Después de leer este payload, redactá el draft directo "
+                "en tu próximo mensaje al owner. Empezá con una línea "
+                "corta tipo 'Te propongo este draft:' y luego el draft "
+                "entre comillas o con sangría markdown. NO llames otros "
+                "tools antes de presentarlo."
+            ),
+        }
+
+    return ToolSpec(
+        name="suggest_review_response",
+        description=(
+            "Prepares structured context for drafting a reply to a "
+            "specific review. Returns the review text + dish info + tone "
+            "guidance + hard rules. **You** (the agent) write the actual "
+            "draft in the next assistant turn using this payload — there "
+            "is no separate LLM call inside the tool. The ``review_id`` "
+            "argument MUST come from a prior ``list_reviews`` result; "
+            "never ask the owner for it. If the review already has an "
+            "owner response, the tool returns ``already_responded: true`` "
+            "so you can confirm with the owner before writing a new one."
+        ),
+        input_schema=pydantic_to_anthropic_schema(SuggestReviewResponseInput),
+        handler=handler,
+    )

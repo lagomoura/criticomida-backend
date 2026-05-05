@@ -67,6 +67,15 @@ class SummaryDimension(str, Enum):
     responded = "responded"
 
 
+class ResponseTone(str, Enum):
+    """Tono solicitado para la redacción de la respuesta a una reseña."""
+
+    warm = "warm"
+    professional = "professional"
+    apologetic = "apologetic"
+    match_brand = "match_brand"
+
+
 # ──────────────────────────────────────────────────────────────────────────
 #   Tool input models
 # ──────────────────────────────────────────────────────────────────────────
@@ -146,6 +155,46 @@ class ListReviewsInput(BaseModel):
         ge=1,
         le=50,
         description="Cantidad máxima de reseñas a devolver (1-50).",
+    )
+
+
+class SuggestReviewResponseInput(BaseModel):
+    """Inputs del tool ``suggest_review_response`` (agente Business).
+
+    El tool devuelve **contexto estructurado** (reseña + plato + tono +
+    guía y constraints), no un draft pre-escrito. El agente redacta la
+    respuesta final en su turno siguiente apoyándose en ese payload.
+    Esto mantiene el tono consistente con el resto de la conversación
+    sin un segundo LLM dedicado.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("tone", mode="before")
+    @classmethod
+    def _lowercase_tone(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+    review_id: str = Field(
+        description=(
+            "UUID de la reseña a responder. SIEMPRE viene del output "
+            "de un list_reviews previo en la misma conversación; nunca "
+            "se le pide al owner."
+        ),
+    )
+    tone: ResponseTone | None = Field(
+        default=None,
+        description=(
+            "Tono solicitado para la respuesta. Pasalo cuando el owner "
+            "lo especifica: 'warm' = cálido / agradecido, "
+            "'professional' = cortés y neutro, 'apologetic' = "
+            "reconociendo el problema, 'match_brand' = perfil del "
+            "owner (roadmap F5). Si lo omitís, el tool lo infiere del "
+            "sentimiento de la reseña: negative → apologetic, "
+            "positive → warm, neutral → professional."
+        ),
     )
 
 
