@@ -455,10 +455,16 @@ def make_suggest_review_response_tool(
             "must_not": _REPLY_HARD_RULES,
             "format": (
                 "Después de leer este payload, redactá el draft directo "
-                "en tu próximo mensaje al owner. Empezá con una línea "
-                "corta tipo 'Te propongo este draft:' y luego el draft "
-                "entre comillas o con sangría markdown. NO llames otros "
-                "tools antes de presentarlo."
+                "en tu próximo mensaje al owner. Empezá con UNA línea "
+                "corta de intro (ej: 'Te propongo este draft:') y "
+                "después el draft EN UN MARKDOWN BLOCKQUOTE: cada línea "
+                "del draft tiene que empezar con '> '. No uses comillas "
+                "ni triple-fence de código ni HTML — el blockquote es "
+                "el contenedor. La FE extrae el blockquote para "
+                "pre-cargarlo en el modal de respuesta del owner; si "
+                "envolvés el draft en otra cosa el botón 'Responder "
+                "esta reseña' termina con tu intro adentro. NO llames "
+                "otros tools antes de presentarlo."
             ),
         }
 

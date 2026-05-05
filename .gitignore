@@ -8,6 +8,10 @@ scripts/seeds/*.dump
 scripts/seeds/*.sql
 scripts/seeds/*.sql.gz
 
+# Local user uploads — content lands in object storage in prod; the
+# local copies are scratch and shouldn't go to git.
+uploads/
+
 # Python
 __pycache__/
 *.py[cod]

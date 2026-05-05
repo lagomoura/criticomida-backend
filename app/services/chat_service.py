@@ -42,12 +42,15 @@ from app.services.chat.agent_loop import (
     default_b2b_model,
     default_b2c_model,
 )
+from app.services.chat.preference_intent import detect_preference_intent
 from app.services.chat.prompts.loader import build_user_block, load_agent_prompt
 from app.services.chat.tools.registry import build_registry
+from app.services.chat_title_service import schedule_generate_title
 from app.services.embeddings_service import embed_query
 from app.services.owner_chat_preferences_service import (
     get_chat_preferences,
     render_preferences_block,
+    upsert_chat_preference,
 )
 from app.services.taste_profile_service import get_taste_profile
 
@@ -224,9 +227,41 @@ async def stream_chat(
     # sees *what they asked* instead of "Untitled". Once an LLM-based
     # titler is worth the cost we can layer one on top, gated by
     # title still being None / a "[draft]" marker.
-    if not conversation.title:
+    is_first_user_message = not conversation.title
+    if is_first_user_message:
         conversation.title = _make_title_from_user_message(user_message)
     await db.flush()
+
+    # ── deterministic preference middleware (Business agent only) ─────────
+    # Layer 1 of the 3-layer defence against the LLM dropping
+    # ``update_owner_preferences`` calls. See
+    # ``app/services/chat/preference_intent.py`` for rationale and
+    # ``docs/chatbot.md`` for the full picture.
+    prefs_just_persisted: dict[str, str | None] | None = None
+    if (
+        conversation.agent == ChatAgent.business
+        and user is not None
+        and conversation.restaurant_scope_id is not None
+    ):
+        intent = detect_preference_intent(user_message)
+        if intent:
+            saved = await upsert_chat_preference(
+                db,
+                user_id=user.id,
+                restaurant_id=conversation.restaurant_scope_id,
+                tone_preference=intent.get("tone"),
+                language_preference=intent.get("language"),
+            )
+            prefs_just_persisted = {
+                "tone": saved.tone_preference,
+                "language": saved.language_preference,
+            }
+            logger.info(
+                "preference_intent.persisted user=%s restaurant=%s intent=%s",
+                user.id,
+                conversation.restaurant_scope_id,
+                dict(intent),
+            )
 
     # ── build context ─────────────────────────────────────────────────────
     profile = (
@@ -253,6 +288,23 @@ async def stream_chat(
         prefs_block = render_preferences_block(prefs)
         if prefs_block:
             system_prompt = f"{system_prompt}\n\n{prefs_block}"
+
+    # Transient note (this turn only) — keeps the LLM from re-calling
+    # ``update_owner_preferences`` after the regex middleware already
+    # saved the same intent. Idempotent re-writes are harmless but the
+    # confirmation phrasing is cleaner when the model knows it's done.
+    if prefs_just_persisted:
+        summary = ", ".join(
+            f"{k}={v}" for k, v in prefs_just_persisted.items() if v
+        )
+        system_prompt = (
+            f"{system_prompt}\n\n# Persisted in this turn\n"
+            "A deterministic preprocessor already saved the owner's "
+            f"explicit preference change ({summary}). Do NOT call "
+            "`update_owner_preferences` again in this turn — confirm "
+            "the change in one short sentence and continue with the "
+            "rest of the owner's message if applicable."
+        )
 
     history = await _load_history(db, conversation.id)
     messages = list(history)
@@ -335,3 +387,12 @@ async def stream_chat(
         yield event
 
     await db.commit()
+
+    # Layered title: the heuristic in ``last_message_at == started_at``
+    # already gave the panel something to show. Now that the assistant
+    # turn is persisted too, fire the LLM titler in the background so
+    # the panel swaps to a concise theme-style title in ~3-5 s. Only
+    # on the first user turn — later turns don't need re-titling and
+    # would cost tokens for nothing.
+    if is_first_user_message:
+        schedule_generate_title(conversation.id)
