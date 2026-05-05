@@ -107,6 +107,14 @@ class ChatConversation(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    # Soft-delete: ``archived_at`` non-null hides the conversation from
+    # the history panel. Content stays in the DB so the owner can ask an
+    # admin to recover it, or a future "show archived" toggle can opt
+    # back in. Hard-delete is reserved for legal/GDPR requests via a
+    # separate route.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ChatMessage(Base):

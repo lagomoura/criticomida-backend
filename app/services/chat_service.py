@@ -56,6 +56,24 @@ logger = logging.getLogger(__name__)
 
 HISTORY_TURNS = 12  # last N messages we feed to the model
 
+TITLE_MAX_LEN = 60  # chars; trimmed conversation label for the history panel
+
+
+def _make_title_from_user_message(text: str, max_len: int = TITLE_MAX_LEN) -> str:
+    """First-message-as-title heuristic.
+
+    Cheap and deterministic: collapses whitespace and truncates with
+    an ellipsis. Good enough for the history panel — the owner sees
+    *what they asked*, which is the most identifiable label until we
+    layer an LLM-generated title on top.
+    """
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[: max_len - 1].rstrip() + "…"
+
 
 # ──────────────────────────────────────────────────────────────────────────
 #   Conversation helpers
@@ -201,6 +219,13 @@ async def stream_chat(
     )
     db.add(user_row)
     conversation.last_message_at = datetime.now(timezone.utc)
+    # Auto-title from the first user message — cheap and deterministic.
+    # The history panel shows it as the conversation label so the owner
+    # sees *what they asked* instead of "Untitled". Once an LLM-based
+    # titler is worth the cost we can layer one on top, gated by
+    # title still being None / a "[draft]" marker.
+    if not conversation.title:
+        conversation.title = _make_title_from_user_message(user_message)
     await db.flush()
 
     # ── build context ─────────────────────────────────────────────────────

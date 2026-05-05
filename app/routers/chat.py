@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -198,6 +198,29 @@ async def list_my_conversations(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
     limit: int = Query(default=20, ge=1, le=100),
+    agent: ChatAgent | None = Query(
+        default=None,
+        description=(
+            "Filter to conversations of one agent (sommelier / "
+            "ghostwriter / business). Used by the Business chat's "
+            "history panel to scope to that single agent."
+        ),
+    ),
+    restaurant_scope_id: uuid.UUID | None = Query(
+        default=None,
+        description=(
+            "Filter to conversations bound to a specific restaurant. "
+            "Required by the Business chat to keep a per-venue history."
+        ),
+    ),
+    include_archived: bool = Query(
+        default=False,
+        description=(
+            "When false (default), archived conversations are hidden. "
+            "Set true to opt back in (e.g. 'Show archived' toggle in the "
+            "history panel)."
+        ),
+    ),
 ) -> list[ChatConversation]:
     stmt = (
         select(ChatConversation)
@@ -205,6 +228,17 @@ async def list_my_conversations(
         .order_by(ChatConversation.last_message_at.desc())
         .limit(limit)
     )
+    if agent is not None:
+        stmt = stmt.where(ChatConversation.agent == agent)
+    if restaurant_scope_id is not None:
+        stmt = stmt.where(
+            ChatConversation.restaurant_scope_id == restaurant_scope_id
+        )
+    # Soft-delete: archived conversations are hidden by default. Pass
+    # ``include_archived=true`` from the FE only when the owner
+    # explicitly toggles "show archived".
+    if not include_archived:
+        stmt = stmt.where(ChatConversation.archived_at.is_(None))
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -241,11 +275,21 @@ async def list_messages(
     "/conversations/{conversation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_conversation(
+async def archive_conversation(
     conversation_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> None:
+    """Soft-delete: marca la conversación como archivada.
+
+    Antes esto hacía hard-delete; lo cambiamos a soft para conservar el
+    contenido analítico (especialmente para el agente Business). Una
+    conversación archivada no aparece en ``list_my_conversations`` por
+    default. Para borrado físico (GDPR) habrá un endpoint admin
+    separado en el futuro.
+
+    Idempotente: archivar dos veces no rompe nada.
+    """
     convo = (
         await db.execute(
             select(ChatConversation).where(
@@ -255,8 +299,9 @@ async def delete_conversation(
     ).scalars().first()
     if convo is None or convo.user_id != user.id:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.delete(convo)
-    await db.flush()
+    if convo.archived_at is None:
+        convo.archived_at = datetime.now(timezone.utc)
+        await db.flush()
     return None
 
 
