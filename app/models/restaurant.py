@@ -152,6 +152,17 @@ class Restaurant(Base):
     def is_claimed(self) -> bool:
         return self.claimed_by_user_id is not None
 
+    @property
+    def google_photo_url(self) -> str | None:
+        if not self.google_photos:
+            return None
+        for p in self.google_photos:
+            if isinstance(p, dict):
+                url = p.get("url")
+                if url:
+                    return url
+        return None
+
 
 class RestaurantRatingDimension(Base):
     __tablename__ = "restaurant_rating_dimensions"

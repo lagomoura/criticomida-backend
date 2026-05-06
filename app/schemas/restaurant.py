@@ -268,6 +268,7 @@ class RestaurantListResponse(BaseModel):
     latitude: Decimal | None = None
     longitude: Decimal | None = None
     cover_image_url: str | None
+    google_photo_url: str | None = None
     computed_rating: Decimal
     review_count: int
     category: CategoryResponse | None = None
