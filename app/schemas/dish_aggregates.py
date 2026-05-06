@@ -125,6 +125,7 @@ class DishEditorialBlurb(BaseModel):
     blurb: str
     source: str
     lang: str | None = None
+    origin: str | None = None
     cached_at: datetime | None = None
 
 
@@ -178,6 +179,7 @@ class DishSocialDetailEnriched(BaseModel):
     is_signature: bool = False
     editorial_blurb: str | None = None
     editorial_source: str | None = None
+    editorial_origin: str | None = None
     created_by_display_name: str | None = None
     want_to_try: bool = False
     first_discoverers: list[FirstDiscoverer] = []

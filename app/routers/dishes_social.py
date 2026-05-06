@@ -157,6 +157,7 @@ async def get_dish_social(
         "is_signature": is_signature,
         "editorial_blurb": dish.editorial_blurb,
         "editorial_source": dish.editorial_blurb_source,
+        "editorial_origin": dish.editorial_origin,
         "created_by_display_name": creator.display_name if creator else None,
         "want_to_try": want_to_try,
         "first_discoverers": first_discoverers,
@@ -401,6 +402,7 @@ async def get_dish_editorial_blurb(
         blurb=dish.editorial_blurb,
         source=dish.editorial_blurb_source or "unknown",
         lang=dish.editorial_blurb_lang,
+        origin=dish.editorial_origin,
         cached_at=dish.editorial_cached_at,
     )
     return Response(
@@ -442,5 +444,6 @@ async def refresh_dish_editorial_blurb(
         blurb=dish.editorial_blurb,
         source=dish.editorial_blurb_source or "unknown",
         lang=dish.editorial_blurb_lang,
+        origin=dish.editorial_origin,
         cached_at=dish.editorial_cached_at,
     )

@@ -1,17 +1,20 @@
 """Dish editorial blurb enrichment via LLM.
 
-Generates a 2–3 sentence editorial blurb about each dish in the context of
-its host restaurant. Persists the result on `dishes.editorial_blurb` so the
-generation runs at most once per dish (refreshable via admin endpoint).
+Genera una mini cápsula editorial sobre cada plato — origen + curiosidad
+cultural — sin referencia al restaurante específico. Persiste:
 
-Uses litellm so we stay provider-agnostic; default model is Anthropic's
-Haiku 4.5 (fast and cheap, suitable for a one-shot blurb). When no API key is
-configured the service degrades silently — same pattern as
-`google_places_enricher`.
+- `editorial_origin`: etiqueta corta de la cocina/tradición ("Cocina napolitana")
+- `editorial_blurb`: 2-3 oraciones con la historia/curiosidad del plato
+
+El servicio degrada silenciosamente cuando no hay API key configurada. La
+generación corre como background task al abrir el detalle del plato y
+persiste con `EDITORIAL_PROMPT_VERSION`; cuando cambia la versión, los
+blurbs viejos se consideran stale y se regeneran (lazy y/o vía script).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -20,24 +23,35 @@ from datetime import datetime, timezone
 import litellm
 from fastapi import BackgroundTasks
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
-from app.models.dish import Dish
+from app.models.dish import Dish, DishEditorialCache
 from app.models.restaurant import Restaurant
 
 logger = logging.getLogger(__name__)
 
 
+# Bump cuando cambia el prompt o el shape de salida — el script de backfill y
+# el trigger lazy detectan stale por mismatch contra `dish.editorial_prompt_version`.
+EDITORIAL_PROMPT_VERSION = "v2"
+
+
 SYSTEM_PROMPT = (
     "Eres un editor gastronómico para CritiComida. Te dan el nombre de un "
-    "plato y el restaurante que lo sirve. Tu tarea: escribir un blurb breve "
-    "(2 a 3 oraciones, máximo 60 palabras) en español rioplatense neutro, "
-    "que cuente brevemente el origen o tradición del plato y por qué tiene "
-    "sentido encontrarlo en ese local específico. Tono editorial, evocativo "
-    "pero sobrio. No uses listas ni emojis. No inventes premios ni datos "
-    "específicos del local que no estén en el contexto: solo conocimiento "
-    "general del plato + el contexto cultural/gastronómico."
+    "plato y la cocina a la que pertenece. Devolvé un JSON con dos campos:\n"
+    '  "origin": etiqueta corta (máx. 5 palabras) que ubique al plato en su '
+    "tradición. Ejemplos: \"Cocina napolitana\", \"Sushi · Edo, Japón\", "
+    "\"Asado rioplatense\", \"Cocina andaluza\".\n"
+    '  "story": 2 a 3 oraciones (máx. 60 palabras) en español rioplatense '
+    "neutro que cuenten brevemente el origen del plato y una curiosidad "
+    "concreta — un ingrediente clave, una técnica tradicional, una anécdota "
+    "cultural o el momento histórico en que apareció.\n"
+    "Tono editorial, evocativo pero sobrio. NO menciones el restaurante ni "
+    "el local. No uses listas, emojis, hashtags ni signos de exclamación. "
+    "No inventes datos: si no estás seguro, mantenete en conocimiento "
+    "general del plato."
 )
 
 
@@ -55,33 +69,54 @@ def _api_key() -> str | None:
 
 
 def _build_user_prompt(dish: Dish, restaurant: Restaurant) -> str:
-    parts = [
-        f"Plato: {dish.name}",
-        f"Restaurante: {restaurant.name}",
-        f"Ubicación: {restaurant.location_name}",
-    ]
-    if restaurant.city:
-        parts.append(f"Ciudad: {restaurant.city}")
+    parts = [f"Plato: {dish.name}"]
     if restaurant.cuisine_types:
         parts.append(f"Cocina: {', '.join(restaurant.cuisine_types[:6])}")
-    if restaurant.description:
-        parts.append(f"Sobre el local: {restaurant.description[:400]}")
     if dish.description:
         parts.append(f"Descripción del plato: {dish.description[:400]}")
     parts.append(
-        "Escribí el blurb editorial siguiendo las instrucciones del sistema."
+        "Devolvé el JSON con `origin` y `story` siguiendo las instrucciones "
+        "del sistema."
     )
     return "\n".join(parts)
 
 
-async def _generate_blurb(dish: Dish, restaurant: Restaurant) -> str | None:
+def _parse_response(raw: str) -> tuple[str, str | None] | None:
+    """Parsea la respuesta JSON del modelo. Devuelve (story, origin) o None."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    # litellm devuelve JSON limpio cuando se setea response_format, pero
+    # toleramos un wrapper de markdown por si el modelo se descarrila.
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.lower().startswith("json"):
+            raw = raw[4:].lstrip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Editorial blurb: JSON inválido, descartando — %r", raw[:200])
+        return None
+    if not isinstance(payload, dict):
+        return None
+    story = payload.get("story")
+    if not isinstance(story, str) or not story.strip():
+        return None
+    origin = payload.get("origin")
+    origin = origin.strip() if isinstance(origin, str) and origin.strip() else None
+    if origin and len(origin) > 80:
+        origin = origin[:80]
+    return story.strip(), origin
+
+
+async def _generate_blurb(
+    dish: Dish, restaurant: Restaurant
+) -> tuple[str, str | None] | None:
     api_key = _api_key()
     if not api_key:
         return None
 
     try:
-        # Prompt caching on the system prompt — it's stable across all dishes
-        # so we mark it as ephemeral cache to amortize across calls.
         messages = [
             {
                 "role": "system",
@@ -98,15 +133,81 @@ async def _generate_blurb(dish: Dish, restaurant: Restaurant) -> str | None:
         response = await litellm.acompletion(
             model=_model(),
             messages=messages,
-            max_tokens=220,
+            max_tokens=320,
+            response_format={"type": "json_object"},
             api_key=api_key,
         )
         text = response.choices[0].message.content or ""
-        text = text.strip()
-        return text or None
+        return _parse_response(text)
     except Exception:
         logger.exception("Dish editorial blurb generation failed (dish_id=%s)", dish.id)
         return None
+
+
+def _is_stale(dish: Dish) -> bool:
+    """True si el blurb es viejo, falta, o se generó con un prompt anterior."""
+    if not dish.editorial_blurb:
+        return True
+    if dish.editorial_prompt_version != EDITORIAL_PROMPT_VERSION:
+        return True
+    return False
+
+
+def _cuisine_key(restaurant: Restaurant) -> str:
+    """Clave estable de cocina para la cache compartida.
+
+    Usamos solo la primera entrada lowercased — el dish_name normalizado ya
+    diferencia "tortilla española" de "tortilla mexicana" en la mayoría de
+    los casos. Si el restaurante no tiene cuisines, key vacía: el blurb se
+    cachea como "neutro".
+    """
+    if not restaurant.cuisine_types:
+        return ""
+    return restaurant.cuisine_types[0].strip().lower()[:80]
+
+
+async def _read_cache(
+    db: AsyncSession, name_key: str, cuisine_key: str
+) -> tuple[str, str | None] | None:
+    row = await db.execute(
+        select(DishEditorialCache).where(
+            DishEditorialCache.name_key == name_key,
+            DishEditorialCache.cuisine_key == cuisine_key,
+            DishEditorialCache.prompt_version == EDITORIAL_PROMPT_VERSION,
+        )
+    )
+    cached = row.scalar_one_or_none()
+    if cached is None:
+        return None
+    return cached.story, cached.origin
+
+
+async def _write_cache(
+    db: AsyncSession,
+    name_key: str,
+    cuisine_key: str,
+    story: str,
+    origin: str | None,
+) -> None:
+    """Upsert con `ON CONFLICT DO UPDATE` para race-safety entre refreshes concurrentes."""
+    stmt = pg_insert(DishEditorialCache).values(
+        name_key=name_key,
+        cuisine_key=cuisine_key,
+        story=story,
+        origin=origin,
+        prompt_version=EDITORIAL_PROMPT_VERSION,
+        updated_at=datetime.now(timezone.utc),
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="pk_dish_editorial_cache",
+        set_={
+            "story": stmt.excluded.story,
+            "origin": stmt.excluded.origin,
+            "prompt_version": stmt.excluded.prompt_version,
+            "updated_at": stmt.excluded.updated_at,
+        },
+    )
+    await db.execute(stmt)
 
 
 async def refresh_dish_blurb(
@@ -115,9 +216,15 @@ async def refresh_dish_blurb(
     *,
     force: bool = False,
 ) -> bool:
-    """Generate or refresh the editorial blurb for a dish.
+    """Genera o refresca el blurb editorial del plato.
 
-    Returns True when the dish row was updated and committed.
+    Flujo:
+      1. Si el dish ya está al día y no es `force`, no hacemos nada.
+      2. Lookup en `dish_editorial_cache` por (name_key, cuisine_key) — si
+         hit, copiamos al dish sin llamar al LLM.
+      3. Miss: una llamada al LLM, escribimos cache + dish.
+
+    Devuelve True cuando el row del dish se actualizó y commiteó.
     """
     if not _api_key():
         logger.debug("Editorial enricher: no API key configured — skipping.")
@@ -134,19 +241,39 @@ async def refresh_dish_blurb(
         return False
     dish, restaurant = row
 
-    if not force and dish.editorial_blurb:
+    if not force and not _is_stale(dish):
         return False
 
-    blurb = await _generate_blurb(dish, restaurant)
-    if not blurb:
-        return False
+    name_key = (dish.name_normalized or "").strip()
+    cuisine_key = _cuisine_key(restaurant)
 
-    dish.editorial_blurb = blurb
-    dish.editorial_blurb_lang = "es"
-    dish.editorial_blurb_source = "claude"
-    dish.editorial_cached_at = datetime.now(timezone.utc)
+    if name_key:
+        cached = await _read_cache(db, name_key, cuisine_key)
+        if cached is not None:
+            story, origin = cached
+            _apply_blurb(dish, story, origin)
+            await db.commit()
+            return True
+
+    result = await _generate_blurb(dish, restaurant)
+    if not result:
+        return False
+    story, origin = result
+
+    if name_key:
+        await _write_cache(db, name_key, cuisine_key, story, origin)
+    _apply_blurb(dish, story, origin)
     await db.commit()
     return True
+
+
+def _apply_blurb(dish: Dish, story: str, origin: str | None) -> None:
+    dish.editorial_blurb = story
+    dish.editorial_origin = origin
+    dish.editorial_blurb_lang = "es"
+    dish.editorial_blurb_source = "claude"
+    dish.editorial_prompt_version = EDITORIAL_PROMPT_VERSION
+    dish.editorial_cached_at = datetime.now(timezone.utc)
 
 
 async def _refresh_in_background(dish_id: uuid.UUID) -> None:
@@ -163,9 +290,9 @@ def maybe_schedule_blurb_refresh(
 ) -> None:
     """Best-effort: enqueue blurb generation for a dish if API key is set.
 
-    We don't pre-check the dish state here (e.g. whether a blurb already
-    exists) — that check happens inside `refresh_dish_blurb` against a fresh
-    session. Cheap to enqueue: the bg task short-circuits when not needed.
+    El check de stale corre dentro de `refresh_dish_blurb` con una sesión
+    fresca, así que enqueue es barato — el task hace short-circuit cuando
+    el blurb actual ya está al día con `EDITORIAL_PROMPT_VERSION`.
     """
     if not _api_key():
         return

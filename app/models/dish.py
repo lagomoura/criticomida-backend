@@ -83,6 +83,8 @@ class Dish(Base):
     editorial_blurb: Mapped[str | None] = mapped_column(Text, nullable=True)
     editorial_blurb_lang: Mapped[str | None] = mapped_column(String(8), nullable=True)
     editorial_blurb_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    editorial_origin: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    editorial_prompt_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     editorial_cached_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -235,6 +237,32 @@ class DishReviewImage(Base):
 
     # Relationships
     dish_review: Mapped["DishReview"] = relationship(back_populates="images")
+
+
+class DishEditorialCache(Base):
+    """Cache compartida de blurbs editoriales por nombre normalizado + cocina.
+
+    Permite que dos restaurantes con el mismo plato (ej.: "milanesa napolitana"
+    en cocina italiana) reusen el mismo blurb sin gastar tokens dos veces.
+    Versionada por `prompt_version` para invalidar cuando cambia el prompt.
+    """
+
+    __tablename__ = "dish_editorial_cache"
+    __table_args__ = (
+        PrimaryKeyConstraint("name_key", "cuisine_key", name="pk_dish_editorial_cache"),
+    )
+
+    name_key: Mapped[str] = mapped_column(Text, nullable=False)
+    cuisine_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    story: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
 
 
 class WantToTryDish(Base):
