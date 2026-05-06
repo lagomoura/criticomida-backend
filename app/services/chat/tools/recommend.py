@@ -38,6 +38,10 @@ from sqlalchemy.orm import selectinload
 from app.models.dish import Dish
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
+from app.services.chat.tools._allergy_filter import (
+    filter_dishes_by_allergies,
+    get_user_allergies,
+)
 from app.services.chat.tools._schemas import (
     RecommendDishesInput,
     pydantic_to_anthropic_schema,
@@ -124,6 +128,35 @@ def make_recommend_dishes_tool(
                 "missing_ids": missing_ids,
             }
 
+        # Server-side allergy guard. The prompt tells the agent to
+        # filter mentally, but Flash Lite slips — in production the
+        # agent recommended a postre with nueces to a comensal who
+        # had just declared a nut allergy. We drop dishes whose name
+        # or description mentions any declared allergen and surface
+        # the drops to the LLM via ``allergy_drops`` so the next
+        # iteration can frame the answer correctly. ``no_safe_dishes``
+        # is set when the entire batch falls — agent should NOT emit
+        # an empty grid; better to say "ningún plato pasó tu
+        # restricción" and propose another search.
+        allergies = await get_user_allergies(db, user_id=user_id)
+        kept_dishes, dropped = filter_dishes_by_allergies(
+            ordered_dishes, allergies
+        )
+        if not kept_dishes and dropped:
+            return {
+                "error": "no_safe_dishes",
+                "allergy_drops": dropped,
+                "respected_allergies": allergies,
+                "message": (
+                    "Todos los dishes que pediste recomendar mencionan "
+                    "un ingrediente al que el comensal declaró ser "
+                    "alérgico. NO emitas la grilla; decílo en texto y "
+                    "proponé buscar en otra cocina o categoría. NUNCA "
+                    "recomiendes un dish cuya descripción menciona el "
+                    "alérgeno declarado."
+                ),
+            }
+
         # Look up the comensal's wishlist state per dish so the FE
         # paints the bookmark chip correctly even after a refresh.
         # Empty set for anonymous callers — the field still ships,
@@ -131,15 +164,18 @@ def make_recommend_dishes_tool(
         saved_ids = await get_saved_dish_ids(
             db,
             user_id=user_id,
-            dish_ids=[d.id for d in ordered_dishes],
+            dish_ids=[d.id for d in kept_dishes],
         )
         result: dict[str, Any] = {
-            "count": len(ordered_dishes),
+            "count": len(kept_dishes),
             "dishes": [
                 _serialize_dish(d, saved_ids=saved_ids)
-                for d in ordered_dishes
+                for d in kept_dishes
             ],
         }
+        if dropped:
+            result["allergy_drops"] = dropped
+            result["respected_allergies"] = allergies
         # Only surface drop-info when something was actually dropped;
         # keeps the happy path clean for the agent's next iteration.
         if bad_ids:

@@ -74,6 +74,7 @@ def build_registry(
                 db,
                 embed_query=embed_query,
                 restaurant_scope_id=restaurant_scope_id,
+                user_id=user_id,
             )
         )
         # Detail lookups respect the conversation scope: a verified

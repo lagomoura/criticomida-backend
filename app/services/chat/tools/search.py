@@ -24,6 +24,7 @@ to write a deeper paragraph about a single plato.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from pydantic import ValidationError
@@ -36,6 +37,10 @@ from app.models.chat import DishEmbedding
 from app.models.dish import Dish, PriceTier
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
+from app.services.chat.tools._allergy_filter import (
+    filter_dishes_by_allergies,
+    get_user_allergies,
+)
 from app.services.chat.tools._resolution import _resolve_dish_global
 from app.services.chat.tools._schemas import (
     GetDishDetailInput,
@@ -96,6 +101,7 @@ def make_search_dishes_tool(
     *,
     embed_query: Any | None = None,
     restaurant_scope_id: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> ToolSpec:
     """Build the ``search_dishes`` tool bound to a DB session.
 
@@ -106,6 +112,13 @@ def make_search_dishes_tool(
     ``restaurant_scope_id`` (optional) hard-pins the search to a single
     restaurant — used by the Business agent so an owner can never query
     competitors through this tool.
+
+    ``user_id`` (optional) enables the server-side allergy guard: any
+    dish whose name/description mentions one of the comensal's
+    declared allergens (or a synonym/plural of it) is dropped before
+    the rows reach the agent. Without this the agent saw unsafe
+    dishes in ``search_dishes`` and would self-censor with a "no
+    encontré nada" answer instead of recommending the safe ones.
     """
 
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
@@ -220,13 +233,60 @@ def make_search_dishes_tool(
         result = await db.execute(stmt)
         dishes = list(result.scalars().unique().all())
 
-        return {
-            "count": len(dishes),
-            "dishes": [_serialize_dish(d) for d in dishes],
+        # Allergy guard: drop any unsafe dish BEFORE the agent reads
+        # the rows. The agent treats the search output as ground
+        # truth, so showing it a Malabi-with-nuez when the user is
+        # nut-allergic invites the model to either include it (bad)
+        # or self-censor the entire answer ("no encontré ningún
+        # postre que esté libre de nueces"). Surfacing only safe
+        # candidates lets the agent recommend confidently from a
+        # pre-filtered set; we still surface ``allergy_drops`` so it
+        # can frame the answer ("descarté X y Y por tu restricción
+        # de nueces"). The downstream ``recommend_dishes`` filter
+        # stays in place as a second layer.
+        allergies = await get_user_allergies(db, user_id=user_id)
+        kept_dishes, dropped = filter_dishes_by_allergies(
+            dishes, allergies
+        )
+
+        payload: dict[str, Any] = {
+            "count": len(kept_dishes),
+            "dishes": [_serialize_dish(d) for d in kept_dishes],
             "semantic_used": bool(
                 inputs.semantic_query and embed_query is not None
             ),
         }
+        if dropped:
+            payload["allergy_drops"] = dropped
+            payload["respected_allergies"] = allergies
+            # Explicit instruction for the agent. Production bug:
+            # Flash Lite saw ``allergy_drops`` and self-censored
+            # ("no encontré postres registrados como libres de
+            # nueces") even when ``dishes`` still had safe candidates
+            # — it treated the partial drop as evidence of unsafe
+            # data instead of confirmation that filtering happened.
+            # The note below has to spell out the intended reading.
+            if kept_dishes:
+                payload["safe_subset_note"] = (
+                    "Los dishes que aparecen en ``dishes`` YA pasaron "
+                    "el filtro de alergias del comensal — son seguros. "
+                    "Recomendá normalmente desde este subset llamando "
+                    "``recommend_dishes`` con sus dish_ids. NO digas "
+                    "'no encontré platos libres de X': eso es falso, "
+                    "los que están en la lista lo son. Mencioná los "
+                    "drops sólo si suma editorialmente (ej. 'descarté "
+                    "el Malabi por las nueces, pero el Kanafeh es "
+                    "seguro')."
+                )
+            else:
+                payload["safe_subset_note"] = (
+                    "Después de filtrar por las alergias declaradas, "
+                    "no quedó NINGÚN plato seguro de los que matchean "
+                    "los filtros de búsqueda. Decílo en texto y "
+                    "ofrecé buscar en otra cocina/categoría/zona; NO "
+                    "llames recommend_dishes con un set vacío."
+                )
+        return payload
 
     return ToolSpec(
         name="search_dishes",

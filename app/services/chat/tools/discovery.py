@@ -37,6 +37,10 @@ from app.models.category import Category
 from app.models.dish import Dish, DishReview, DishReviewProsConsType
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
+from app.services.chat.tools._allergy_filter import (
+    filter_dishes_by_allergies,
+    get_user_allergies,
+)
 from app.services.chat.tools._resolution import _resolve_dish_global
 from app.services.chat.tools._schemas import (
     CompareDishesInput,
@@ -485,23 +489,50 @@ def make_compare_dishes_tool(
                 "dropped": dropped,
             }
 
+        # Server-side allergy guard. Same rationale as
+        # ``recommend_dishes`` — the prompt rule slips; we drop
+        # mentioning-allergen dishes structurally before painting
+        # the comparison grid.
+        allergies = await get_user_allergies(db, user_id=user_id)
+        safe_resolved, dropped = filter_dishes_by_allergies(
+            resolved, allergies
+        )
+        if not safe_resolved and dropped:
+            return {
+                "error": "no_safe_dishes",
+                "allergy_drops": dropped,
+                "respected_allergies": allergies,
+                "message": (
+                    "Todos los dishes que pediste comparar mencionan "
+                    "un ingrediente al que el comensal declaró ser "
+                    "alérgico. NO emitas la comparativa; decílo en "
+                    "texto y proponé otros candidatos. NUNCA "
+                    "compares un dish cuya descripción menciona el "
+                    "alérgeno declarado."
+                ),
+            }
+
         # Bulk lookup of bookmark state for the resolved dishes —
         # one query, even when comparing 4. The FE needs this to
         # paint the wishlist chip correctly on first render.
         saved_ids = await get_saved_dish_ids(
             db,
             user_id=user_id,
-            dish_ids=[d.id for d in resolved],
+            dish_ids=[d.id for d in safe_resolved],
         )
         entries = [
             await _build_comparison_entry(db, dish, saved_ids=saved_ids)
-            for dish in resolved
+            for dish in safe_resolved
         ]
-        return {
+        result: dict[str, Any] = {
             "comparison": True,
             "count": len(entries),
             "dishes": entries,
         }
+        if dropped:
+            result["allergy_drops"] = dropped
+            result["respected_allergies"] = allergies
+        return result
 
     return ToolSpec(
         name="compare_dishes",
