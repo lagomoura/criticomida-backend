@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,6 +84,54 @@ async def remove_want_to_try(
         await db.commit()
 
     return WantToTryActionResponse(dish_id=dish_id, want_to_try=False)
+
+
+class WantToTryCheckRequest(BaseModel):
+    """Body para ``POST /api/users/me/want-to-try/check``."""
+
+    dish_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=100,
+        description=(
+            "Lote de UUIDs sobre los que el FE quiere saber el "
+            "estado de bookmark. Hasta 100 por request — más que eso "
+            "y dividir en chunks."
+        ),
+    )
+
+
+class WantToTryCheckResponse(BaseModel):
+    """Respuesta del check: el subset de ``dish_ids`` que el comensal
+    YA tiene guardados. El FE convierte esto a un Set en cliente."""
+
+    saved_ids: list[uuid.UUID]
+
+
+@router.post(
+    "/api/users/me/want-to-try/check",
+    response_model=WantToTryCheckResponse,
+)
+async def check_want_to_try(
+    payload: WantToTryCheckRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> WantToTryCheckResponse:
+    """Bulk lookup del estado de bookmark para un lote de dishes.
+
+    El chat lo usa al rehidratar una conversación: los tool results
+    persistidos en ``chat_messages`` traen el flag ``want_to_try``
+    del momento del original call (puede ser False aunque el dish
+    haya sido guardado después). Sin este endpoint el chip vuelve
+    a "Quiero probar" en cada refresh aunque la fila siga en DB.
+    """
+    if not payload.dish_ids:
+        return WantToTryCheckResponse(saved_ids=[])
+    stmt = select(WantToTryDish.dish_id).where(
+        WantToTryDish.user_id == current_user.id,
+        WantToTryDish.dish_id.in_(payload.dish_ids),
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return WantToTryCheckResponse(saved_ids=list(rows))
 
 
 @router.get("/api/users/me/want-to-try", response_model=WantToTryPage)

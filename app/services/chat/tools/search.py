@@ -1,6 +1,6 @@
 """Search tools exposed to the agent.
 
-``search_dishes`` is the workhorse of the Sommelier: the LLM extracts
+``search_dishes`` is the discovery primitive: the LLM extracts
 structured filters from the user's request (neighborhood, pillar minima,
 bbox, price tier, category) and optionally a free-text ``semantic_query``
 for "vibe" matching. We apply the structured filters as SQL WHERE clauses
@@ -10,12 +10,23 @@ for "vibe" matching. We apply the structured filters as SQL WHERE clauses
 This pre-filter approach is the standard pgvector pattern: it guarantees
 hard constraints ("Palermo", "value_prop=3") are respected and lets the
 embedding decide order *within* the subset.
+
+**Important — search_dishes is data-only.** It does NOT emit cards to
+the comensal. The agent reads the rows, decides which 1-6 actually
+answer the question, and calls ``recommend_dishes(dish_ids=[...])``
+to present the curated subset. Splitting these responsibilities is
+what keeps the visible grid in sync with the editorial text — see
+``tools/recommend.py`` for the reasoning.
+
+``get_dish_detail`` is also data-only — it serves the agent context
+to write a deeper paragraph about a single plato.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -25,93 +36,31 @@ from app.models.chat import DishEmbedding
 from app.models.dish import Dish, PriceTier
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
-
-
-SEARCH_DISHES_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "neighborhood": {
-            "type": "string",
-            "description": (
-                "Substring of the restaurant's location_name to filter by, "
-                "e.g. 'Palermo' or 'Centro'. Case-insensitive."
-            ),
-        },
-        "city": {
-            "type": "string",
-            "description": "Exact city name, e.g. 'Buenos Aires'.",
-        },
-        "bbox": {
-            "type": "object",
-            "description": (
-                "Geographic bounding box. Use when the user references a "
-                "concrete area visible on the map."
-            ),
-            "properties": {
-                "south": {"type": "number"},
-                "west": {"type": "number"},
-                "north": {"type": "number"},
-                "east": {"type": "number"},
-            },
-            "required": ["south", "west", "north", "east"],
-        },
-        "min_value_prop": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 3,
-            "description": (
-                "Minimum CritiComida cost/benefit pillar (1-3). 3 = 'ganga'."
-            ),
-        },
-        "min_presentation": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 3,
-            "description": "Minimum presentation pillar (1-3).",
-        },
-        "min_execution": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 3,
-            "description": "Minimum technical execution pillar (1-3).",
-        },
-        "min_rating": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 5,
-            "description": "Minimum aggregated dish rating.",
-        },
-        "max_price_tier": {
-            "type": "string",
-            "enum": ["$", "$$", "$$$"],
-            "description": "Cap on the dish price tier.",
-        },
-        "category_slug": {
-            "type": "string",
-            "description": "Restaurant category slug, e.g. 'italiana'.",
-        },
-        "semantic_query": {
-            "type": "string",
-            "description": (
-                "Free-text 'vibe' to re-rank semantically: 'cita romántica', "
-                "'comida confort', 'plato sorprendente'. Optional."
-            ),
-        },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 12,
-            "default": 6,
-        },
-    },
-    "additionalProperties": False,
-}
+from app.services.chat.tools._resolution import _resolve_dish_global
+from app.services.chat.tools._schemas import (
+    GetDishDetailInput,
+    SearchDishesInput,
+    pydantic_to_anthropic_schema,
+)
 
 
 _PRICE_TIER_RANK = {PriceTier.low: 1, PriceTier.mid: 2, PriceTier.high: 3}
 
 
-def _serialize_dish(dish: Dish) -> dict[str, Any]:
+def _serialize_dish(
+    dish: Dish, *, saved_ids: set[Any] | None = None
+) -> dict[str, Any]:
+    """Render a Dish as the JSON shape the FE consumes.
+
+    ``saved_ids`` is an optional set of dish UUIDs the comensal has
+    already added to their want-to-try list. When provided, the
+    response includes a ``want_to_try`` boolean per dish so the FE
+    can paint the bookmark state correctly on first render — without
+    it, the chip resets to "Quiero probar" on every refresh even for
+    dishes that are already saved server-side. We accept ``set[Any]``
+    rather than ``set[UUID]`` so callers can pass either UUID
+    instances or strings; ``dish.id`` membership is what matters.
+    """
     restaurant = dish.restaurant
     return {
         "dish_id": str(dish.id),
@@ -121,6 +70,10 @@ def _serialize_dish(dish: Dish) -> dict[str, Any]:
         "rating": float(dish.computed_rating) if dish.computed_rating else None,
         "review_count": dish.review_count,
         "price_tier": dish.price_tier.value if dish.price_tier else None,
+        # Always present so the FE can rely on the field; ``False``
+        # when no auth context (anonymous comensal) — the bookmark
+        # write would 401 anyway, so the bookmark state is moot.
+        "want_to_try": (saved_ids is not None and dish.id in saved_ids),
         "restaurant": {
             "id": str(restaurant.id),
             "slug": restaurant.slug,
@@ -156,7 +109,14 @@ def make_search_dishes_tool(
     """
 
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
-        limit = int(args.get("limit", 6))
+        try:
+            inputs = SearchDishesInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for search_dishes.",
+                "details": exc.errors(include_url=False),
+            }
+
         stmt = (
             select(Dish)
             .join(Restaurant, Dish.restaurant_id == Restaurant.id)
@@ -170,60 +130,57 @@ def make_search_dishes_tool(
         if restaurant_scope_id:
             conditions.append(Restaurant.id == restaurant_scope_id)
 
-        if neighborhood := args.get("neighborhood"):
-            conditions.append(Restaurant.location_name.ilike(f"%{neighborhood}%"))
-
-        if city := args.get("city"):
-            conditions.append(func.lower(Restaurant.city) == city.lower())
-
-        bbox = args.get("bbox")
-        if bbox:
-            conditions.append(Restaurant.latitude.is_not(None))
-            conditions.append(Restaurant.longitude.is_not(None))
-            conditions.append(Restaurant.latitude.between(bbox["south"], bbox["north"]))
+        if inputs.neighborhood:
             conditions.append(
-                Restaurant.longitude.between(bbox["west"], bbox["east"])
+                Restaurant.location_name.ilike(f"%{inputs.neighborhood}%")
             )
 
-        if (mr := args.get("min_rating")) is not None:
-            conditions.append(Dish.computed_rating >= mr)
+        if inputs.city:
+            conditions.append(func.lower(Restaurant.city) == inputs.city.lower())
 
-        if (mpt := args.get("max_price_tier")) is not None:
-            try:
-                target = PriceTier(mpt)
-                allowed = [
-                    pt for pt, rank in _PRICE_TIER_RANK.items()
-                    if rank <= _PRICE_TIER_RANK[target]
-                ]
-                conditions.append(
-                    Dish.price_tier.in_(allowed) | Dish.price_tier.is_(None)
-                )
-            except ValueError:
-                pass
+        if inputs.bbox is not None:
+            bbox = inputs.bbox
+            conditions.append(Restaurant.latitude.is_not(None))
+            conditions.append(Restaurant.longitude.is_not(None))
+            conditions.append(Restaurant.latitude.between(bbox.south, bbox.north))
+            conditions.append(Restaurant.longitude.between(bbox.west, bbox.east))
 
-        if cat_slug := args.get("category_slug"):
+        if inputs.min_rating is not None:
+            conditions.append(Dish.computed_rating >= inputs.min_rating)
+
+        if inputs.max_price_tier is not None:
+            target = PriceTier(inputs.max_price_tier.value)
+            allowed = [
+                pt for pt, rank in _PRICE_TIER_RANK.items()
+                if rank <= _PRICE_TIER_RANK[target]
+            ]
+            conditions.append(
+                Dish.price_tier.in_(allowed) | Dish.price_tier.is_(None)
+            )
+
+        if inputs.category_slug:
             stmt = stmt.join(
                 Category, Restaurant.category_id == Category.id, isouter=False
             )
-            conditions.append(Category.slug == cat_slug)
+            conditions.append(Category.slug == inputs.category_slug)
 
         # Pillar minima are stored on dish_reviews (one-to-many). We pull
         # dishes whose *latest* review meets the minimum on each requested
         # pillar via correlated EXISTS so we don't accidentally fan-out.
         from app.models.dish import DishReview  # local import to avoid cycle
 
-        for arg_name, col in (
-            ("min_value_prop", DishReview.value_prop),
-            ("min_presentation", DishReview.presentation),
-            ("min_execution", DishReview.execution),
-        ):
-            v = args.get(arg_name)
-            if v is None:
+        pillar_filters = (
+            ("min_value_prop", DishReview.value_prop, inputs.min_value_prop),
+            ("min_presentation", DishReview.presentation, inputs.min_presentation),
+            ("min_execution", DishReview.execution, inputs.min_execution),
+        )
+        for _, col, value in pillar_filters:
+            if value is None:
                 continue
             subq = (
                 select(DishReview.id)
                 .where(DishReview.dish_id == Dish.id)
-                .where(col >= int(v))
+                .where(col >= int(value))
                 .limit(1)
             )
             conditions.append(subq.exists())
@@ -233,10 +190,9 @@ def make_search_dishes_tool(
 
         # Semantic re-ranking (only if we got an embed_query callable AND
         # the LLM asked for it).
-        semantic_query = args.get("semantic_query")
-        if semantic_query and embed_query is not None:
+        if inputs.semantic_query and embed_query is not None:
             try:
-                vec = await embed_query(semantic_query)
+                vec = await embed_query(inputs.semantic_query)
             except Exception:
                 vec = None
             if vec is not None:
@@ -250,16 +206,16 @@ def make_search_dishes_tool(
                         DishEmbedding.embedding.cosine_distance(vec).asc().nullslast(),
                         Dish.computed_rating.desc(),
                     )
-                    .limit(limit)
+                    .limit(inputs.limit)
                 )
             else:
                 stmt = stmt.order_by(
                     Dish.computed_rating.desc(), Dish.review_count.desc()
-                ).limit(limit)
+                ).limit(inputs.limit)
         else:
             stmt = stmt.order_by(
                 Dish.computed_rating.desc(), Dish.review_count.desc()
-            ).limit(limit)
+            ).limit(inputs.limit)
 
         result = await db.execute(stmt)
         dishes = list(result.scalars().unique().all())
@@ -267,20 +223,28 @@ def make_search_dishes_tool(
         return {
             "count": len(dishes),
             "dishes": [_serialize_dish(d) for d in dishes],
-            "semantic_used": bool(semantic_query and embed_query is not None),
+            "semantic_used": bool(
+                inputs.semantic_query and embed_query is not None
+            ),
         }
 
     return ToolSpec(
         name="search_dishes",
         description=(
             "Search the CritiComida catalog of dishes. Combine structured "
-            "filters (neighborhood, pillar minima, bbox, category, price) "
-            "with an optional semantic_query for vibe-based ranking. "
-            "Returns dish cards the UI will render."
+            "filters (neighborhood, pillar minima, bbox, category, price "
+            "tier) with an optional semantic_query for vibe-based ranking. "
+            "Hard filters are AND and never relaxed. **Data-only**: the "
+            "rows come back to YOU; the comensal does NOT see them as "
+            "cards. After reading the results, decide which 1-6 actually "
+            "answer the question and call ``recommend_dishes(dish_ids="
+            "[...])`` to present that curated subset. Skipping the "
+            "recommend_dishes step means the comensal sees nothing — "
+            "search_dishes alone is invisible to them."
         ),
-        input_schema=SEARCH_DISHES_SCHEMA,
+        input_schema=pydantic_to_anthropic_schema(SearchDishesInput),
         handler=handler,
-        emits_card=True,
+        emits_card=False,
     )
 
 
@@ -289,41 +253,64 @@ def make_search_dishes_tool(
 # ──────────────────────────────────────────────────────────────────────────
 
 
-GET_DISH_DETAIL_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "dish_id": {"type": "string", "format": "uuid"},
-    },
-    "required": ["dish_id"],
-    "additionalProperties": False,
-}
+def make_get_dish_detail_tool(
+    db: AsyncSession,
+    *,
+    restaurant_scope_id: str | None = None,
+) -> ToolSpec:
+    """Build the ``get_dish_detail`` tool.
 
+    Accepts ``dish_id`` (UUID) or ``dish_name`` (free text). The shared
+    resolver does the heavy lifting — disambiguation, menu peek, fallback
+    suggestions — so the LLM never has to ask the human for an ID.
 
-def make_get_dish_detail_tool(db: AsyncSession) -> ToolSpec:
+    The Business agent passes ``restaurant_scope_id`` so detail lookups
+    can't leak across restaurants; the Sommelier leaves it None and
+    searches the whole catalog.
+    """
+
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
-        from app.models.dish import DishReview, DishReviewProsCons
+        from app.models.dish import DishReview
 
-        dish_id = args.get("dish_id")
-        if not dish_id:
+        try:
+            inputs = GetDishDetailInput.model_validate(args)
+        except ValidationError as exc:
             return {
-                "error": (
-                    "get_dish_detail requires 'dish_id' (a UUID). To look "
-                    "up a dish by name, use search_dishes first and pass "
-                    "the resulting id here."
-                )
+                "error": "Invalid arguments for get_dish_detail.",
+                "details": exc.errors(include_url=False),
             }
-        stmt = (
-            select(Dish)
-            .where(Dish.id == dish_id)
-            .options(
-                selectinload(Dish.restaurant).selectinload(Restaurant.category),
-                selectinload(Dish.reviews).selectinload(DishReview.pros_cons),
-            )
+
+        actor = "owner" if restaurant_scope_id is not None else "comensal"
+        dish, error = await _resolve_dish_global(
+            db,
+            restaurant_scope_id=restaurant_scope_id,
+            dish_id=inputs.dish_id,
+            dish_name=inputs.dish_name,
+            actor=actor,
         )
-        result = await db.execute(stmt)
-        dish = result.scalars().first()
-        if dish is None:
-            return {"error": "Dish not found"}
+        if error is not None:
+            return error
+        assert dish is not None  # contract guaranteed by the resolver
+
+        # Re-load with reviews + pros/cons attached. The resolver only
+        # eagerly loads ``restaurant`` (it doesn't know which fields the
+        # caller cares about), so we widen the selectinload here.
+        dish = (
+            await db.execute(
+                select(Dish)
+                .where(Dish.id == dish.id)
+                .options(
+                    selectinload(Dish.restaurant).selectinload(
+                        Restaurant.category
+                    ),
+                    selectinload(Dish.reviews).selectinload(
+                        DishReview.pros_cons
+                    ),
+                )
+            )
+        ).scalars().first()
+        if dish is None:  # race: deleted between resolver and reload
+            return {"error": "Dish disappeared mid-call. Try again."}
 
         top_reviews = sorted(
             dish.reviews, key=lambda r: float(r.rating or 0), reverse=True
@@ -351,10 +338,15 @@ def make_get_dish_detail_tool(db: AsyncSession) -> ToolSpec:
     return ToolSpec(
         name="get_dish_detail",
         description=(
-            "Fetch full information for a single dish: aggregated pillars, "
-            "top reviews, pros/cons. Use after the user picks one from a "
-            "search_dishes result."
+            "Fetch full information for a single dish: aggregated "
+            "pillars, top reviews, pros/cons. Accepts ``dish_id`` (UUID) "
+            "OR ``dish_name`` (free text the human used, like 'el risotto' "
+            "or 'la pizza margherita'). The tool resolves names internally "
+            "— if there are multiple matches it returns candidates for "
+            "disambiguation; if there are zero, it suggests fallback to "
+            "search_dishes(semantic_query=...). NEVER ask the human for "
+            "an ID or 'the exact name'."
         ),
-        input_schema=GET_DISH_DETAIL_SCHEMA,
+        input_schema=pydantic_to_anthropic_schema(GetDishDetailInput),
         handler=handler,
     )

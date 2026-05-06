@@ -23,7 +23,6 @@ Three tools shipped:
 from __future__ import annotations
 
 import math
-import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -38,6 +37,10 @@ from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
 from app.models.restaurant import Restaurant
 from app.services.chat.agent_loop import ToolSpec
+from app.services.chat.tools._resolution import (
+    _normalize_for_search,
+    _resolve_dish_global,
+)
 from app.services.chat.tools._schemas import (
     ListReviewsInput,
     RespondedStatus,
@@ -52,25 +55,6 @@ from app.services.chat.tools._schemas import (
 # ──────────────────────────────────────────────────────────────────────────
 
 
-_MAX_MENU_PEEK = 12
-
-
-def _normalize_for_search(text: str) -> str:
-    """Strip accents and lowercase. So 'cafe' matches 'Café Turco'.
-
-    Spanish menus are full of accents and the owner won't type them.
-    Doing this in Python keeps us off the postgres ``unaccent`` extension
-    dependency (one less migration to ship) — the per-restaurant dish
-    count is small enough that pulling them all and filtering in memory
-    is cheap.
-    """
-    decomposed = unicodedata.normalize("NFD", text)
-    stripped = "".join(
-        ch for ch in decomposed if unicodedata.category(ch) != "Mn"
-    )
-    return stripped.lower().strip()
-
-
 async def _resolve_dish_in_scope(
     db: AsyncSession,
     *,
@@ -78,155 +62,21 @@ async def _resolve_dish_in_scope(
     dish_id: str | None,
     dish_name: str | None,
 ) -> tuple[Dish | None, dict[str, Any] | None]:
-    """Resolve a dish in the current restaurant scope from either an
-    explicit UUID or a free-form name the owner spoke.
+    """Business-flavored wrapper over the shared resolver.
 
-    Returns ``(dish, None)`` on a clean resolution, or ``(None, payload)``
-    where ``payload`` is a structured tool result the caller should
-    return as-is. The payload guides the LLM toward the right next step
-    (disambiguate, suggest alternatives, register a new dish) instead
-    of failing with a bare error.
-
-    This is the **defensive contract** that the prompt rule is the
-    backup of: even if the LLM ignores the prompt and dumps a name into
-    ``dish_id`` (or worse, asks the human for an ID), the tool itself
-    short-circuits to a useful response.
+    Forces ``restaurant_scope_id`` (Business agent always has one) and
+    speaks to the LLM with owner-specific phrasing. Lives here so the
+    rest of business.py keeps importing it from the same place.
     """
     if restaurant_scope_id is None:
         return None, {"error": "Business scope is required."}
-
-    # Path 1 — explicit UUID. Validate that the dish exists AND is in
-    # the scoped restaurant.
-    if dish_id:
-        try:
-            uid = uuid.UUID(dish_id)
-        except ValueError:
-            # Caller passed a name in dish_id (common LLM mistake when
-            # the rule fails). Fall through to the name path below.
-            dish_name = dish_name or dish_id
-        else:
-            dish = (
-                await db.execute(
-                    select(Dish).where(
-                        and_(
-                            Dish.id == uid,
-                            Dish.restaurant_id == restaurant_scope_id,
-                        )
-                    )
-                )
-            ).scalars().first()
-            if dish is not None:
-                return dish, None
-            # UUID was valid but not in scope — fall through to name
-            # search if a name was also provided, else return clean
-            # not-found so the LLM doesn't loop on the same ID.
-            if not dish_name:
-                return None, {
-                    "error": "dish_not_in_scope",
-                    "message": (
-                        "Ese dish_id no pertenece a tu restaurante. "
-                        "Si nombraste un plato, pasalo en dish_name "
-                        "para que lo busque por nombre."
-                    ),
-                }
-
-    # Path 2 — name search. Accent + case insensitive substring on the
-    # dish name, scoped to the restaurant. We pull ALL dishes in scope
-    # and filter in memory: per-restaurant menus are small (rarely >100
-    # rows) and Python normalization is cheaper than wiring postgres
-    # ``unaccent`` everywhere.
-    if not dish_name or not dish_name.strip():
-        return None, {
-            "error": "missing_input",
-            "message": (
-                "Pasame el plato como ``dish_name`` (texto libre, "
-                "p.ej. 'hamburguesa', 'risotto') o ``dish_id`` (UUID "
-                "que viene de search_dishes). NUNCA le pidas al "
-                "owner el ID."
-            ),
-        }
-
-    needle = dish_name.strip()
-    needle_norm = _normalize_for_search(needle)
-    all_dishes = list(
-        (
-            await db.execute(
-                select(Dish)
-                .where(Dish.restaurant_id == restaurant_scope_id)
-                .order_by(Dish.review_count.desc(), Dish.name.asc())
-            )
-        )
-        .scalars()
-        .all()
+    return await _resolve_dish_global(
+        db,
+        restaurant_scope_id=restaurant_scope_id,
+        dish_id=dish_id,
+        dish_name=dish_name,
+        actor="owner",
     )
-    matches = [
-        d for d in all_dishes if needle_norm in _normalize_for_search(d.name)
-    ]
-
-    if len(matches) == 1:
-        return matches[0], None
-
-    if len(matches) > 1:
-        return None, {
-            "needs_disambiguation": True,
-            "query": needle,
-            "candidates": [
-                {
-                    "dish_id": str(d.id),
-                    "name": d.name,
-                    "review_count": d.review_count,
-                    "rating": (
-                        float(d.computed_rating)
-                        if d.computed_rating is not None
-                        else None
-                    ),
-                }
-                for d in matches[:_MAX_MENU_PEEK]
-            ],
-            "message": (
-                f"Tengo {len(matches)} platos que matchean "
-                f"'{needle}'. Mostrale los candidatos al owner como "
-                "una lista numerada y dejá que elija (con número, "
-                "letra o nombre completo). Cuando elija, llamá el "
-                "tool de nuevo con el dish_id del candidato elegido. "
-                "NO pidas 'el nombre exacto' — el humano ya te dijo "
-                "lo que quería."
-            ),
-        }
-
-    # Zero matches — show the menu so the LLM has alternatives.
-    if not all_dishes:
-        return None, {
-            "error": "no_dishes_registered",
-            "query": needle,
-            "message": (
-                f"No tengo ningún plato registrado en este "
-                f"restaurante todavía. Decile al owner que no hay "
-                f"'{needle}' (ni nada) en su menú y ofrecele "
-                "registrarlo desde el panel del owner."
-            ),
-        }
-    return None, {
-        "error": "no_match",
-        "query": needle,
-        "menu_peek": [
-            {
-                "dish_id": str(d.id),
-                "name": d.name,
-                "review_count": d.review_count,
-            }
-            for d in all_dishes[:_MAX_MENU_PEEK]
-        ],
-        "message": (
-            f"No encontré ningún plato que matchee '{needle}'. "
-            "Mostrale al owner los platos de menu_peek como lista "
-            "numerada y preguntale cuál quería (acepta número, letra "
-            f"o nombre). Si '{needle}' realmente no aparece y ningún "
-            "plato del menú es similar, ofrecele registrarlo desde el "
-            "panel del owner. NUNCA pidas 'el nombre exacto' ni el "
-            "ID — los humanos no hablan así."
-        ),
-    }
 
 
 # ──────────────────────────────────────────────────────────────────────────

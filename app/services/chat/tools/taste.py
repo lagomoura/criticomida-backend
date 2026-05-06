@@ -54,7 +54,30 @@ def make_update_taste_profile_tool(
 ) -> ToolSpec:
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         if user_id is None:
-            return {"error": "User not authenticated."}
+            # Anonymous comensal: nothing was persisted. The error
+            # message is for YOU (the agent) — bake the instruction
+            # into it so the model doesn't accidentally close its
+            # turn with "anoté tus preferencias" anyway, which we
+            # saw in production. The contract: acknowledge the
+            # declaration in this conversation only, invite login
+            # for cross-session persistence, and do NOT claim the
+            # data was saved.
+            return {
+                "saved": False,
+                "error": "not_authenticated",
+                "message": (
+                    "El comensal no está logueado: el profile NO se "
+                    "guardó. PROHIBIDO responder con 'anoté tus "
+                    "preferencias', 'lo guardé', 'lo tomo en cuenta "
+                    "para futuras conversaciones' o equivalentes — "
+                    "esa frase miente. Respondé que vas a respetar "
+                    "lo declarado SOLO durante esta conversación, y "
+                    "que para que lo recordemos en el futuro tiene "
+                    "que iniciar sesión y volver a declararlo. "
+                    "Después seguí ayudándolo en el turno actual "
+                    "respetando la restricción que mencionó."
+                ),
+            }
 
         stmt = select(UserTasteProfile).where(
             UserTasteProfile.user_id == user_id

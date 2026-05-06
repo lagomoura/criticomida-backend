@@ -21,6 +21,7 @@ import secrets
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,45 +29,10 @@ from app.config import settings
 from app.models.dish import Dish
 from app.models.dish_list import DishList, DishListItem
 from app.services.chat.agent_loop import ToolSpec
-
-
-CREATE_DISH_ROUTE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "name": {
-            "type": "string",
-            "minLength": 3,
-            "maxLength": 160,
-            "description": (
-                "Title of the route, e.g. 'Ruta de pastas en Belgrano'."
-            ),
-        },
-        "description": {
-            "type": "string",
-            "maxLength": 600,
-            "description": (
-                "One-paragraph editorial framing of the route. Optional."
-            ),
-        },
-        "dish_ids": {
-            "type": "array",
-            "items": {"type": "string", "format": "uuid"},
-            "minItems": 2,
-            "maxItems": 10,
-        },
-        "is_public": {
-            "type": "boolean",
-            "default": True,
-            "description": (
-                "When true (default), the list is reachable at a public "
-                "URL. Set to false only if the user explicitly says they "
-                "want it private."
-            ),
-        },
-    },
-    "required": ["name", "dish_ids"],
-    "additionalProperties": False,
-}
+from app.services.chat.tools._schemas import (
+    CreateDishRouteInput,
+    pydantic_to_anthropic_schema,
+)
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -94,8 +60,16 @@ def make_create_dish_route_tool(
                 )
             }
 
+        try:
+            inputs = CreateDishRouteInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for create_dish_route.",
+                "details": exc.errors(include_url=False),
+            }
+
         # Validate dish_ids: keep only those that actually exist.
-        ids: list[str] = list(dict.fromkeys(args["dish_ids"]))  # dedupe
+        ids: list[str] = list(dict.fromkeys(inputs.dish_ids))  # dedupe
         existing = (
             await db.execute(
                 select(Dish.id).where(Dish.id.in_(ids))
@@ -112,16 +86,15 @@ def make_create_dish_route_tool(
                 )
             }
 
-        is_public = bool(args.get("is_public", True))
-        slug = _slugify(args["name"])
+        slug = _slugify(inputs.name)
 
         dish_list = DishList(
             id=uuid.uuid4(),
             owner_user_id=user_id,
             slug=slug,
-            name=args["name"],
-            description=args.get("description"),
-            is_public=is_public,
+            name=inputs.name,
+            description=inputs.description,
+            is_public=inputs.is_public,
             source_conversation_id=conversation_id,
         )
         db.add(dish_list)
@@ -138,7 +111,7 @@ def make_create_dish_route_tool(
 
         public_url = (
             f"{settings.PUBLIC_APP_URL}/es/listas/{slug}"
-            if is_public
+            if inputs.is_public
             else None
         )
         return {
@@ -146,7 +119,7 @@ def make_create_dish_route_tool(
             "slug": slug,
             "name": dish_list.name,
             "description": dish_list.description,
-            "is_public": is_public,
+            "is_public": inputs.is_public,
             "public_url": public_url,
             "dish_count": len(ordered),
             "dish_ids": ordered,
@@ -156,11 +129,12 @@ def make_create_dish_route_tool(
         name="create_dish_route",
         description=(
             "Create a curated dish route ('ruta') from a sequence of "
-            "dish_ids. Use when the user asks to bundle the suggestions "
-            "into a shareable list. Default to is_public=true unless "
-            "the user explicitly asks for it to stay private."
+            "dish_ids. Use when the comensal asks to bundle the "
+            "suggestions into a shareable list. Default to "
+            "``is_public=true`` (the comensal usually wants to share); "
+            "pass ``False`` only when they explicitly ask for privacy."
         ),
-        input_schema=CREATE_DISH_ROUTE_SCHEMA,
+        input_schema=pydantic_to_anthropic_schema(CreateDishRouteInput),
         handler=handler,
         emits_card=True,
     )

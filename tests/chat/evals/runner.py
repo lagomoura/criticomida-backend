@@ -59,6 +59,15 @@ class CaseExpectations(BaseModel):
     tools_called: list[ExpectedToolCall] = Field(default_factory=list)
     response_must_contain_any: list[str] = Field(default_factory=list)
     response_must_not_contain: list[str] = Field(default_factory=list)
+    # Regex flavour of ``response_must_not_contain``. Each entry is
+    # compiled case-insensitive and the case fails if any pattern
+    # matches the final text. We need this for "honesty over data
+    # missing" — the catalog has no calorie / opening-hours / pesos
+    # data, but the model paraphrases its training data ("ronda
+    # los 500 cal", "abre a las 21h") in ways that beat plain
+    # substring lists. A regex like ``\d+\s*(cal|kcal|calor)``
+    # captures every paraphrase in one rule.
+    response_must_not_match: list[str] = Field(default_factory=list)
     no_tool_errors: bool = True
     # Cross-checks numeric literals in the final text against tool
     # outputs. Off by default — turn on per case where the agent is
@@ -86,6 +95,13 @@ class EvalCase(BaseModel):
     description: str | None = None
     user_input: str
     expected: CaseExpectations
+    # When true, the runner overrides the suite's default ``user_id``
+    # and runs this case as an anonymous comensal. We need this to
+    # exercise tool branches that only fire without auth (e.g.
+    # ``update_taste_profile`` returning ``saved: false``). The
+    # Sommelier suite otherwise binds every case to the synthetic
+    # "Lautaro" user so the taste profile injection has signal.
+    anonymous: bool = False
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -116,7 +132,7 @@ async def run_eval_case(
     *,
     db: AsyncSession,
     agent: ChatAgent,
-    restaurant_scope_id: str,
+    restaurant_scope_id: str | None,
     user_id: Any | None = None,
     model: str | None = None,
     api_key: str | None = None,
@@ -126,9 +142,11 @@ async def run_eval_case(
 
     Caller is responsible for setting up the DB fixture (restaurant +
     reviews) and tearing it down. We only own the agent invocation.
-    Pass ``user_id`` for tools that bind to an authenticated owner
-    (e.g. ``update_owner_preferences``); leave ``None`` for the
-    anonymous flow that most cases need.
+    Pass ``user_id`` for tools that bind to an authenticated user
+    (e.g. ``update_taste_profile``, ``add_to_wishlist``,
+    ``update_owner_preferences``); leave ``None`` for an anonymous run.
+    Pass ``restaurant_scope_id=None`` for the Sommelier (catalog-wide)
+    or a uuid-string for the Business (single-restaurant scope).
     """
     system_prompt = load_agent_prompt(agent)
     registry = build_registry(
@@ -262,6 +280,26 @@ def _check_assertions(
             failures.append(
                 f"final response contained forbidden pattern {forbidden!r}: "
                 f"{final_text[:200]!r}"
+            )
+
+    # ``response_must_not_match`` is the regex sibling of the above —
+    # used when the failure mode is paraphrastic and a substring list
+    # would balloon. Compile lazily; bad patterns surface as a
+    # synthetic failure so the case author finds the typo fast.
+    for pattern in case.expected.response_must_not_match:
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            failures.append(
+                f"response_must_not_match pattern {pattern!r} did not "
+                f"compile: {exc}"
+            )
+            continue
+        match = compiled.search(final_text)
+        if match:
+            failures.append(
+                f"final response matched forbidden regex {pattern!r} "
+                f"at {match.group(0)!r}: {final_text[:200]!r}"
             )
 
     if case.expected.validate_numbers:

@@ -111,6 +111,30 @@ class OwnerPreferenceLanguage(str, Enum):
     pt = "pt"
 
 
+class UserPreferenceLanguage(str, Enum):
+    """Idioma persistente preferido por el comensal (B2C). Idéntico
+    al del owner pero distinto enum para mantener los dos productos
+    desacoplados."""
+
+    es = "es"
+    en = "en"
+    pt = "pt"
+
+
+class UserResponseStyle(str, Enum):
+    """Tipo de respuesta editorial que el comensal pidió fijar.
+
+    ``editorial`` es el default del prompt — 2-3 frases que enmarcan
+    los resultados. ``concise`` colapsa a una frase + cards (para
+    comensales que prefieren ir al grano). ``warm`` agrega más color
+    conversacional.
+    """
+
+    editorial = "editorial"
+    concise = "concise"
+    warm = "warm"
+
+
 # ──────────────────────────────────────────────────────────────────────────
 #   Tool input models
 # ──────────────────────────────────────────────────────────────────────────
@@ -279,6 +303,49 @@ class UpdateOwnerPreferencesInput(BaseModel):
     )
 
 
+class UpdateUserChatPreferencesInput(BaseModel):
+    """Inputs para persistir preferencias del comensal (Sommelier).
+
+    Espejo B2C de ``UpdateOwnerPreferencesInput``. Cada campo es
+    opcional: el comensal suele pedir cambiar UNA cosa por turno.
+    Pasá solo lo que mencionó. Para limpiar una preferencia ("no
+    fijes idioma, adaptate al que use") pasá la cadena vacía ``""``.
+
+    Sin fila previa → upsert. Las preferencias aplican desde la
+    PRÓXIMA sesión: en el turno actual el agente sigue con lo que
+    tenía al arrancar (mismo contrato que el Business).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("language", "response_style", mode="before")
+    @classmethod
+    def _lowercase(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+    language: UserPreferenceLanguage | None = Field(
+        default=None,
+        description=(
+            "Idioma fijo preferido para las respuestas del Sommelier: "
+            "'es', 'en', 'pt'. Solo pasalo si el comensal lo dijo "
+            "explícito ('siempre respondé en inglés'). NO lo derives "
+            "de en qué idioma vino el mensaje actual."
+        ),
+    )
+    response_style: UserResponseStyle | None = Field(
+        default=None,
+        description=(
+            "Estilo de respuesta editorial: 'editorial' (default — "
+            "2-3 frases enmarcando), 'concise' (una frase + cards, "
+            "sin rodeos), 'warm' (más conversacional). Solo pasalo "
+            "si el comensal lo dijo explícito ('respondeme corto', "
+            "'siempre al grano', 'andá al hueso')."
+        ),
+    )
+
+
 class CompareToBaselineInput(BaseModel):
     """Inputs del tool ``compare_to_baseline`` (agente Business).
 
@@ -392,6 +459,438 @@ class SummarizeReviewsInput(BaseModel):
             "(sentiment, rating, responded)."
         ),
         min_length=1,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   Sommelier (B2C) tool inputs
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class PriceTierFilter(str, Enum):
+    """Cap for the ``max_price_tier`` filter in ``search_dishes``.
+
+    Mirrors ``app.models.dish.PriceTier`` but namespaced here so the
+    chat schema layer stays free of model imports. The three buckets
+    are the only ones the catalog tracks — there's no '$$$$'.
+    """
+
+    cheap = "$"
+    mid = "$$"
+    high = "$$$"
+
+
+class BboxFilter(BaseModel):
+    """Geographic bounding box (south/west/north/east in WGS84)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    south: float = Field(ge=-90, le=90)
+    west: float = Field(ge=-180, le=180)
+    north: float = Field(ge=-90, le=90)
+    east: float = Field(ge=-180, le=180)
+
+
+class CenterPoint(BaseModel):
+    """Map center + optional zoom for ``open_in_map``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    zoom: int | None = Field(default=None, ge=8, le=18)
+
+
+class SearchDishesInput(BaseModel):
+    """Inputs del tool ``search_dishes`` (todos los agentes).
+
+    Filtros estructurados se componen como AND y NUNCA se violan
+    (eso es la garantía de que el LLM no te miente con "te traje
+    cualquier cosa porque tu pedido era estricto"). El
+    ``semantic_query`` re-rankea por similitud dentro del subset si
+    hay embeddings disponibles; si no, ordena por rating.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @field_validator("max_price_tier", mode="before")
+    @classmethod
+    def _normalize_price_tier(cls, value: Any) -> Any:
+        # Models occasionally emit synonyms ('low'/'mid'/'high',
+        # 'barato', '$$$$') — fold them onto the canonical tokens
+        # before the enum check rejects them.
+        if isinstance(value, str):
+            v = value.strip()
+            if v in ("$", "$$", "$$$"):
+                return v
+            mapping = {
+                "$$$$": "$$$",
+                "low": "$",
+                "cheap": "$",
+                "barato": "$",
+                "mid": "$$",
+                "medio": "$$",
+                "high": "$$$",
+                "alto": "$$$",
+                "caro": "$$$",
+            }
+            return mapping.get(v.lower(), v)
+        return value
+
+    neighborhood: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("neighborhood", "barrio", "zona"),
+        description=(
+            "Substring del location_name del restaurante (case-"
+            "insensitive). Ejemplos: 'Palermo', 'Centro', 'Belgrano'."
+        ),
+    )
+    city: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("city", "ciudad", "cidade"),
+        description="Ciudad exacta. Ejemplo: 'Buenos Aires'.",
+    )
+    bbox: BboxFilter | None = Field(
+        default=None,
+        description=(
+            "Bounding box geográfico. Usar cuando el comensal "
+            "menciona o toca un área visible en el mapa."
+        ),
+    )
+    min_value_prop: int | None = Field(
+        default=None,
+        ge=1,
+        le=3,
+        description=(
+            "Pilar de costo/beneficio mínimo (1-3). 3 = ganga. "
+            "Pasalo cuando el comensal pide 'barato pero rico'."
+        ),
+    )
+    min_presentation: int | None = Field(
+        default=None,
+        ge=1,
+        le=3,
+        description=(
+            "Pilar de presentación mínimo (1-3). 3 = visualmente "
+            "destacado. Pasalo en pedidos con mood ('cita', 'foto')."
+        ),
+    )
+    min_execution: int | None = Field(
+        default=None,
+        ge=1,
+        le=3,
+        description=(
+            "Pilar de ejecución técnica mínimo (1-3). 3 = oficio "
+            "destacado. Pasalo cuando piden 'comida bien hecha'."
+        ),
+    )
+    min_rating: float | None = Field(
+        default=None,
+        ge=0,
+        le=5,
+        validation_alias=AliasChoices(
+            "min_rating", "rating_min", "rating_minimo"
+        ),
+        description="Rating agregado mínimo del plato, escala 0-5.",
+    )
+    max_price_tier: PriceTierFilter | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "max_price_tier", "precio_max", "max_price"
+        ),
+        description=(
+            "Tope de bucket de precio: '$' = barato, '$$' = medio, "
+            "'$$$' = caro. Solo existen tres niveles."
+        ),
+    )
+    category_slug: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "category_slug", "categoria", "category"
+        ),
+        description=(
+            "Slug de categoría del restaurante (ej: 'italiana', "
+            "'japonesa', 'parrilla'). Lo determina el catálogo — si "
+            "no estás seguro de un slug, llamá search_dishes sin él."
+        ),
+    )
+    semantic_query: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "semantic_query", "query", "vibe", "mood"
+        ),
+        description=(
+            "Texto libre para re-ranking semántico ('cita romántica', "
+            "'comida confort'). Pasalo cuando el pedido tiene un "
+            "'mood' distinto del filtrado estructurado."
+        ),
+    )
+    limit: int = Field(
+        default=6,
+        ge=1,
+        le=12,
+        description=(
+            "Cantidad máxima de platos a devolver. Default 6 — más "
+            "satura la grid visual."
+        ),
+    )
+
+
+class GetDishDetailInput(BaseModel):
+    """Inputs del tool ``get_dish_detail``.
+
+    Acepta UUID o nombre libre — el tool resuelve nombres internamente.
+    NUNCA le pidas al humano un dish_id ni 'el nombre exacto'.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dish_id: str | None = Field(
+        default=None,
+        description=(
+            "UUID del plato. Pasalo cuando ya viene de un "
+            "search_dishes previo en la misma conversación."
+        ),
+    )
+    dish_name: str | None = Field(
+        default=None,
+        description=(
+            "Nombre libre del plato como lo dijo el humano "
+            "('el risotto', 'la pizza margherita')."
+        ),
+    )
+
+
+class AddToWishlistInput(BaseModel):
+    """Inputs del tool ``add_to_wishlist``.
+
+    Mismo contrato amistoso de get_dish_detail: UUID o nombre libre.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dish_id: str | None = Field(default=None, description="UUID del plato.")
+    dish_name: str | None = Field(
+        default=None,
+        description=(
+            "Nombre libre del plato como lo dijo el comensal."
+        ),
+    )
+
+
+class OpenInMapInput(BaseModel):
+    """Inputs del tool ``open_in_map``.
+
+    Al menos uno de bbox / center / dish_ids tiene que venir; el handler
+    valida en runtime y devuelve un payload navegacional para el FE.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bbox: BboxFilter | None = Field(
+        default=None,
+        description=(
+            "Área visible para enmarcar. Usar cuando el comensal "
+            "quiere ver un barrio o zona entera."
+        ),
+    )
+    center: CenterPoint | None = Field(
+        default=None,
+        description=(
+            "Coordenadas + zoom opcional. Anclá el mapa en un punto "
+            "concreto (ej: la dirección de un restaurante)."
+        ),
+    )
+    dish_ids: list[str] | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "UUIDs de platos a pin-ear en el mapa. Usar para mostrar "
+            "los resultados de un search_dishes geográficamente."
+        ),
+    )
+
+
+class CreateDishRouteInput(BaseModel):
+    """Inputs del tool ``create_dish_route``.
+
+    Crea una ruta compartible (``dish_lists`` + ``dish_list_items``).
+    El usuario logueado queda como owner; sin login el tool falla
+    explícito. Default ``is_public=true`` — la persona suele querer
+    compartirla; pasá ``False`` solo si lo pide explícito.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        min_length=3,
+        max_length=160,
+        description=(
+            "Título corto de la ruta. Ejemplo: 'Ruta de pastas en "
+            "Belgrano' o 'Domingo en el Centro'."
+        ),
+    )
+    description: str | None = Field(
+        default=None,
+        max_length=600,
+        description=(
+            "Frase editorial que enmarca la ruta. Opcional pero ayuda "
+            "al comensal cuando la comparte."
+        ),
+    )
+    dish_ids: list[str] = Field(
+        min_length=2,
+        max_length=10,
+        description=(
+            "UUIDs de los platos en el orden en que aparecerán "
+            "(primer plato = primera parada)."
+        ),
+    )
+    is_public: bool = Field(
+        default=True,
+        description=(
+            "True (default) genera URL pública compartible. False = "
+            "lista privada solo visible al comensal."
+        ),
+    )
+
+
+class CompareDishesInput(BaseModel):
+    """Inputs del tool ``compare_dishes`` — comparativa lado a lado.
+
+    El comensal pide "¿cuál es mejor, X o Y?", "compará A vs B", "qué
+    me conviene". El tool toma 2-4 dishes (por uuid o por nombre) y
+    devuelve una estructura comparativa: rating + breakdown por pilar
+    + pros/cons agregados de las top reviews. La UI rendereea esto
+    como una grilla side-by-side (`ComparisonCard`), distinta del
+    listado vertical de `DishCard`.
+
+    Acepta ``dish_ids`` (uuids del output de un search_dishes previo)
+    o ``dish_names`` (nombres libres como los dijo el comensal); el
+    tool resuelve nombres internamente. NUNCA pidas al humano un uuid.
+
+    Mínimo 2 — comparar uno solo no es comparar. Máximo 4 — más de
+    eso satura visualmente la grilla incluso en desktop.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dish_ids: list[str] | None = Field(
+        default=None,
+        min_length=2,
+        max_length=4,
+        description=(
+            "UUIDs de los platos a comparar. Vienen del output de un "
+            "search_dishes previo. NUNCA inventes uuids."
+        ),
+    )
+    dish_names: list[str] | None = Field(
+        default=None,
+        min_length=2,
+        max_length=4,
+        description=(
+            "Nombres libres de los platos como los dijo el comensal "
+            "('el risotto', 'la pasta carbonara'). El tool los "
+            "resuelve internamente. Si hay ambigüedad en alguno, el "
+            "tool devuelve un payload que te pide elegir."
+        ),
+    )
+
+
+class SurpriseMeInput(BaseModel):
+    """Inputs del tool ``surprise_me`` — serendipity en lugar de
+    búsqueda dirigida.
+
+    El comensal pide algo distinto sin saber qué; el tool elige UN
+    plato que esté **fuera del histórico** del comensal (categoría
+    o barrio que no frecuenta), respeta sus alergias declaradas, y
+    devuelve un ``serendipity_reason`` legible que el agente cita
+    en su texto editorial. La selección es estable durante el día
+    para el mismo usuario — un "sorprendeme" repetido en la misma
+    sesión no rota infinitamente.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    neighborhood: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("neighborhood", "barrio", "zona"),
+        description=(
+            "Barrio donde buscar. Si se omite, el tool usa el barrio "
+            "más popular de los que el comensal NO frecuenta — eso "
+            "es lo que hace 'sorprender'. Pasalo cuando el comensal "
+            "explícitamente acota geográficamente ('sorprendeme algo "
+            "en Palermo')."
+        ),
+    )
+
+
+class RecommendDishesInput(BaseModel):
+    """Inputs del tool ``recommend_dishes`` (Sommelier curated grid).
+
+    El agente llama este tool para PRESENTAR al comensal el subset
+    de platos que decidió recomendar, después de haber filtrado los
+    resultados crudos de ``search_dishes``. La regla de oro: la grid
+    visible al comensal debe coincidir 1:1 con lo que el agente
+    menciona en su texto editorial. Si el agente solo va a hablar de
+    "Café Turco", solo pasa ese dish_id — los otros dishes de la
+    búsqueda no se muestran.
+
+    Validación de cantidad: 1-6 dishes. Más de 6 satura la grid
+    visualmente; menos de 1 no tiene sentido (si el agente no quiere
+    recomendar nada, no llama el tool — preguntá o decí que no
+    encontraste).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dish_ids: list[str] = Field(
+        min_length=1,
+        max_length=6,
+        description=(
+            "UUIDs de los platos a presentar al comensal como cards. "
+            "Vienen siempre del output de un search_dishes previo en "
+            "el mismo turno. NUNCA inventes UUIDs. NUNCA pidas al "
+            "comensal un dish_id."
+        ),
+    )
+
+
+class RequestReservationInput(BaseModel):
+    """Inputs del tool ``request_reservation``.
+
+    Pide una mesa en un restaurante concreto. Si el restaurante tiene
+    owner verificado, el owner recibe la solicitud por email + push.
+    Si no, el tool devuelve un deeplink al partner externo.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    restaurant_id: str = Field(
+        description=(
+            "UUID del restaurante. Viene de search_dishes / "
+            "get_dish_detail. NUNCA se lo pedís al comensal."
+        ),
+    )
+    party_size: int = Field(
+        ge=1,
+        le=30,
+        description="Cantidad de comensales en la mesa.",
+    )
+    requested_for: str = Field(
+        description=(
+            "ISO 8601 datetime con timezone offset. Ejemplo: "
+            "'2026-05-10T21:00:00-03:00'. Si el comensal no menciona "
+            "tz, usá la del restaurante (Argentina = -03:00)."
+        ),
+    )
+    message: str | None = Field(
+        default=None,
+        max_length=600,
+        description=(
+            "Nota opcional del comensal (alergias, ocasión). El owner "
+            "la lee literal."
+        ),
     )
 
 

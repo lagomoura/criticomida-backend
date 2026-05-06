@@ -43,6 +43,7 @@ from app.routers import (
     reviews,
     search,
     trending,
+    user_preferences,
     users,
     want_to_try,
 )
@@ -132,6 +133,7 @@ def create_app(
     application.include_router(claims.router)
     application.include_router(owner_content.router)
     application.include_router(owner_preferences.router)
+    application.include_router(user_preferences.router)
     application.include_router(ghostwriter.router)
 
     uploads_dir = os.path.join(

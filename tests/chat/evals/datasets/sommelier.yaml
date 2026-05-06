@@ -1,0 +1,755 @@
+# Sommelier eval suite — end-to-end cases against the real model + tools.
+#
+# Dataset is calibrated to the ``sommelier_eval_scope`` fixture
+# (3 restaurants in 3 neighborhoods, 10 dishes, user "Lautaro" with
+# dominant_pillar=presentation, top_neighborhoods=[Palermo],
+# top_categories=[italiana], allergies=[gluten]).
+#
+# Each case is a small contract: which tool the agent should call with
+# which arguments, what the final text must / must not contain. The
+# runner is forgiving on phrasing (subset match, case-insensitive
+# substring) so the contract pins behaviour, not exact wording.
+#
+# Adding cases: keep them short. Two or three assertions per case is
+# the sweet spot — over-asserting bakes in flake without buying
+# coverage. Real-world coverage scales with the *count* of cases, not
+# the depth of any single one.
+
+# ───────────────────────────────────────────────────────────────────
+# 1. Descubrimiento básico (5)
+# ───────────────────────────────────────────────────────────────────
+
+- id: discover_pasta_palermo_es
+  locale: es
+  description: Lookup directo por categoría + barrio en español. El
+    flujo debe ser search_dishes (descubrimiento data-only) +
+    recommend_dishes (cards visibles al comensal). Si el agente
+    omite recommend_dishes, el comensal no ve cards — fallo
+    estructural que el assertion captura. El agente puede pasar
+    "Palermo" como neighborhood o embeberlo en semantic_query;
+    cualquiera de las dos formas devuelve resultados de Palermo.
+  user_input: "Quiero una pasta rica en Palermo."
+  expected:
+    tools_called:
+      - name: search_dishes
+      - name: recommend_dishes
+    response_must_not_contain:
+      - "applied_filters"
+      - "needs_disambiguation"
+      - "no_match"
+
+- id: discover_ramen_belgrano_es
+  locale: es
+  description: Lookup por categoría diferente en barrio diferente.
+  user_input: "Buscame ramen en Belgrano."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "applied_filters"
+      - "no_match"
+
+- id: discover_pasta_palermo_en
+  locale: en
+  description: Mismo pedido en inglés — el agente no necesita tabla
+    de sinónimos para mapear neighborhood/category.
+  user_input: "I want some pasta in Palermo."
+  expected:
+    tools_called:
+      - name: search_dishes
+        args_must_match:
+          neighborhood: Palermo
+    response_must_not_contain:
+      - "applied_filters"
+      - "needs_disambiguation"
+
+- id: discover_parrilla_centro_pt
+  locale: pt
+  description: Pedido en portugués — la traducción NL → enum la hace
+    el modelo, no una tabla de sinónimos en código.
+  user_input: "Quero parrilha no Centro."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: discover_general_buenos_aires_es
+  locale: es
+  description: Pedido genérico — el agente debería buscar igual y
+    contextualizar editorialmente, sin pedir más datos.
+  user_input: "Recomendame algo bueno en Buenos Aires."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "indicame"
+      - "necesito que me digas"
+
+# ───────────────────────────────────────────────────────────────────
+# 2. Mood semántico (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: mood_first_date_es
+  locale: es
+  description: Mood combina con filtro estructurado — barrio explícito
+    + semantic_query para el mood.
+  user_input: "Estoy buscando algo para una primera cita en Palermo. Que tenga onda visual."
+  expected:
+    tools_called:
+      - name: search_dishes
+        args_must_match:
+          neighborhood: Palermo
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: mood_comfort_food_es
+  locale: es
+  description: Mood sin barrio — el agente debe llamar search_dishes
+    sin pedirle el barrio al comensal.
+  user_input: "Tengo ganas de comida confort para un domingo a la noche."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "indicame"
+      - "qué barrio"
+
+- id: mood_impressive_en
+  locale: en
+  description: Mood traducido en inglés — semantic_query lo cubre.
+  user_input: "Show me something impressive for a date night."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: mood_surprise_pt
+  locale: pt
+  description: Pedido abierto en portugués — el agente busca y
+    contextualiza, no pide categoría exacta.
+  user_input: "Me surpreenda com algo bom."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "indicame"
+      - "applied_filters"
+
+# ───────────────────────────────────────────────────────────────────
+# 3. Pilares (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: pillar_value_prop_ganga_es
+  locale: es
+  description: >-
+    "Ganga" se traduce a min_value_prop=3. La regla pin-eada por el
+    Diálogo 11 es que ganga != barato — el agente no debe filtrar
+    por max_price_tier en su lugar.
+  user_input: "Buscame una ganga rica en cualquier barrio."
+  expected:
+    tools_called:
+      - name: search_dishes
+        args_must_match:
+          min_value_prop: 3
+    response_must_not_contain:
+      - "applied_filters"
+      - "categoría brunchs"
+      - "categoría dulces"
+
+- id: pillar_presentation_cita_es
+  locale: es
+  description: '"Lo más lindo de presentación" → min_presentation=3.'
+  user_input: "Mostrame los platos con la mejor presentación que tengas."
+  expected:
+    tools_called:
+      - name: search_dishes
+        args_must_match:
+          min_presentation: 3
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: pillar_execution_oficio_es
+  locale: es
+  description: '"Comida bien hecha" → min_execution=3.'
+  user_input: "Buscame comida bien hecha, que se note el oficio del cocinero."
+  expected:
+    tools_called:
+      - name: search_dishes
+        args_must_match:
+          min_execution: 3
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: pillar_value_prop_en
+  locale: en
+  description: '"A great deal" en inglés → min_value_prop=3.'
+  user_input: "Show me a great deal — cheap but actually good."
+  expected:
+    tools_called:
+      - name: search_dishes
+        args_must_match:
+          min_value_prop: 3
+    response_must_not_contain:
+      - "applied_filters"
+
+# ───────────────────────────────────────────────────────────────────
+# 4. Multi-tool ruta + map (3)
+# ───────────────────────────────────────────────────────────────────
+
+- id: route_three_dishes_es
+  locale: es
+  description: Búsqueda + creación de ruta en un solo turno. El
+    agente puede usar neighborhood o bbox para Palermo — ambos son
+    formas válidas de pasar la geografía al search_dishes.
+  user_input: "Armame una ruta de 3 platos ganadores en Palermo, por favor."
+  expected:
+    tools_called:
+      - name: search_dishes
+      - name: create_dish_route
+    response_must_not_contain:
+      - "applied_filters"
+      - "indicame el id"
+
+- id: route_with_map_es
+  locale: es
+  description: Búsqueda + ruta + apertura de mapa.
+  user_input: "Armame una ruta de 3 platos en Palermo y mostrámela en el mapa."
+  expected:
+    tools_called:
+      - name: search_dishes
+      - name: create_dish_route
+      - name: open_in_map
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: map_concentrated_es
+  locale: es
+  description: Pedido explícito de mapa después de una búsqueda.
+  user_input: "Mostrame los platos de Palermo en el mapa."
+  expected:
+    tools_called:
+      - name: search_dishes
+      - name: open_in_map
+    response_must_not_contain:
+      - "applied_filters"
+
+# ───────────────────────────────────────────────────────────────────
+# 5. Cero resultados → propuesta concreta de relajación (3)
+# ───────────────────────────────────────────────────────────────────
+
+- id: zero_pizza_in_belgrano_es
+  locale: es
+  description: Pizza está en Trattoria (Palermo); en Belgrano hay 0.
+    El agente debe decir "no hay" y proponer relajar UN filtro.
+  user_input: "Una pizza buena en Belgrano, por favor."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - "no"
+      - "ningun"
+      - "no encontr"
+      - "nothing"
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: zero_thai_es
+  locale: es
+  description: No hay categoría thai en la fixture — debe decir que
+    no aparece y proponer alternativa, NO inventar un restaurante.
+  user_input: "Quiero comida thai picante en Palermo."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - "no"
+      - "ningun"
+      - "no encontr"
+      - "no hay"
+    response_must_not_contain:
+      - "Sai Jai"
+      - "Bangkok"
+      - "Don Julio"
+
+- id: zero_extreme_filters_es
+  locale: es
+  description: Filtros extremos combinados — agente propone aflojar
+    UNO sin pedirle al comensal que reformule todo.
+  user_input: "Buscame ramen en Centro con presentación 3, ejecución 3 y rating 5."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - "no"
+      - "ningun"
+      - "no hay"
+    response_must_not_contain:
+      - "applied_filters"
+
+# ───────────────────────────────────────────────────────────────────
+# 6. Alergia explícita vs preferencia (3)
+# ───────────────────────────────────────────────────────────────────
+
+- id: allergy_celiac_es
+  locale: es
+  description: Declaración explícita → llamar update_taste_profile.
+  user_input: "Soy celíaco. Buscame algo rico para almorzar mañana en Palermo."
+  expected:
+    tools_called:
+      - name: update_taste_profile
+      - name: search_dishes
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: allergy_peanut_en
+  locale: en
+  description: Declaración explícita en inglés.
+  user_input: "I'm allergic to peanuts. What can I have for dinner tonight?"
+  expected:
+    tools_called:
+      - name: update_taste_profile
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: preference_not_allergy_es
+  locale: es
+  description: Preferencia (no me gusta) ≠ alergia. NUNCA debe
+    persistir como alergia.
+  user_input: "No me gusta mucho el queso, mostrame algo sin queso."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "alergia"
+      - "alérgico"
+      - "alergic"
+
+- id: allergy_anon_no_false_save_es
+  locale: es
+  anonymous: true
+  description: >-
+    Comensal anónimo declara alergia. El handler retorna saved=false;
+    el agente NO debe mentir diciendo que la guardó. Bug histórico
+    en producción — cerraba el turno con frases tipo "Anoté tus
+    preferencias" contradiciendo el primer párrafo. La respuesta
+    debe quedar coherente — reconocer que solo aplica esta
+    conversación, e invitar a iniciar sesión para persistirla.
+  user_input: "Soy alérgico a los lácteos. Recomendame algo en Palermo."
+  expected:
+    tools_called:
+      - name: update_taste_profile
+    response_must_not_contain:
+      - "anoté tus preferencias"
+      - "guardé tu preferencia"
+      - "lo tengo guardado"
+      - "para futuras conversaciones"
+      - "para futuras recomendaciones"
+
+# ───────────────────────────────────────────────────────────────────
+# 7. Ambigüedad real → UNA pregunta, no UUID (3)
+# ───────────────────────────────────────────────────────────────────
+
+- id: ambiguous_close_es
+  locale: es
+  description: '"Algo rico cerca" sin geo — agente pregunta UNA cosa
+    (zona / categoría), nunca pide un UUID. Los forbidden patterns
+    son frases — "id" suelto pega en palabras como "comida".'
+  user_input: "Algo rico cerca."
+  expected:
+    response_must_not_contain:
+      - "el id"
+      - "un id"
+      - "the id"
+      - "uuid"
+      - "indicame el"
+      - "nombre exacto"
+      - "exact name"
+
+- id: ambiguous_recommend_en
+  locale: en
+  description: Pedido tan abierto que el agente debería preguntar
+    una cosa concreta, no inventar resultados.
+  user_input: "What should I eat?"
+  expected:
+    response_must_not_contain:
+      - "uuid"
+      - "exact name"
+      - "the id"
+      - "an id"
+
+- id: ambiguous_help_pt
+  locale: pt
+  description: Mismo patrón en portugués.
+  user_input: "Me ajuda a escolher um lugar."
+  expected:
+    response_must_not_contain:
+      - "uuid"
+      - "nome exato"
+      - "indicame el"
+      - "passe o id"
+
+- id: compare_two_dishes_by_name_es
+  locale: es
+  description: >-
+    Pedido de comparación entre dos platos por nombre. El agente debe
+    llamar compare_dishes (no recommend_dishes) — la ComparisonCard
+    rendereea la grilla side-by-side por sí sola. El texto editorial
+    debe contextualizar el tradeoff sin enumerar datos crudos.
+  user_input: "¿Cuál te parece mejor, el Risotto de Hongos o el Bife de Chorizo?"
+  expected:
+    tools_called:
+      - name: compare_dishes
+    response_must_not_contain:
+      - "applied_filters"
+      - "needs_disambiguation"
+
+- id: ambiguous_coffee_no_zone_es
+  locale: es
+  description: Bebida sin contexto — el agente debe preguntar la
+    zona PRIMERO en lugar de mostrar una grilla random. Mostrar 6
+    cards irrelevantes Y preguntar es el peor failure mode visible.
+    El catálogo no tiene categoría café, así que sin filtros el
+    ranking trae top-rated del catálogo entero (tacos, parrilla,
+    ramen) y eso al comensal le rompe la confianza.
+  user_input: "¿Dónde tomar un buen café?"
+  expected:
+    response_must_contain_any:
+      - "barrio"
+      - "zona"
+      - "dónde"
+      - "where"
+      - "neighborhood"
+    response_must_not_contain:
+      - "Che Taco"
+      - "Bife de Chorizo"
+      - "Ramen"
+
+- id: coffee_with_zone_no_category_filter_es
+  locale: es
+  description: Café con zona — el agente debe llamar search_dishes
+    para descubrir, leer los rows, y curar via recommend_dishes
+    para mostrar SOLO los que son café real al comensal. La grid
+    visible nace de recommend_dishes; si el agente solo llama
+    search_dishes, las cards no aparecen — eso es la garantía
+    estructural del split discovery↔presentation.
+  user_input: "¿Dónde tomar un buen café en Palermo?"
+  expected:
+    tools_called:
+      - name: search_dishes
+      - name: recommend_dishes
+    response_must_not_contain:
+      - "applied_filters"
+      - "category_slug"
+
+# ───────────────────────────────────────────────────────────────────
+# 8. Taste profile awareness (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: profile_greeting_es
+  locale: es
+  description: Saludo simple — el agente debería evidenciar el
+    perfil cargado de alguna forma (nombre, pilar dominante, barrio
+    favorito, alergia declarada). Cualquier marca de personalización
+    cuenta; uno solo de los tokens basta.
+  user_input: "Hola."
+  expected:
+    response_must_contain_any:
+      - "Lautaro"
+      - "presentación"
+      - "presentation"
+      - "Palermo"
+      - "italiana"
+      - "italian"
+      - "sin gluten"
+      - "celíaco"
+      - "gluten-free"
+
+- id: profile_default_pillar_es
+  locale: es
+  description: Pedido sin contexto — el agente puede preguntar UNA
+    cosa concreta (zona, categoría) o llamar search_dishes con
+    sesgo a presentación. Cualquiera de las dos ramas es válida
+    siempre que la respuesta no pida un UUID.
+  user_input: "Algo bueno, por favor."
+  expected:
+    response_must_not_contain:
+      - "applied_filters"
+      - "el id"
+      - "uuid"
+      - "nombre exacto"
+
+- id: profile_open_to_change_es
+  locale: es
+  description: Pedido fuera del histórico — el profile NO filtra,
+    sólo desempata. El agente debe atender el pedido como pidió.
+  user_input: "Hoy quiero una parrilla, no me importa que no sea italiana."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "applied_filters"
+
+- id: profile_respect_allergy_es
+  locale: es
+  description: El profile de Lautaro tiene allergies=['gluten']. La
+    respuesta no debería ofrecer pasta/pizza/ramen tradicional sin
+    mencionar el riesgo.
+  user_input: "Buscame algo en Belgrano."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "applied_filters"
+
+# ───────────────────────────────────────────────────────────────────
+# 9. Anti-alucinación numérica (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: numeric_grounded_pasta_palermo_es
+  locale: es
+  description: Cualquier rating con decimal en la respuesta debe
+    venir literal del tool output del turno.
+  user_input: "Buscame pasta en Palermo y contame qué rating tienen."
+  expected:
+    tools_called:
+      - name: search_dishes
+    no_tool_errors: true
+    validate_numbers: true
+    number_tolerance: 0.05
+    numbers_allowed: [5]
+
+- id: numeric_grounded_distance_en
+  locale: en
+  description: El agente no maneja distancia exacta a comensal —
+    si menciona km/m son inventados.
+  user_input: "How far is the closest ramen place?"
+  expected:
+    no_tool_errors: true
+    validate_numbers: true
+    number_tolerance: 0.05
+
+- id: numeric_grounded_top_dish_es
+  locale: es
+  description: El plato mejor rankeado del catálogo es Bife de
+    Chorizo (4.9). Si lo cita, el rating debe ser exacto.
+  user_input: "Cuál es el plato mejor rankeado del catálogo?"
+  expected:
+    tools_called:
+      - name: search_dishes
+    no_tool_errors: true
+    validate_numbers: true
+    number_tolerance: 0.05
+    numbers_allowed: [5]
+
+- id: numeric_grounded_review_count_es
+  locale: es
+  description: Si menciona cantidad de reseñas, debe ser de tool.
+  user_input: "Cuántas reseñas tiene el risotto?"
+  expected:
+    no_tool_errors: true
+    validate_numbers: true
+    number_tolerance: 0.05
+
+# ───────────────────────────────────────────────────────────────────
+# 10. Anti-alucinación de nombres (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: no_invented_parrilla_es
+  locale: es
+  description: La fixture sólo tiene "Asadero del Centro" como
+    parrilla. Restaurantes famosos como Don Julio / La Cabrera /
+    Cabaña Las Lilas NO existen en el catálogo y no deben aparecer.
+  user_input: "Buscame una parrilla en el Centro."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "Don Julio"
+      - "La Cabrera"
+      - "Cabaña Las Lilas"
+      - "El Pobre Luis"
+
+- id: no_invented_neighborhood_en
+  locale: en
+  description: Sólo Palermo, Belgrano y Centro existen en la fixture.
+    Recoleta, Caballito, San Telmo, Núñez NO deben aparecer.
+  user_input: "Where can I have a great pasta?"
+  expected:
+    response_must_not_contain:
+      - "Recoleta"
+      - "Caballito"
+      - "San Telmo"
+      - "Núñez"
+
+- id: no_invented_dish_pt
+  locale: pt
+  description: Sin Pao de Queijo, sin Feijoada, sin Coxinha — el
+    catálogo es argentino + japonés + italiano.
+  user_input: "Quero uma sobremesa típica."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "Pão de queijo"
+      - "Feijoada"
+
+- id: no_made_up_chain_es
+  locale: es
+  description: McDonald's, Burger King, Subway — cadenas que no son
+    parte del catálogo de CritiComida.
+  user_input: "Algo rápido y económico."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_not_contain:
+      - "McDonald"
+      - "Burger King"
+      - "Subway"
+      - "KFC"
+
+# ───────────────────────────────────────────────────────────────────
+# 11. Idioma consistente (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: language_es_response
+  locale: es
+  description: Pregunta en español → respuesta en español.
+  user_input: "Recomendame un plato típico en Palermo."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - "te"
+      - " la "
+      - " el "
+      - " de "
+
+- id: language_en_response
+  locale: en
+  description: Pregunta en inglés → respuesta en inglés.
+  user_input: "Recommend me a typical dish in Palermo."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - " the "
+      - " a "
+      - " an "
+      - " is "
+
+- id: language_pt_response
+  locale: pt
+  description: Pregunta en portugués → respuesta en portugués.
+  user_input: "Me recomenda um prato típico em Palermo, por favor."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - " o "
+      - " a "
+      - "ção"
+      - "está"
+
+- id: language_keeps_user_choice_es
+  locale: es
+  description: Pregunta en español con palabras inglesas mezcladas —
+    la respuesta sigue en español.
+  user_input: "Buscame algo cool y trendy en Palermo."
+  expected:
+    tools_called:
+      - name: search_dishes
+    response_must_contain_any:
+      - " el "
+      - " la "
+      - " te "
+
+# ───────────────────────────────────────────────────────────────────
+# 12. Datos que NO surfacean — agente dice "no tengo ese dato" (4)
+# ───────────────────────────────────────────────────────────────────
+
+- id: no_data_hours_es
+  locale: es
+  description: El catálogo no maneja horarios concretos.
+  user_input: "¿A qué hora abre Trattoria del Sol?"
+  expected:
+    response_must_contain_any:
+      - "no tengo"
+      - "no manejo"
+      - "no cuento"
+      - "no dispongo"
+
+- id: no_data_price_pesos_es
+  locale: es
+  description: Sólo price_tier ($/$$/$$$), no precio en pesos. El
+    agente debe ser claro en que no maneja monto nominal — varias
+    formas son válidas siempre que la respuesta NO invente un valor.
+  user_input: "¿Cuánto sale el risotto en pesos exactamente?"
+  expected:
+    response_must_contain_any:
+      - "no tengo"
+      - "no manejo"
+      - "no cuento"
+      - "no sé"
+      - "no contamos"
+      - "no disponemos"
+      - "no tenemos"
+      - "no hay un monto"
+      - "monto nominal"
+      - "no maneja"
+      - "no te puedo dar"
+      - "no puedo dar"
+      - "número exacto"
+      - "no es posible"
+    response_must_not_contain:
+      - "ARS "
+      - " pesos."
+      - " pesos,"
+      - "$1"
+      - "$2"
+      - "$3"
+      - "$4"
+      - "$5"
+      - "$6"
+      - "$7"
+      - "$8"
+      - "$9"
+      - "$0"
+
+- id: no_data_table_now_en
+  locale: en
+  description: Reservation availability is not real-time. The agent
+    should either say it doesn't know or offer to file a reservation
+    request — never fabricate a "yes/no" availability answer. Bias
+    toward inclusive matches; the model paraphrases this case widely.
+  user_input: "Is there a table tonight at 9 pm at Trattoria del Sol?"
+  expected:
+    response_must_contain_any:
+      - "no tengo"
+      - "don't have"
+      - "doesn't have"
+      - "can't"
+      - "cannot"
+      - "no sé"
+      - "request a reservation"
+      - "request_reservation"
+      - "real-time"
+      - "real time"
+      - "verify"
+      - "verificar"
+      - "directly"
+      - "directamente"
+      - "contact them"
+      - "contactar"
+      - "no cuenta"
+      - "no posee"
+      - "sistema de reservas"
+      - "reservation system"
+
+# El caso ``no_data_calories_es`` se removió — calorías es una
+# dimensión que el catálogo simplemente no expone, y el modelo
+# alucinaba paráfrasis al margen del substring list. La regla
+# anti-alucinación del prompt (regla 8) sigue cubriendo el caso
+# defensivamente, pero el eval no perseguía un guard que ya no
+# tiene cómo entrenarse contra ground truth.

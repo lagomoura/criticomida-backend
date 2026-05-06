@@ -14,6 +14,10 @@ Dos tablas separadas que comparten la misma clave compuesta
 Mantenemos las dos tablas separadas porque sus ciclos de actualización
 son distintos: la primera la toca un toggle UI, la segunda la toca el
 LLM en respuesta a frases del owner.
+
+El espejo B2C de ``owner_chat_preferences`` (idioma + estilo del
+Sommelier) vive en ``app.models.user_preferences.UserChatPreference``
+— misma idea, sin scope de restaurante.
 """
 
 import uuid

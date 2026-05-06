@@ -33,6 +33,7 @@ from app.models.chat import (
     ChatAgent,
     ChatConversation,
     ChatMessage,
+    TastePillar,
 )
 from app.models.user import User, UserRole
 from app.services.chat_service import (
@@ -40,6 +41,7 @@ from app.services.chat_service import (
     stream_chat,
 )
 from app.services.claim_service import assert_verified_owner
+from app.services.taste_profile_service import get_taste_profile
 
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,55 @@ class MessageOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SommelierPreviewUser(BaseModel):
+    """Bare-minimum identity payload for the Sommelier empty state.
+
+    The empty-state widget only renders the display name + handle;
+    everything else (taste profile, wishlist) ships in its own
+    nested fields. We keep this lean on purpose — the response is
+    fetched on every chat drawer open, so it has to be cheap.
+    """
+
+    display_name: str
+    handle: str | None
+
+
+class SommelierPreviewProfile(BaseModel):
+    """Serialised view of ``UserTasteProfile`` for the empty state.
+
+    The label fields (``dominant_pillar_label``) are pre-translated
+    Spanish strings so the FE doesn't have to maintain its own
+    enum→label table; the FE shows them as-is when the locale is es.
+    For en/pt, the FE has its own translation keys keyed off the
+    enum value. Keep both around — losing either breaks one path.
+    """
+
+    dominant_pillar: str | None
+    dominant_pillar_label: str | None
+    top_neighborhoods: list[str]
+    top_categories: list[str]
+    favorite_tags: list[str]
+    allergies: list[str]
+    avg_price_band: str | None
+
+
+class SommelierPreviewOut(BaseModel):
+    """Payload for ``GET /api/chat/sommelier/preview``.
+
+    Both fields are nullable on purpose:
+
+    - ``user is None`` — anonymous visitor; FE shows the sign-in
+      invitation + generic starters.
+    - ``profile is None`` (with ``user`` present) — logged-in user
+      who hasn't reviewed enough dishes for the aggregator to infer
+      preferences yet; FE shows a name greeting + generic starters
+      and skips the "Te conocemos así" chip.
+    """
+
+    user: SommelierPreviewUser | None
+    profile: SommelierPreviewProfile | None
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -169,6 +220,74 @@ async def stream_endpoint(
             "X-Accel-Buffering": "no",  # disable proxy buffering
             "Connection": "keep-alive",
         },
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   Sommelier empty-state preview
+# ──────────────────────────────────────────────────────────────────────────
+
+
+_PILLAR_LABEL_ES: dict[TastePillar, str] = {
+    TastePillar.presentation: "presentación",
+    TastePillar.execution: "ejecución técnica",
+    TastePillar.value_prop: "costo/beneficio",
+}
+
+
+@router.get("/sommelier/preview", response_model=SommelierPreviewOut)
+async def sommelier_preview(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User | None, Depends(get_current_user_optional)],
+) -> SommelierPreviewOut:
+    """Lightweight preview the FE consumes when the Sommelier drawer
+    opens with no messages yet.
+
+    Returns the comensal's display name + handle and a serialised view
+    of their ``UserTasteProfile``. Both fields are nullable so the same
+    endpoint serves anonymous visitors and freshly-registered users
+    (who haven't reviewed enough dishes to get a profile inferred yet).
+
+    The endpoint is intentionally NOT auth-required: the FE call
+    happens before any chat turn, so failing on a missing token would
+    block the empty state for visitors. Anonymous callers just get
+    ``{user: null, profile: null}`` and the FE renders the sign-in
+    invitation.
+    """
+    if user is None:
+        return SommelierPreviewOut(user=None, profile=None)
+
+    profile = await get_taste_profile(db, user.id)
+    profile_out: SommelierPreviewProfile | None = None
+    if profile is not None:
+        profile_out = SommelierPreviewProfile(
+            dominant_pillar=(
+                profile.dominant_pillar.value
+                if profile.dominant_pillar is not None
+                else None
+            ),
+            dominant_pillar_label=(
+                _PILLAR_LABEL_ES[profile.dominant_pillar]
+                if profile.dominant_pillar is not None
+                else None
+            ),
+            top_neighborhoods=list(profile.top_neighborhoods or []),
+            top_categories=list(profile.top_categories or []),
+            favorite_tags=list(profile.favorite_tags or []),
+            allergies=list(profile.allergies or []),
+            avg_price_band=(
+                profile.avg_price_band.value
+                if profile.avg_price_band is not None
+                else None
+            ),
+        )
+
+    return SommelierPreviewOut(
+        user=SommelierPreviewUser(
+            display_name=user.display_name,
+            handle=user.handle,
+        ),
+        profile=profile_out,
     )
 
 

@@ -26,10 +26,16 @@ from typing import Any
 
 import pytest
 import yaml
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.database import async_session, engine
-from app.models.dish import Dish, DishReview, SentimentLabel
+from app.models.category import Category
+from app.models.chat import (
+    PriceBand,
+    TastePillar,
+    UserTasteProfile,
+)
+from app.models.dish import Dish, DishReview, PriceTier, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
 from app.models.restaurant import Restaurant
 from app.models.user import User
@@ -38,6 +44,10 @@ from tests.chat.evals.runner import EvalCase
 
 CHAT_EVAL_PLACE_ID = "pytest_chat_eval_main"
 CHAT_EVAL_USER_PREFIX = "pytest_chat_eval_"
+# Sommelier fixture spans 3 restaurants in 3 neighborhoods so the cleanup
+# uses a LIKE pattern instead of an exact match on google_place_id.
+CHAT_EVAL_PLACE_PREFIX = "pytest_chat_eval_"
+CHAT_EVAL_SOMMELIER_PLACE_PREFIX = "pytest_chat_eval_sommelier_"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -241,8 +251,11 @@ async def chat_eval_scope() -> EvalFixtureScope:
 async def _cleanup_chat_eval_data(_gate_chat_evals):
     """Drop pytest_chat_eval_* records once the session ends.
 
-    Order: restaurants first (cascades dishes → reviews → owner_responses),
-    then users (cascades anything else FK-bound to them).
+    Order: profile-shaped tables first, then restaurants (cascades
+    dishes → reviews → owner_responses), then users (cascades anything
+    else FK-bound to them). Both Business and Sommelier scopes share
+    the ``CHAT_EVAL_PLACE_PREFIX`` prefix on ``google_place_id`` so the
+    LIKE pattern catches them in one pass.
     """
     yield
     if not _evals_enabled():
@@ -255,18 +268,25 @@ async def _cleanup_chat_eval_data(_gate_chat_evals):
             text(
                 "DELETE FROM owner_chat_preferences "
                 "WHERE user_id IN (SELECT id FROM users WHERE email LIKE :prefix) "
-                "OR restaurant_id IN (SELECT id FROM restaurants WHERE google_place_id = :pid)"
+                "OR restaurant_id IN (SELECT id FROM restaurants WHERE google_place_id LIKE :pid_pattern)"
             ),
             {
-                "pid": CHAT_EVAL_PLACE_ID,
+                "pid_pattern": f"{CHAT_EVAL_PLACE_PREFIX}%",
                 "prefix": f"{CHAT_EVAL_USER_PREFIX}%@test.com",
             },
         )
         await conn.execute(
             text(
-                "DELETE FROM restaurants WHERE google_place_id = :pid"
+                "DELETE FROM user_taste_profiles "
+                "WHERE user_id IN (SELECT id FROM users WHERE email LIKE :prefix)"
             ),
-            {"pid": CHAT_EVAL_PLACE_ID},
+            {"prefix": f"{CHAT_EVAL_USER_PREFIX}%@test.com"},
+        )
+        await conn.execute(
+            text(
+                "DELETE FROM restaurants WHERE google_place_id LIKE :pid_pattern"
+            ),
+            {"pid_pattern": f"{CHAT_EVAL_PLACE_PREFIX}%"},
         )
         await conn.execute(
             text("DELETE FROM users WHERE email LIKE :prefix"),
@@ -275,18 +295,229 @@ async def _cleanup_chat_eval_data(_gate_chat_evals):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+#   Sommelier (B2C) DB fixture: 3 restaurants, 10 dishes, 1 user with profile
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SommelierEvalFixtureScope:
+    """Identifiers the Sommelier eval cases reference.
+
+    The catalog is small but spans three neighborhoods and three
+    cuisines so cases can exercise filters that the Business fixture
+    (single-restaurant) couldn't reach. The synthetic user "Lautaro"
+    carries a populated ``UserTasteProfile`` so ``taste_profile``
+    awareness, allergy respect, and personalised greeting paths all
+    have something to assert against.
+    """
+
+    user_id: str
+    restaurant_ids: dict[str, str]  # restaurant name → uuid string
+    dish_ids: dict[str, str]  # dish name → uuid string
+    allergies: list[str]
+
+
+async def _ensure_category(session, slug: str, name: str) -> int:
+    """Get-or-create a Category by slug.
+
+    Categories are seeded into the dev DB; in CI they may not exist.
+    The fixture creates them if missing so the eval suite is portable.
+    """
+    existing = (
+        await session.execute(select(Category).where(Category.slug == slug))
+    ).scalars().first()
+    if existing is not None:
+        return existing.id
+    cat = Category(slug=slug, name=name)
+    session.add(cat)
+    await session.flush()
+    return cat.id
+
+
+@pytest.fixture(scope="session")
+async def sommelier_eval_scope() -> SommelierEvalFixtureScope:
+    """Build a session-scoped catalog the Sommelier evals reuse.
+
+    Three restaurants in three Buenos Aires neighborhoods, ten dishes
+    spanning Italian / Japanese / parrilla, and one synthetic user
+    "Lautaro" with a populated taste profile (dominant presentation,
+    top neighborhoods Palermo, allergies gluten). Committed to the
+    dev DB; ``_cleanup_chat_eval_data`` drops everything when the
+    session ends.
+    """
+    async with async_session() as session:
+        cat_ids = {
+            "italiana": await _ensure_category(session, "italiana", "Italiana"),
+            "japonesa": await _ensure_category(session, "japonesa", "Japonesa"),
+            "parrilla": await _ensure_category(session, "parrilla", "Parrilla"),
+        }
+
+        creator = User(
+            id=uuid.uuid4(),
+            email=f"{CHAT_EVAL_USER_PREFIX}sommelier_creator@test.com",
+            password_hash="x" * 60,
+            display_name="Sommelier Creator",
+        )
+        session.add(creator)
+        await session.flush()
+
+        # Three restaurants, distinct neighborhoods + cuisines so cases
+        # asking for 'pasta en Palermo' / 'ramen en Belgrano' /
+        # 'parrilla en Centro' all have a unique answer.
+        restaurants_data = [
+            ("Trattoria del Sol", "Palermo", "italiana", -34.59, -58.42),
+            ("Yatai Ramen", "Belgrano", "japonesa", -34.56, -58.46),
+            ("Asadero del Centro", "Centro", "parrilla", -34.61, -58.38),
+        ]
+        restaurants: dict[str, Restaurant] = {}
+        for r_name, neighborhood, cat_slug, lat, lng in restaurants_data:
+            slug_safe = r_name.lower().replace(" ", "-")
+            r = Restaurant(
+                id=uuid.uuid4(),
+                slug=f"pytest-chat-eval-sommelier-{slug_safe}-{uuid.uuid4().hex[:6]}",
+                name=r_name,
+                location_name=f"{neighborhood}, Buenos Aires",
+                city="Buenos Aires",
+                google_place_id=(
+                    f"{CHAT_EVAL_SOMMELIER_PLACE_PREFIX}"
+                    f"{r_name.lower().replace(' ', '_')}"
+                ),
+                latitude=Decimal(str(lat)),
+                longitude=Decimal(str(lng)),
+                category_id=cat_ids[cat_slug],
+                created_by=creator.id,
+            )
+            session.add(r)
+            restaurants[r_name] = r
+        await session.flush()
+
+        # Ten dishes with hand-picked ratings + pillars so cases that
+        # filter by ``min_presentation=3`` or ``min_value_prop=3`` have a
+        # deterministic subset to land in.
+        # Schema: (restaurant, dish, rating, presentation, execution,
+        #          value_prop, price_tier).
+        dish_specs = [
+            ("Trattoria del Sol", "Pasta Carbonara", 4.5, 2, 3, 2, PriceTier.mid),
+            ("Trattoria del Sol", "Risotto de Hongos", 4.7, 3, 3, 2, PriceTier.mid),
+            ("Trattoria del Sol", "Tiramisú", 4.8, 3, 3, 2, PriceTier.mid),
+            ("Trattoria del Sol", "Pizza Margherita", 3.8, 2, 2, 3, PriceTier.low),
+            ("Yatai Ramen", "Ramen Tonkotsu", 4.6, 2, 3, 3, PriceTier.mid),
+            ("Yatai Ramen", "Sushi Variado", 4.4, 3, 2, 2, PriceTier.high),
+            ("Yatai Ramen", "Gyozas", 4.0, 2, 2, 3, PriceTier.low),
+            ("Asadero del Centro", "Bife de Chorizo", 4.9, 2, 3, 2, PriceTier.high),
+            ("Asadero del Centro", "Provoleta", 4.5, 3, 3, 2, PriceTier.mid),
+            ("Asadero del Centro", "Empanadas Caseras", 4.2, 2, 2, 3, PriceTier.low),
+        ]
+        dishes: dict[str, Dish] = {}
+        for r_name, d_name, rating, _pres, _exec, _vp, tier in dish_specs:
+            d = Dish(
+                id=uuid.uuid4(),
+                restaurant_id=restaurants[r_name].id,
+                name=d_name,
+                computed_rating=Decimal(str(rating)),
+                review_count=3,  # matches the seeded reviews below
+                price_tier=tier,
+                created_by=creator.id,
+            )
+            session.add(d)
+            dishes[d_name] = d
+        await session.flush()
+
+        # Three reviews per dish back the computed_rating + EXISTS-based
+        # pillar filters in search_dishes. Pillar values match the dish
+        # spec so cases with ``min_presentation=3`` resolve to the dishes
+        # we expect.
+        for r_name, d_name, rating, pres, exec_, vp, _tier in dish_specs:
+            for i in range(3):
+                rev_email = (
+                    f"{CHAT_EVAL_USER_PREFIX}sommelier_reviewer_"
+                    f"{d_name.lower().replace(' ', '_')}_{i}@test.com"
+                )
+                reviewer = User(
+                    id=uuid.uuid4(),
+                    email=rev_email,
+                    password_hash="x" * 60,
+                    display_name=f"Eval Reviewer {i}",
+                )
+                session.add(reviewer)
+                await session.flush()
+                review = DishReview(
+                    id=uuid.uuid4(),
+                    dish_id=dishes[d_name].id,
+                    user_id=reviewer.id,
+                    date_tasted=date(2026, 4, 15),
+                    note=(
+                        f"Pedimos {d_name} y nos gustó. La cocina cumple "
+                        "con lo que promete."
+                    ),
+                    rating=Decimal(str(rating)),
+                    presentation=pres,
+                    execution=exec_,
+                    value_prop=vp,
+                    sentiment_label=SentimentLabel.positive,
+                    sentiment_score=Decimal("0.6"),
+                    sentiment_analyzed_at=datetime.now(timezone.utc),
+                )
+                session.add(review)
+        await session.flush()
+
+        # Synthetic user "Lautaro" with a populated profile. The Sommelier
+        # evals authenticate as this user so the prompt loader injects
+        # the Sobre el comensal block.
+        lautaro = User(
+            id=uuid.uuid4(),
+            email=f"{CHAT_EVAL_USER_PREFIX}sommelier_lautaro@test.com",
+            password_hash="x" * 60,
+            display_name="Lautaro",
+        )
+        session.add(lautaro)
+        await session.flush()
+
+        profile = UserTasteProfile(
+            user_id=lautaro.id,
+            dominant_pillar=TastePillar.presentation,
+            top_neighborhoods=["Palermo"],
+            top_categories=["italiana"],
+            avg_price_band=PriceBand.mid,
+            favorite_tags=["pasta", "postre"],
+            preferred_hours=[21],
+            allergies=["gluten"],
+        )
+        session.add(profile)
+
+        await session.commit()
+
+        return SommelierEvalFixtureScope(
+            user_id=str(lautaro.id),
+            restaurant_ids={n: str(r.id) for n, r in restaurants.items()},
+            dish_ids={n: str(d.id) for n, d in dishes.items()},
+            allergies=list(profile.allergies),
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────
 #   Dataset loader
 # ──────────────────────────────────────────────────────────────────────────
 
 
-_DATASET_PATH = Path(__file__).parent / "datasets" / "business.yaml"
+_DATASET_DIR = Path(__file__).parent / "datasets"
+_BUSINESS_DATASET = _DATASET_DIR / "business.yaml"
+_SOMMELIER_DATASET = _DATASET_DIR / "sommelier.yaml"
+
+
+def _load_yaml_cases(path: Path) -> list[EvalCase]:
+    if not path.exists():
+        return []
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    return [EvalCase.model_validate(entry) for entry in raw]
 
 
 def load_business_cases() -> list[EvalCase]:
-    if not _DATASET_PATH.exists():
-        return []
-    raw = yaml.safe_load(_DATASET_PATH.read_text(encoding="utf-8")) or []
-    return [EvalCase.model_validate(entry) for entry in raw]
+    return _load_yaml_cases(_BUSINESS_DATASET)
+
+
+def load_sommelier_cases() -> list[EvalCase]:
+    return _load_yaml_cases(_SOMMELIER_DATASET)
 
 
 # ──────────────────────────────────────────────────────────────────────────

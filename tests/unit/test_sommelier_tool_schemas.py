@@ -1,0 +1,347 @@
+"""Unit tests for the Sommelier tool input schemas.
+
+Each Sommelier tool now validates its arguments through a Pydantic
+model in ``app.services.chat.tools._schemas``. The contract is the
+defensive layer: out-of-range pillars, invalid price tiers, missing
+required fields all surface as ``{"error": ..., "details": [...]}``
+that the agent loop hands back to the model so it can correct on the
+next iteration.
+
+These tests pin that contract — happy path + the most common ways the
+LLM could shoot itself in the foot. Real DB-backed paths (search
+returning rows, ratings shape, etc.) are exercised by the eval suite
+(Phase 3 of the Sommelier upgrade plan).
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import pytest
+from pydantic import ValidationError
+
+from app.services.chat.tools._schemas import (
+    AddToWishlistInput,
+    BboxFilter,
+    CenterPoint,
+    CreateDishRouteInput,
+    GetDishDetailInput,
+    OpenInMapInput,
+    PriceTierFilter,
+    RequestReservationInput,
+    SearchDishesInput,
+)
+from app.services.chat.tools.map import make_open_in_map_tool
+from app.services.chat.tools.routes import make_create_dish_route_tool
+from app.services.chat.tools.reservations import make_request_reservation_tool
+from app.services.chat.tools.search import make_search_dishes_tool
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   SearchDishesInput — workhorse of the Sommelier
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestSearchDishesInput:
+    def test_happy_path_with_all_filters(self):
+        inputs = SearchDishesInput.model_validate(
+            {
+                "neighborhood": "Palermo",
+                "city": "Buenos Aires",
+                "min_presentation": 3,
+                "min_rating": 4,
+                "max_price_tier": "$$",
+                "category_slug": "italiana",
+                "semantic_query": "primera cita",
+                "limit": 6,
+            }
+        )
+        assert inputs.neighborhood == "Palermo"
+        assert inputs.max_price_tier is PriceTierFilter.mid
+        assert inputs.limit == 6
+
+    def test_pillar_above_three_rejected(self):
+        with pytest.raises(ValidationError):
+            SearchDishesInput.model_validate({"min_value_prop": 5})
+
+    def test_pillar_below_one_rejected(self):
+        with pytest.raises(ValidationError):
+            SearchDishesInput.model_validate({"min_presentation": 0})
+
+    def test_rating_above_five_rejected(self):
+        with pytest.raises(ValidationError):
+            SearchDishesInput.model_validate({"min_rating": 6})
+
+    def test_extra_property_rejected(self):
+        with pytest.raises(ValidationError):
+            SearchDishesInput.model_validate(
+                {"neighborhood": "Centro", "rogue_field": "x"}
+            )
+
+    def test_price_tier_synonym_low_normalises(self):
+        inputs = SearchDishesInput.model_validate({"max_price_tier": "low"})
+        assert inputs.max_price_tier is PriceTierFilter.cheap
+
+    def test_price_tier_synonym_barato_normalises(self):
+        inputs = SearchDishesInput.model_validate({"max_price_tier": "barato"})
+        assert inputs.max_price_tier is PriceTierFilter.cheap
+
+    def test_price_tier_overshoot_clamps_to_high(self):
+        # "$$$$" doesn't exist in the catalog — the normaliser folds it
+        # onto the highest bucket the schema models so the LLM doesn't
+        # bounce off a hard rejection on a benign overshoot.
+        inputs = SearchDishesInput.model_validate({"max_price_tier": "$$$$"})
+        assert inputs.max_price_tier is PriceTierFilter.high
+
+    def test_unknown_price_tier_string_rejected(self):
+        with pytest.raises(ValidationError):
+            SearchDishesInput.model_validate({"max_price_tier": "free"})
+
+    def test_neighborhood_alias_barrio_accepted(self):
+        inputs = SearchDishesInput.model_validate({"barrio": "Palermo"})
+        assert inputs.neighborhood == "Palermo"
+
+    def test_semantic_query_alias_mood_accepted(self):
+        inputs = SearchDishesInput.model_validate({"mood": "comida confort"})
+        assert inputs.semantic_query == "comida confort"
+
+    def test_limit_default_is_six(self):
+        inputs = SearchDishesInput.model_validate({})
+        assert inputs.limit == 6
+
+    def test_limit_above_twelve_rejected(self):
+        with pytest.raises(ValidationError):
+            SearchDishesInput.model_validate({"limit": 50})
+
+
+class TestSearchDishesHandler:
+    @pytest.fixture
+    def tool(self):
+        return make_search_dishes_tool(AsyncMock(), embed_query=None)
+
+    async def test_invalid_arg_returns_structured_error(self, tool):
+        result = await tool.handler({"min_value_prop": 99})
+        assert "error" in result
+        assert "details" in result
+        # Caller (agent loop) needs path info to relay back to the model.
+        assert any(
+            "min_value_prop"
+            in (d["loc"][0] if isinstance(d["loc"], (list, tuple)) else d["loc"])
+            for d in result["details"]
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   GetDishDetailInput / AddToWishlistInput — both accept name OR id
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestGetDishDetailInput:
+    def test_dish_id_alone_validates(self):
+        inputs = GetDishDetailInput.model_validate(
+            {"dish_id": "11111111-1111-1111-1111-111111111111"}
+        )
+        assert inputs.dish_id is not None
+        assert inputs.dish_name is None
+
+    def test_dish_name_alone_validates(self):
+        inputs = GetDishDetailInput.model_validate({"dish_name": "el risotto"})
+        assert inputs.dish_name == "el risotto"
+        assert inputs.dish_id is None
+
+    def test_both_empty_validates_at_schema_level(self):
+        # Schema doesn't require either — the handler gates that check
+        # so it can issue the friendly "missing_input" payload instead
+        # of the bare ValidationError. Both nullable here is correct.
+        inputs = GetDishDetailInput.model_validate({})
+        assert inputs.dish_id is None
+        assert inputs.dish_name is None
+
+    def test_extra_property_rejected(self):
+        with pytest.raises(ValidationError):
+            GetDishDetailInput.model_validate({"dish_name": "x", "rogue": "y"})
+
+
+class TestAddToWishlistInput:
+    def test_dish_name_validates(self):
+        inputs = AddToWishlistInput.model_validate({"dish_name": "risotto"})
+        assert inputs.dish_name == "risotto"
+
+    def test_extra_property_rejected(self):
+        with pytest.raises(ValidationError):
+            AddToWishlistInput.model_validate({"dish_id": "x", "rogue": "y"})
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   OpenInMapInput
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestOpenInMapInput:
+    def test_bbox_validates(self):
+        inputs = OpenInMapInput.model_validate(
+            {"bbox": {"south": -35, "west": -59, "north": -34, "east": -58}}
+        )
+        assert isinstance(inputs.bbox, BboxFilter)
+        assert inputs.bbox.south == -35
+
+    def test_center_with_zoom_validates(self):
+        inputs = OpenInMapInput.model_validate(
+            {"center": {"lat": -34.6, "lng": -58.4, "zoom": 14}}
+        )
+        assert isinstance(inputs.center, CenterPoint)
+        assert inputs.center.zoom == 14
+
+    def test_dish_ids_list_validates(self):
+        inputs = OpenInMapInput.model_validate(
+            {"dish_ids": ["11111111-1111-1111-1111-111111111111"]}
+        )
+        assert inputs.dish_ids == ["11111111-1111-1111-1111-111111111111"]
+
+    def test_lat_out_of_range_rejected(self):
+        with pytest.raises(ValidationError):
+            OpenInMapInput.model_validate({"center": {"lat": 999, "lng": 0}})
+
+    def test_zoom_out_of_range_rejected(self):
+        with pytest.raises(ValidationError):
+            OpenInMapInput.model_validate(
+                {"center": {"lat": 0, "lng": 0, "zoom": 25}}
+            )
+
+
+class TestOpenInMapHandler:
+    @pytest.fixture
+    def tool(self):
+        return make_open_in_map_tool()
+
+    async def test_no_input_returns_error(self, tool):
+        result = await tool.handler({})
+        assert "error" in result
+
+    async def test_dish_ids_normalises_payload(self, tool):
+        result = await tool.handler(
+            {"dish_ids": ["11111111-1111-1111-1111-111111111111"]}
+        )
+        assert result["action"] == "open_in_map"
+        assert result["dish_ids"] == ["11111111-1111-1111-1111-111111111111"]
+        assert result["bbox"] is None
+        assert result["center"] is None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   CreateDishRouteInput
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestCreateDishRouteInput:
+    def test_happy_path(self):
+        inputs = CreateDishRouteInput.model_validate(
+            {
+                "name": "Domingo en el Centro",
+                "dish_ids": [
+                    "11111111-1111-1111-1111-111111111111",
+                    "22222222-2222-2222-2222-222222222222",
+                ],
+            }
+        )
+        assert inputs.is_public is True  # default
+        assert len(inputs.dish_ids) == 2
+
+    def test_one_dish_rejected(self):
+        with pytest.raises(ValidationError):
+            CreateDishRouteInput.model_validate(
+                {"name": "Solo", "dish_ids": ["uuid1"]}
+            )
+
+    def test_eleven_dishes_rejected(self):
+        with pytest.raises(ValidationError):
+            CreateDishRouteInput.model_validate(
+                {"name": "Demasiado", "dish_ids": [f"u{i}" for i in range(11)]}
+            )
+
+    def test_short_name_rejected(self):
+        with pytest.raises(ValidationError):
+            CreateDishRouteInput.model_validate(
+                {"name": "x", "dish_ids": ["a", "b"]}
+            )
+
+
+class TestCreateDishRouteHandler:
+    @pytest.fixture
+    def tool_anon(self):
+        return make_create_dish_route_tool(
+            AsyncMock(), user_id=None, conversation_id=None
+        )
+
+    async def test_anon_user_rejected(self, tool_anon):
+        result = await tool_anon.handler(
+            {"name": "Mi ruta", "dish_ids": ["u1", "u2"]}
+        )
+        assert "error" in result
+        assert "log in" in result["error"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   RequestReservationInput
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestRequestReservationInput:
+    def test_happy_path(self):
+        inputs = RequestReservationInput.model_validate(
+            {
+                "restaurant_id": "11111111-1111-1111-1111-111111111111",
+                "party_size": 4,
+                "requested_for": "2026-12-31T21:00:00-03:00",
+            }
+        )
+        assert inputs.party_size == 4
+
+    def test_party_size_zero_rejected(self):
+        with pytest.raises(ValidationError):
+            RequestReservationInput.model_validate(
+                {
+                    "restaurant_id": "x",
+                    "party_size": 0,
+                    "requested_for": "2026-12-31T21:00:00-03:00",
+                }
+            )
+
+    def test_party_size_above_thirty_rejected(self):
+        with pytest.raises(ValidationError):
+            RequestReservationInput.model_validate(
+                {
+                    "restaurant_id": "x",
+                    "party_size": 50,
+                    "requested_for": "2026-12-31T21:00:00-03:00",
+                }
+            )
+
+    def test_message_too_long_rejected(self):
+        with pytest.raises(ValidationError):
+            RequestReservationInput.model_validate(
+                {
+                    "restaurant_id": "x",
+                    "party_size": 2,
+                    "requested_for": "2026-12-31T21:00:00-03:00",
+                    "message": "x" * 700,
+                }
+            )
+
+
+class TestRequestReservationHandler:
+    @pytest.fixture
+    def tool_anon(self):
+        return make_request_reservation_tool(
+            AsyncMock(), user_id=None, conversation_id=None
+        )
+
+    async def test_anon_user_rejected(self, tool_anon):
+        result = await tool_anon.handler(
+            {
+                "restaurant_id": "11111111-1111-1111-1111-111111111111",
+                "party_size": 2,
+                "requested_for": "2026-12-31T21:00:00-03:00",
+            }
+        )
+        assert "error" in result

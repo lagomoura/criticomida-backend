@@ -43,17 +43,37 @@ logger = logging.getLogger("audit_chat_handoffs")
 
 # Phrases that indicate the agent is asking the user for technical
 # data instead of resolving on its own. Lower-case, substring match.
+# Patterns span the three languages the chat surfaces (es/en/pt) and
+# both agent flavors:
+#
+# - Business: owner asking the agent about their restaurant; the
+#   agent fails by asking for a UUID / "exact name".
+# - Sommelier: comensal asking the agent for a recommendation; the
+#   agent fails by asking for technical data ("para poder buscarlo")
+#   instead of calling search_dishes with what it already has.
 _HANDBACK_PATTERNS = [
+    # Spanish — Business and Sommelier alike.
     r"necesito (que me|saber|conocer)",
     r"indicame (el|cuál|qué)",
     r"podrías (decirme|indicarme|darme)",
     r"(el|un|qué) id\b",
     r"(el|un) uuid",
     r"(el )?nombre exacto",
+    # Sommelier-leaning Spanish: the agent asking the comensal for
+    # technical data instead of resolving on its own.
+    r"para poder buscarlo",
+    r"si me pas[aá]s",
+    # English.
     r"i need (the|to know|you to)",
     r"could you (tell|provide|give) me",
     r"please (tell|provide|share)",
     r"what is the (id|uuid)",
+    r"the exact name",
+    # Portuguese.
+    r"preciso (saber|que|de)",
+    r"qual é o (id|uuid|nome)",
+    r"me diga (o|qual)",
+    r"o nome exato",
 ]
 _HANDBACK_RE = re.compile("|".join(_HANDBACK_PATTERNS), re.IGNORECASE)
 

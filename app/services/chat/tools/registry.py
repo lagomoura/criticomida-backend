@@ -33,7 +33,15 @@ from app.services.chat.tools.insights import (
     make_summarize_reviews_period_tool,
     make_update_owner_preferences_tool,
 )
+from app.services.chat.tools.discovery import (
+    make_compare_dishes_tool,
+    make_surprise_me_tool,
+)
 from app.services.chat.tools.map import make_open_in_map_tool
+from app.services.chat.tools.preferences import (
+    make_update_user_chat_preferences_tool,
+)
+from app.services.chat.tools.recommend import make_recommend_dishes_tool
 from app.services.chat.tools.reservations import make_request_reservation_tool
 from app.services.chat.tools.routes import make_create_dish_route_tool
 from app.services.chat.tools.search import (
@@ -68,12 +76,42 @@ def build_registry(
                 restaurant_scope_id=restaurant_scope_id,
             )
         )
-        registry.register(make_get_dish_detail_tool(db))
+        # Detail lookups respect the conversation scope: a verified
+        # owner asking about "el risotto" must not be answered with a
+        # competitor's dish even if the LLM passed an unrelated UUID.
+        registry.register(
+            make_get_dish_detail_tool(
+                db, restaurant_scope_id=restaurant_scope_id
+            )
+        )
 
     if agent == ChatAgent.sommelier:
+        # Curated grid: the agent calls this AFTER reading the rows
+        # from search_dishes to present a hand-picked subset. The
+        # cards visible to the comensal come from this tool, not from
+        # search_dishes (which is data-only — see search.py docstring).
+        # ``user_id`` enables the bookmark-state lookup so each card
+        # ships with ``want_to_try``: the FE's chip paints correctly
+        # on first render instead of resetting to "Quiero probar"
+        # after every refresh.
+        registry.register(make_recommend_dishes_tool(db, user_id=user_id))
+        # Side-by-side comparison grid for 2-4 dishes — emits its own
+        # ComparisonCard distinct from the DishCard list. Used when
+        # the comensal asks "¿cuál es mejor X o Y?".
+        registry.register(make_compare_dishes_tool(db, user_id=user_id))
+        # Serendipity: novelty-aware random pick stable per (user, day).
+        # Data-only too — the agent calls recommend_dishes after to
+        # show the suggestion as a card.
+        registry.register(make_surprise_me_tool(db, user_id=user_id))
         registry.register(make_add_to_wishlist_tool(db, user_id=user_id))
         registry.register(make_open_in_map_tool())
         registry.register(make_update_taste_profile_tool(db, user_id=user_id))
+        # Sommelier persistent prefs (Fase 7): mirror del Business
+        # ``update_owner_preferences``. El comensal puede fijar
+        # idioma + estilo de respuesta para próximas sesiones.
+        registry.register(
+            make_update_user_chat_preferences_tool(db, user_id=user_id)
+        )
         registry.register(
             make_create_dish_route_tool(
                 db,

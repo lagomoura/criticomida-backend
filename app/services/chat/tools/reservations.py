@@ -20,6 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,41 +29,14 @@ from app.models.restaurant import Restaurant
 from app.models.social import Notification
 from app.models.user import User
 from app.services.chat.agent_loop import ToolSpec
+from app.services.chat.tools._schemas import (
+    RequestReservationInput,
+    pydantic_to_anthropic_schema,
+)
 from app.services.email_service import render_reservation_requested, send_email
 
 
 logger = logging.getLogger(__name__)
-
-
-REQUEST_RESERVATION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "restaurant_id": {"type": "string", "format": "uuid"},
-        "party_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 30,
-        },
-        "requested_for": {
-            "type": "string",
-            "description": (
-                "ISO 8601 date-time of when the user wants the table. "
-                "Always include timezone offset; if unsure, use the "
-                "restaurant's local time and -03:00 as a default."
-            ),
-        },
-        "message": {
-            "type": "string",
-            "maxLength": 600,
-            "description": (
-                "Optional note from the user (allergies, occasion). The "
-                "owner sees it verbatim."
-            ),
-        },
-    },
-    "required": ["restaurant_id", "party_size", "requested_for"],
-    "additionalProperties": False,
-}
 
 
 def _format_for_human(dt: datetime) -> str:
@@ -86,8 +60,16 @@ def make_request_reservation_tool(
             }
 
         try:
+            inputs = RequestReservationInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for request_reservation.",
+                "details": exc.errors(include_url=False),
+            }
+
+        try:
             requested_for = datetime.fromisoformat(
-                args["requested_for"].replace("Z", "+00:00")
+                inputs.requested_for.replace("Z", "+00:00")
             )
         except ValueError:
             return {
@@ -105,7 +87,16 @@ def make_request_reservation_tool(
                 "error": "requested_for must be in the future.",
             }
 
-        restaurant_id = uuid.UUID(args["restaurant_id"])
+        try:
+            restaurant_id = uuid.UUID(inputs.restaurant_id)
+        except ValueError:
+            return {
+                "error": (
+                    "restaurant_id must be a UUID. It comes from "
+                    "search_dishes / get_dish_detail — never ask the "
+                    "comensal for it."
+                )
+            }
         rest = (
             await db.execute(
                 select(Restaurant).where(Restaurant.id == restaurant_id)
@@ -137,9 +128,9 @@ def make_request_reservation_tool(
             requester_user_id=user_id,
             restaurant_id=rest.id,
             owner_user_id=owner_id,
-            party_size=int(args["party_size"]),
+            party_size=inputs.party_size,
             requested_for=requested_for,
-            message=args.get("message"),
+            message=inputs.message,
             status=ReservationStatus.pending,
             source_conversation_id=conversation_id,
         )
@@ -209,7 +200,7 @@ def make_request_reservation_tool(
             "partner deeplink so the user can book externally. Requires "
             "an authenticated user."
         ),
-        input_schema=REQUEST_RESERVATION_SCHEMA,
+        input_schema=pydantic_to_anthropic_schema(RequestReservationInput),
         handler=handler,
         emits_card=True,
     )

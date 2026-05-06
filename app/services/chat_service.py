@@ -43,6 +43,9 @@ from app.services.chat.agent_loop import (
     default_b2c_model,
 )
 from app.services.chat.preference_intent import detect_preference_intent
+from app.services.chat.user_preference_intent import (
+    detect_user_preference_intent,
+)
 from app.services.chat.prompts.loader import build_user_block, load_agent_prompt
 from app.services.chat.tools.registry import build_registry
 from app.services.chat_title_service import schedule_generate_title
@@ -51,6 +54,11 @@ from app.services.owner_chat_preferences_service import (
     get_chat_preferences,
     render_preferences_block,
     upsert_chat_preference,
+)
+from app.services.user_chat_preferences_service import (
+    get_user_chat_preferences,
+    render_user_preferences_block,
+    upsert_user_chat_preference,
 )
 from app.services.taste_profile_service import get_taste_profile
 
@@ -263,12 +271,37 @@ async def stream_chat(
                 dict(intent),
             )
 
+    # Same defence layer for the Sommelier (B2C). Catches "siempre
+    # respondé en inglés" / "de ahora en más hablame corto" before
+    # the LLM gets a chance to confirm verbally without persisting.
+    if (
+        conversation.agent == ChatAgent.sommelier
+        and user is not None
+    ):
+        user_intent = detect_user_preference_intent(user_message)
+        if user_intent:
+            saved_user = await upsert_user_chat_preference(
+                db,
+                user_id=user.id,
+                language_preference=user_intent.get("language"),
+                response_style=user_intent.get("response_style"),
+            )
+            prefs_just_persisted = {
+                "language": saved_user.language_preference,
+                "response_style": saved_user.response_style,
+            }
+            logger.info(
+                "user_preference_intent.persisted user=%s intent=%s",
+                user.id,
+                dict(user_intent),
+            )
+
     # ── build context ─────────────────────────────────────────────────────
     profile = (
         await get_taste_profile(db, user.id) if user is not None else None
     )
     system_prompt = load_agent_prompt(conversation.agent)
-    user_block = build_user_block(user, profile)
+    user_block = await build_user_block(db, user, profile)
     if user_block:
         system_prompt = f"{system_prompt}\n\n{user_block}"
 
@@ -288,6 +321,15 @@ async def stream_chat(
         prefs_block = render_preferences_block(prefs)
         if prefs_block:
             system_prompt = f"{system_prompt}\n\n{prefs_block}"
+
+    # Sommelier (B2C): append per-comensal chat preferences (language +
+    # response style) so the agent inherits past sessions' choices.
+    # Same shape as the Business injection; sin fila → bloque omitido.
+    if conversation.agent == ChatAgent.sommelier and user is not None:
+        user_prefs = await get_user_chat_preferences(db, user_id=user.id)
+        user_prefs_block = render_user_preferences_block(user_prefs)
+        if user_prefs_block:
+            system_prompt = f"{system_prompt}\n\n{user_prefs_block}"
 
     # Transient note (this turn only) — keeps the LLM from re-calling
     # ``update_owner_preferences`` after the regex middleware already
