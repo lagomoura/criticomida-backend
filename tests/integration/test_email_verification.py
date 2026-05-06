@@ -32,7 +32,7 @@ async def test_register_marks_user_unverified_and_creates_token(
         json={
             "email": email,
             "password": "longenough",
-            "display_name": "Verify",
+            "handle": f"pytest_{uuid.uuid4().hex[:12]}",
         },
     )
     assert r.status_code == 201
@@ -121,7 +121,7 @@ async def test_resend_invalidates_previous_tokens(async_client_integration):
         json={
             "email": email,
             "password": "longenough",
-            "display_name": "R",
+            "handle": f"pytest_{uuid.uuid4().hex[:12]}",
         },
     )
     assert reg.status_code == 201
@@ -183,7 +183,7 @@ async def test_resend_idempotent_when_already_verified(async_client_integration)
         json={
             "email": email,
             "password": "longenough",
-            "display_name": "D",
+            "handle": f"pytest_{uuid.uuid4().hex[:12]}",
         },
     )
     user_id = reg.json()["id"]

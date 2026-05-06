@@ -70,11 +70,12 @@ async def register_and_login(
     client: httpx.AsyncClient,
     *,
     password: str = "longenough",
-    display_name: str | None = None,
+    handle: str | None = None,
 ) -> RegisteredUser:
     """Register a random user and return an authenticated-cookies bundle.
 
     Each call creates a fresh user — tests using this don't interfere.
+    The username/handle is generated unique by default.
     """
     email = f"pytest_{uuid.uuid4().hex[:10]}@test.com"
     reg = await client.post(
@@ -82,7 +83,7 @@ async def register_and_login(
         json={
             "email": email,
             "password": password,
-            "display_name": display_name or f"User {uuid.uuid4().hex[:6]}",
+            "handle": handle or f"pytest_{uuid.uuid4().hex[:12]}",
         },
     )
     assert reg.status_code == 201, reg.text

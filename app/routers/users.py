@@ -22,6 +22,7 @@ from app.schemas.mention import UserMentionSuggestion
 from app.schemas.user import (
     CategoryStat,
     FeaturedTitle,
+    HandleAvailability,
     MasteryLevel,
     PublicUserResponse,
     PublicViewerState,
@@ -30,6 +31,8 @@ from app.schemas.user import (
     UserReputation,
     UserResponse,
 )
+
+_HANDLE_RE = re.compile(r"^[a-z0-9_]{3,30}$")
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -62,6 +65,29 @@ async def update_my_profile(
 
     await db.refresh(current_user)
     return current_user
+
+
+@router.get("/handle-available", response_model=HandleAvailability)
+async def check_handle_available(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    handle: str = Query(min_length=1, max_length=64),
+) -> HandleAvailability:
+    """Check whether a handle is free to use at signup.
+
+    Public endpoint (no auth) consumed by the register form to give live
+    feedback as the user types. Treats lookups case-insensitively (the
+    column is CITEXT) and returns the canonical lowercase form via the DB.
+    """
+    normalized = handle.strip().lower()
+    if not _HANDLE_RE.match(normalized):
+        return HandleAvailability(available=False, reason="invalid_format")
+
+    result = await db.execute(
+        select(User.id).where(User.handle == normalized)
+    )
+    if result.scalar_one_or_none() is not None:
+        return HandleAvailability(available=False, reason="taken")
+    return HandleAvailability(available=True)
 
 
 _MENTION_PREFIX_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")

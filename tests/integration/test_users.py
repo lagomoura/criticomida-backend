@@ -20,7 +20,7 @@ async def _register_and_login(client) -> tuple[str, dict]:
     payload = {
         "email": email,
         "password": "longenough",
-        "display_name": "Pytest User",
+        "handle": f"pytest_{uuid.uuid4().hex[:12]}",
     }
     reg = await client.post("/api/auth/register", json=payload)
     assert reg.status_code == 201

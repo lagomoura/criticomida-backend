@@ -174,6 +174,8 @@ async def register(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     normalized_email = user_data.email.strip().lower()
+    normalized_handle = user_data.handle.strip().lower()
+
     result = await db.execute(
         select(User).where(User.email == normalized_email)
     )
@@ -183,10 +185,20 @@ async def register(
             detail="Email already registered",
         )
 
+    result = await db.execute(
+        select(User).where(User.handle == normalized_handle)
+    )
+    if result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ese username ya está en uso",
+        )
+
     user = User(
         email=normalized_email,
         password_hash=hash_password(user_data.password),
-        display_name=user_data.display_name,
+        display_name=normalized_handle,
+        handle=normalized_handle,
     )
     db.add(user)
     try:
@@ -194,9 +206,20 @@ async def register(
     except IntegrityError as exc:
         await db.rollback()
         if is_unique_violation(exc):
+            # Race condition: pueden chocar email o handle. El mensaje
+            # constraint_name diferencia, pero como fallback chequeamos
+            # cuál existe ahora en DB.
+            existing_email = await db.execute(
+                select(User.id).where(User.email == normalized_email)
+            )
+            if existing_email.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Email already registered",
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Email already registered",
+                detail="Ese username ya está en uso",
             ) from exc
         raise
     await db.refresh(user)

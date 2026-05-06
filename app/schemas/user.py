@@ -12,7 +12,16 @@ MasteryLevel = Literal["apprentice", "sommelier", "master"]
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=100)
-    display_name: str = Field(min_length=1, max_length=100)
+    handle: str = Field(
+        min_length=3,
+        max_length=30,
+        pattern=r"^[a-zA-Z0-9_]+$",
+    )
+
+
+class HandleAvailability(BaseModel):
+    available: bool
+    reason: Literal["invalid_format", "taken"] | None = None
 
 
 class UserUpdate(BaseModel):
