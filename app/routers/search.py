@@ -1,14 +1,14 @@
 """Unified search across dishes, restaurants, and users.
 
-Backed by ILIKE queries — good enough for the dev corpus. When we introduce
-pg_trgm or Postgres full-text search this router swaps in with the same
-response shape.
+Word-prefix match (case- and accent-insensitive) over the canonical name
+field of each entity, sorted alphabetically.
 """
 
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -29,6 +29,19 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 _PER_TAB_LIMIT = 20
 
 
+def _word_prefix(column, q: str):
+    # Match q at the start of column or right after whitespace, ignoring
+    # case and diacritics on both sides.
+    pattern = r"(^|\s)" + re.escape(q)
+    column_norm = func.unaccent(func.lower(column))
+    pattern_norm = func.unaccent(func.lower(pattern))
+    return column_norm.op("~")(pattern_norm)
+
+
+def _alpha(column):
+    return func.unaccent(func.lower(column)).asc()
+
+
 @router.get("", response_model=SearchResponse)
 async def search_all(
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -38,21 +51,13 @@ async def search_all(
     if not trimmed:
         return SearchResponse(dishes=[], restaurants=[], users=[])
 
-    pattern = f"%{trimmed}%"
-
     # ── Dishes ────────────────────────────────────────────────────────────
     dish_stmt = (
         select(Dish, Restaurant, Category)
         .join(Restaurant, Dish.restaurant_id == Restaurant.id)
         .outerjoin(Category, Restaurant.category_id == Category.id)
-        .where(
-            or_(
-                Dish.name.ilike(pattern),
-                Restaurant.name.ilike(pattern),
-                Category.name.ilike(pattern),
-            )
-        )
-        .order_by(Dish.computed_rating.desc().nullslast(), Dish.review_count.desc())
+        .where(_word_prefix(Dish.name, trimmed))
+        .order_by(_alpha(Dish.name))
         .limit(_PER_TAB_LIMIT)
     )
     dish_rows = (await db.execute(dish_stmt)).all()
@@ -79,13 +84,8 @@ async def search_all(
         select(Restaurant, Category, func.coalesce(dish_count_sq.c.c, 0))
         .outerjoin(Category, Restaurant.category_id == Category.id)
         .outerjoin(dish_count_sq, dish_count_sq.c.restaurant_id == Restaurant.id)
-        .where(
-            or_(
-                Restaurant.name.ilike(pattern),
-                Category.name.ilike(pattern),
-            )
-        )
-        .order_by(Restaurant.computed_rating.desc().nullslast())
+        .where(_word_prefix(Restaurant.name, trimmed))
+        .order_by(_alpha(Restaurant.name))
         .limit(_PER_TAB_LIMIT)
     )
     rest_rows = (await db.execute(rest_stmt)).all()
@@ -108,13 +108,8 @@ async def search_all(
     user_stmt = (
         select(User, func.coalesce(followers_sq.c.c, 0))
         .outerjoin(followers_sq, followers_sq.c.following_id == User.id)
-        .where(
-            or_(
-                User.display_name.ilike(pattern),
-                User.handle.ilike(pattern),
-                User.bio.ilike(pattern),
-            )
-        )
+        .where(User.handle.is_not(None), _word_prefix(User.handle, trimmed))
+        .order_by(_alpha(User.handle))
         .limit(_PER_TAB_LIMIT)
     )
     user_rows = (await db.execute(user_stmt)).all()

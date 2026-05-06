@@ -1,4 +1,9 @@
-"""Integration tests for /api/search."""
+"""Integration tests for /api/search.
+
+The search endpoint matches a word-prefix on a single canonical field per
+entity (Dish.name, Restaurant.name, User.handle), case- and
+accent-insensitive, and returns results sorted alphabetically.
+"""
 
 import os
 import uuid
@@ -17,7 +22,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_search_matches_dish_and_restaurant(
+async def test_search_matches_dish_and_restaurant_by_word_prefix(
     async_client_integration, user_a
 ):
     token = uuid.uuid4().hex[:8]
@@ -31,12 +36,13 @@ async def test_search_matches_dish_and_restaurant(
     r = await async_client_integration.get(f"/api/search?q={token}")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["dishes"]) >= 1
-    assert len(body["restaurants"]) >= 1
+    # token sits at a word boundary in both names → both tabs match.
+    assert any(d["name"].endswith(token) for d in body["dishes"])
+    assert any(rest["name"].endswith(token) for rest in body["restaurants"])
 
 
 @pytest.mark.asyncio
-async def test_search_matches_user_by_handle(
+async def test_search_matches_user_by_handle_prefix(
     async_client_integration, user_a
 ):
     handle = f"pytest{uuid.uuid4().hex[:6]}"
@@ -45,16 +51,70 @@ async def test_search_matches_user_by_handle(
     )
     assert patch.status_code == 200, patch.text
 
+    # Full handle prefix matches.
     r = await async_client_integration.get(f"/api/search?q={handle}")
     assert r.status_code == 200
-    users = r.json()["users"]
-    assert any(u["handle"] == handle for u in users)
+    assert any(u["handle"] == handle for u in r.json()["users"])
+
+    # Just the first few letters of the handle also matches.
+    r2 = await async_client_integration.get(f"/api/search?q={handle[:3]}")
+    assert r2.status_code == 200
+    assert any(u["handle"] == handle for u in r2.json()["users"])
 
 
 @pytest.mark.asyncio
-async def test_search_diacritics_and_case_insensitive(async_client_integration):
-    # The backend uses ILIKE — case-insensitive by default. We don't normalize
-    # diacritics server-side (frontend does for mocks), so exact byte
-    # differences still match. This covers the minimum guarantee.
-    r = await async_client_integration.get("/api/search?q=PIZZA")
+async def test_search_does_not_match_mid_word(
+    async_client_integration, user_a
+):
+    """A substring that lives inside a word (no whitespace before) is rejected."""
+    suffix = uuid.uuid4().hex[:6]
+    embedded = f"zzz{suffix}"
+    dish_name = f"Cosa{embedded}"  # single word, embedded is mid-word
+    await create_review(
+        async_client_integration,
+        user_a.cookies,
+        restaurant_name=f"Resto {suffix}",
+        dish_name=dish_name,
+    )
+    r = await async_client_integration.get(f"/api/search?q={embedded}")
     assert r.status_code == 200
+    assert not any(d["name"] == dish_name for d in r.json()["dishes"])
+
+
+@pytest.mark.asyncio
+async def test_search_is_accent_and_case_insensitive(
+    async_client_integration, user_a
+):
+    suffix = uuid.uuid4().hex[:6]
+    dish_name = f"Año {suffix}"
+    await create_review(
+        async_client_integration,
+        user_a.cookies,
+        restaurant_name=f"Resto {suffix}",
+        dish_name=dish_name,
+    )
+    # ASCII + uppercase still hits the accented dish name.
+    r = await async_client_integration.get("/api/search?q=ANO")
+    assert r.status_code == 200
+    assert any(d["name"] == dish_name for d in r.json()["dishes"])
+
+
+@pytest.mark.asyncio
+async def test_search_dishes_are_alphabetical(
+    async_client_integration, user_a
+):
+    """Dishes sharing the same query prefix come back A→Z."""
+    suffix = uuid.uuid4().hex[:6]
+    prefix = f"alpha{suffix}"
+    # Insert in non-alphabetical order; expect alphabetical response.
+    for word in ("Charlie", "Alpha", "Bravo"):
+        await create_review(
+            async_client_integration,
+            user_a.cookies,
+            restaurant_name=f"R-{word}-{suffix}",
+            dish_name=f"{prefix} {word}",
+        )
+    r = await async_client_integration.get(f"/api/search?q={prefix}")
+    assert r.status_code == 200
+    names = [d["name"] for d in r.json()["dishes"] if d["name"].startswith(prefix)]
+    assert names == sorted(names)
