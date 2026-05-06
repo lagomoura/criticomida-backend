@@ -24,6 +24,7 @@ from app.services.email_service import (
     send_email,
 )
 from app.services.notification_service import (
+    record_mention_notifications,
     record_review_on_owned_restaurant_notification,
 )
 from app.services.price_validation import (
@@ -226,6 +227,22 @@ async def create_review(
                 await send_email(
                     to=owner.email, subject=subject, html=html, text=text
                 )
+
+    skip_for_mention: set[uuid.UUID] = set()
+    if (
+        restaurant is not None
+        and restaurant.claimed_by_user_id is not None
+        and restaurant.claimed_by_user_id != current_user.id
+    ):
+        skip_for_mention.add(restaurant.claimed_by_user_id)
+    await record_mention_notifications(
+        db,
+        actor_id=current_user.id,
+        body=review.note or "",
+        target_kind="post",
+        target_review_id=review.id,
+        skip_recipient_ids=skip_for_mention,
+    )
 
     # Reload with relationships
     loaded = await _load_review_with_relations(db, review.id)

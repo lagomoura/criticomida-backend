@@ -25,6 +25,7 @@ from app.schemas.comment import (
 from app.services.notification_service import (
     record_comment_notification,
     record_comment_reply_notification,
+    record_mention_notifications,
 )
 
 router = APIRouter(tags=["comments"])
@@ -249,6 +250,7 @@ async def create_comment(
         body=body,
     )
     db.add(comment)
+    await db.flush()
 
     await record_comment_notification(
         db,
@@ -256,6 +258,15 @@ async def create_comment(
         review_id=review_id,
         review_owner_id=review.user_id,
         comment_body=comment.body,
+    )
+    await record_mention_notifications(
+        db,
+        actor_id=current_user.id,
+        body=comment.body,
+        target_kind="comment",
+        target_review_id=review_id,
+        target_comment_id=comment.id,
+        skip_recipient_ids={review.user_id},
     )
 
     await db.commit()
@@ -322,6 +333,15 @@ async def create_reply(
         review_id=parent.review_id,
         review_owner_id=review_owner_id,
         comment_body=reply.body,
+    )
+    await record_mention_notifications(
+        db,
+        actor_id=current_user.id,
+        body=reply.body,
+        target_kind="reply",
+        target_review_id=parent.review_id,
+        target_comment_id=reply.id,
+        skip_recipient_ids={parent.user_id, review_owner_id},
     )
 
     await db.commit()

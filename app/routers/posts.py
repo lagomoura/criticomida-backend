@@ -34,6 +34,7 @@ from app.models.user import User
 from app.routers.feed import _build_feed_items
 from app.schemas.feed import FeedItem
 from app.schemas.post_create import PostCreate, RestaurantFromPlace
+from app.services.notification_service import record_mention_notifications
 from app.services.price_validation import (
     evaluate_price_outlier,
     validate_price_paid,
@@ -322,6 +323,16 @@ async def create_post(
 
     await update_dish_rating(db, dish.id)
     await update_restaurant_rating(db, restaurant.id)
+
+    skip = {restaurant.claimed_by_user_id} if restaurant.claimed_by_user_id else set()
+    await record_mention_notifications(
+        db,
+        actor_id=current_user.id,
+        body=review.note or "",
+        target_kind="post",
+        target_review_id=review.id,
+        skip_recipient_ids=skip,
+    )
 
     await db.commit()
 

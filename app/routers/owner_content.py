@@ -34,6 +34,7 @@ from app.schemas.owner_content import (
 )
 from app.services.claim_service import assert_verified_owner
 from app.services.demographics import derive_age_range
+from app.services.notification_service import record_mention_notifications
 
 
 router = APIRouter(tags=["owner-content"])
@@ -102,7 +103,7 @@ async def upsert_owner_response(
 ) -> DishReviewOwnerResponse:
     """Crea o actualiza la respuesta. Idempotente: una sola respuesta por
     review (la PK es review_id)."""
-    _, restaurant_id = await _get_review_with_restaurant(db, review_id)
+    review, restaurant_id = await _get_review_with_restaurant(db, review_id)
     await assert_verified_owner(
         db, user=current_user, restaurant_id=restaurant_id
     )
@@ -115,19 +116,32 @@ async def upsert_owner_response(
         )
     ).scalar_one_or_none()
 
+    is_new = existing is None
+    body = payload.body.strip()
     if existing is None:
         response = DishReviewOwnerResponse(
             review_id=review_id,
             owner_user_id=current_user.id,
-            body=payload.body.strip(),
+            body=body,
         )
         db.add(response)
     else:
-        existing.body = payload.body.strip()
+        existing.body = body
         existing.owner_user_id = current_user.id
         response = existing
 
     await db.flush()
+    if is_new:
+        # Solo en la creación inicial — los edits no re-disparan notifs (mismo
+        # criterio que update_comment / update_review).
+        await record_mention_notifications(
+            db,
+            actor_id=current_user.id,
+            body=body,
+            target_kind="owner_response",
+            target_review_id=review_id,
+            skip_recipient_ids={review.user_id},
+        )
     await db.refresh(response)
     return response
 

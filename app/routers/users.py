@@ -1,4 +1,5 @@
 import math
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -17,6 +18,7 @@ from app.models.follow import Follow
 from app.models.restaurant import Restaurant
 from app.models.user import User
 from app.schemas.feed import FeedPage
+from app.schemas.mention import UserMentionSuggestion
 from app.schemas.user import (
     CategoryStat,
     FeaturedTitle,
@@ -60,6 +62,62 @@ async def update_my_profile(
 
     await db.refresh(current_user)
     return current_user
+
+
+_MENTION_PREFIX_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")
+
+
+@router.get(
+    "/mention-search",
+    response_model=list[UserMentionSuggestion],
+)
+async def mention_search(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    q: str = Query(min_length=1, max_length=30),
+    limit: int = Query(default=8, ge=1, le=20),
+) -> list[UserMentionSuggestion]:
+    """Autocomplete liviano para arrobar usuarios. Prefix-match contra
+    ``handle`` (no contra display_name) — solo aparecen usuarios que ya
+    setearon su handle.
+
+    Excluye al usuario actual (no tiene sentido sugerirle arrobarse a sí
+    mismo) y ordena por seguidores desc, luego created_at desc.
+    """
+    raw = q.strip().lstrip("@")
+    if not raw or not _MENTION_PREFIX_RE.match(raw):
+        return []
+
+    pattern = raw.lower() + "%"
+    followers_sq = (
+        select(Follow.following_id, func.count().label("c"))
+        .group_by(Follow.following_id)
+        .subquery()
+    )
+    stmt = (
+        select(User, func.coalesce(followers_sq.c.c, 0).label("followers"))
+        .outerjoin(followers_sq, followers_sq.c.following_id == User.id)
+        .where(
+            User.handle.is_not(None),
+            User.handle.ilike(pattern),
+            User.id != current_user.id,
+        )
+        .order_by(
+            func.coalesce(followers_sq.c.c, 0).desc(),
+            User.created_at.desc(),
+        )
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        UserMentionSuggestion(
+            id=user.id,
+            display_name=user.display_name,
+            handle=user.handle,  # type: ignore[arg-type]
+            avatar_url=user.avatar_url,
+        )
+        for user, _followers in rows
+    ]
 
 
 @router.get("/{id_or_handle}", response_model=PublicUserResponse)

@@ -9,13 +9,20 @@ Text is denormalized at insert time so the inbox renders without joins.
 
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.dish import Dish, DishReview
 from app.models.social import Notification
+from app.services.mention_service import (
+    extract_handles,
+    resolve_mention_recipients,
+)
+
+
+MentionTargetKind = Literal["comment", "reply", "post", "owner_response"]
 
 
 @dataclass(frozen=True)
@@ -199,6 +206,58 @@ async def record_follow_notification(
             text="empezó a seguirte.",
         )
     )
+
+
+def _mention_text(target_kind: MentionTargetKind, body: str) -> str:
+    """Texto denormalizado para la fila ``notifications.text``."""
+    excerpt = (body[:60] + "…") if len(body) > 60 else body
+    if target_kind == "comment":
+        return f'te mencionó en un comentario: "{excerpt}"'
+    if target_kind == "reply":
+        return f'te mencionó en una respuesta: "{excerpt}"'
+    if target_kind == "post":
+        return "te mencionó en una reseña."
+    if target_kind == "owner_response":
+        return "te mencionó respondiendo a una reseña."
+    # Fallback defensivo — Literal cubre los 4 casos válidos.
+    return "te mencionó."
+
+
+async def record_mention_notifications(
+    db: AsyncSession,
+    *,
+    actor_id: uuid.UUID,
+    body: str,
+    target_kind: MentionTargetKind,
+    target_review_id: uuid.UUID | None = None,
+    target_comment_id: uuid.UUID | None = None,
+    skip_recipient_ids: set[uuid.UUID] | None = None,
+) -> None:
+    """Detecta ``@handle`` en ``body`` y emite una fila ``notifications`` por
+    cada usuario resoluble. El caller controla el commit.
+
+    ``skip_recipient_ids`` evita doble-notificar a usuarios que ya reciben otra
+    notif por el mismo evento (ej. el autor de la review ya recibe ``comment``)."""
+    handles = extract_handles(body)
+    if not handles:
+        return
+    skip = set(skip_recipient_ids or set())
+    skip.add(actor_id)  # auto-mención no notifica
+    recipients = await resolve_mention_recipients(db, handles, exclude=skip)
+    if not recipients:
+        return
+    text = _mention_text(target_kind, body)
+    for user in recipients:
+        db.add(
+            Notification(
+                recipient_user_id=user.id,
+                actor_user_id=actor_id,
+                kind="mention",
+                target_review_id=target_review_id,
+                target_comment_id=target_comment_id,
+                text=text,
+            )
+        )
 
 
 async def record_review_on_owned_restaurant_notification(

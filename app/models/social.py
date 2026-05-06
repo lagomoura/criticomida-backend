@@ -67,7 +67,7 @@ class Notification(Base):
         CheckConstraint(
             "kind IN ('like','comment','follow','claim_approved',"
             "'claim_rejected','claim_revoked','comment_like','comment_reply',"
-            "'reservation_requested')",
+            "'reservation_requested','review_on_owned_restaurant','mention')",
             name="ck_notifications_kind",
         ),
     )

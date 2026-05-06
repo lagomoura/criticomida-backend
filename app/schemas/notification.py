@@ -25,6 +25,7 @@ class NotificationResponse(BaseModel):
         "comment_reply",
         "reservation_requested",
         "review_on_owned_restaurant",
+        "mention",
     ]
     unread: bool
     created_at: datetime
