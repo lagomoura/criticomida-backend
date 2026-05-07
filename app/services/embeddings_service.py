@@ -1,16 +1,28 @@
-"""Embeddings layer backed by Gemini ``text-embedding-004`` (768 dims).
+"""Embeddings layer backed by Gemini ``gemini-embedding-2`` (768 dims).
 
-Two surfaces:
+Three surfaces:
 
-- ``embed_query`` — single short string, used live by the chatbot to
-  rank ``search_dishes`` results when the user passes a free-form vibe.
+- ``embed_query`` — single short text query, used live by the chatbot
+  to rank ``search_dishes`` results when the user passes a free-form
+  vibe.
 - ``embed_documents`` — batched ingestion path used by the worker that
   fills ``dish_embeddings`` and ``dish_review_embeddings`` after a
   review is created/updated, plus the one-shot backfill script.
+- ``embed_image`` — single image input (bytes + mime). Uses the same
+  model: ``gemini-embedding-2`` is **natively multimodal**, so text
+  documents and images map into the **same** 768-dim space. That's
+  what lets the Sommelier compare a comensal-uploaded photo (image
+  vector) against ``dish_embeddings`` (text vectors) by plain cosine
+  distance — no separate "image embedding" table, no re-indexing.
+
+The model is selected via ``settings.EMBEDDINGS_MODEL``. Output is
+truncated to 768 dims with Matryoshka Representation Learning (MRL)
+so the existing ``pgvector(768)`` schema works without migration even
+though the model's native output is 3072.
 
 When ``GEMINI_API_KEY`` is unset (typical in fresh dev), every call
-returns ``None``/empty so callers can degrade to structured-only search
-without crashing.
+returns ``None``/empty so callers can degrade to structured-only
+search without crashing.
 """
 
 from __future__ import annotations
@@ -74,7 +86,7 @@ async def embed_query(text: str) -> list[float] | None:
     if not key or not text.strip():
         return None
 
-    # gemini-embedding-001 is Matryoshka-aware: requesting 768 dims keeps
+    # gemini-embedding-2 is Matryoshka-aware: requesting 768 dims keeps
     # our pgvector schema compatible without a migration.
     url = f"{_GEMINI_BASE}/models/{settings.EMBEDDINGS_MODEL}:embedContent"
     payload: dict[str, Any] = {
@@ -155,6 +167,78 @@ async def embed_documents(texts: list[str]) -> list[list[float] | None]:
                 out.extend([None] * len(chunk))
 
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   Multimodal — image embedding
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Imágenes en base64 son ~33% más grandes que los bytes; una foto de
+# 8 MB sube como ~11 MB. El timeout de queries de texto (20s) puede
+# quedar corto en redes mobile lentas, así que damos headroom.
+_IMAGE_EMBED_TIMEOUT = 30.0
+
+
+async def embed_image(
+    photo_bytes: bytes,
+    mime_type: str = "image/jpeg",
+) -> list[float] | None:
+    """Embed an image into the same 768-dim space as text documents.
+
+    ``gemini-embedding-2`` is natively multimodal, so the resulting
+    vector is directly comparable against ``dish_embeddings`` (which
+    are text-derived) via cosine distance. No separate image-embedding
+    table, no re-indexing of the catalog.
+
+    Returns ``None`` when ``GEMINI_API_KEY`` is missing, the call
+    fails, or the response shape is unexpected — callers should
+    degrade gracefully (the photo tool falls back to text-embed of
+    vision tags, and ultimately to a "vision_unavailable" message).
+
+    ``taskType`` is intentionally NOT passed: the embeddings docs
+    state ``gemini-embedding-2`` does not support that parameter for
+    multimodal inputs (and ignores it for text). Including it here
+    risked future breakage if Google starts validating the field.
+    """
+    key = _api_key()
+    if not key or not photo_bytes:
+        return None
+
+    import base64
+
+    inline_b64 = base64.b64encode(photo_bytes).decode("ascii")
+    url = f"{_GEMINI_BASE}/models/{settings.EMBEDDINGS_MODEL}:embedContent"
+    payload: dict[str, Any] = {
+        "model": f"models/{settings.EMBEDDINGS_MODEL}",
+        "content": {
+            "parts": [
+                {
+                    "inline_data": {
+                        "mime_type": mime_type or "image/jpeg",
+                        "data": inline_b64,
+                    }
+                }
+            ]
+        },
+        "outputDimensionality": EMBEDDING_DIMENSIONS,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_IMAGE_EMBED_TIMEOUT) as client:
+            r = await client.post(url, params={"key": key}, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            vec = data.get("embedding", {}).get("values")
+            if not vec or len(vec) != EMBEDDING_DIMENSIONS:
+                logger.warning(
+                    "embed_image unexpected vector shape: %d dims",
+                    len(vec) if vec else 0,
+                )
+                return None
+            return _normalize_vector(vec)
+    except httpx.HTTPError as exc:
+        logger.warning("Gemini embed_image failed: %s", exc)
+        return None
 
 
 # ──────────────────────────────────────────────────────────────────────────

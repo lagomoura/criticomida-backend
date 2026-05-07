@@ -49,7 +49,10 @@ from app.services.chat.tools.search import (
     make_search_dishes_tool,
 )
 from app.services.chat.tools.taste import make_update_taste_profile_tool
-from app.services.chat.tools.vision import make_suggest_tags_from_photo_tool
+from app.services.chat.tools.vision import (
+    make_identify_dish_from_photo_tool,
+    make_suggest_tags_from_photo_tool,
+)
 from app.services.chat.tools.wishlist import make_add_to_wishlist_tool
 
 
@@ -106,6 +109,15 @@ def build_registry(
         registry.register(make_surprise_me_tool(db, user_id=user_id))
         registry.register(make_add_to_wishlist_tool(db, user_id=user_id))
         registry.register(make_open_in_map_tool())
+        # Multimodal: el comensal manda una foto del plato y el
+        # Sommelier la identifica contra el catálogo (vision +
+        # embeddings). Data-only — el agente encadena
+        # ``recommend_dishes`` con los matches para mostrar cards.
+        registry.register(
+            make_identify_dish_from_photo_tool(
+                db, embed_query=embed_query, user_id=user_id
+            )
+        )
         registry.register(make_update_taste_profile_tool(db, user_id=user_id))
         # Sommelier persistent prefs (Fase 7): mirror del Business
         # ``update_owner_preferences``. El comensal puede fijar

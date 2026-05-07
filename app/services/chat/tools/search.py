@@ -96,6 +96,180 @@ def _serialize_dish(
     }
 
 
+async def execute_dish_search(
+    db: AsyncSession,
+    *,
+    inputs: SearchDishesInput,
+    restaurant_scope_id: str | None = None,
+    user_id: uuid.UUID | None = None,
+    query_vector: list[float] | None = None,
+) -> dict[str, Any]:
+    """Filtered + optional KNN-ranked dish search, shared kernel.
+
+    Extracted from the ``search_dishes`` tool so callers that ALREADY
+    have a query vector skip the text-embedding step and pass their
+    pre-computed vector directly. The motivating consumer is
+    ``identify_dish_from_photo``: it embeds the comensal's photo with
+    ``embed_image`` (Gemini Embedding 2 multimodal — same vector
+    space as ``dish_embeddings``) and feeds the resulting vector
+    here. Plain text consumers like ``search_dishes`` keep their
+    original flow: embed_query → vector → this helper.
+
+    All ``SearchDishesInput`` filters apply as SQL WHERE (AND, never
+    relaxed). When ``query_vector`` is provided, the result set is
+    re-ranked by cosine distance against ``dish_embeddings``;
+    otherwise we fall back to ``computed_rating, review_count``.
+
+    The allergy guard runs unconditionally so unsafe dishes never
+    reach the caller, regardless of which ranking path took them
+    here.
+    """
+    from app.models.dish import DishReview  # local import to avoid cycle
+
+    stmt = (
+        select(Dish)
+        .join(Restaurant, Dish.restaurant_id == Restaurant.id)
+        .options(
+            selectinload(Dish.restaurant).selectinload(Restaurant.category),
+        )
+    )
+
+    conditions: list[Any] = []
+
+    if restaurant_scope_id:
+        conditions.append(Restaurant.id == restaurant_scope_id)
+
+    if inputs.neighborhood:
+        conditions.append(
+            Restaurant.location_name.ilike(f"%{inputs.neighborhood}%")
+        )
+
+    if inputs.city:
+        conditions.append(func.lower(Restaurant.city) == inputs.city.lower())
+
+    if inputs.bbox is not None:
+        bbox = inputs.bbox
+        conditions.append(Restaurant.latitude.is_not(None))
+        conditions.append(Restaurant.longitude.is_not(None))
+        conditions.append(Restaurant.latitude.between(bbox.south, bbox.north))
+        conditions.append(Restaurant.longitude.between(bbox.west, bbox.east))
+
+    if inputs.min_rating is not None:
+        conditions.append(Dish.computed_rating >= inputs.min_rating)
+
+    if inputs.max_price_tier is not None:
+        target = PriceTier(inputs.max_price_tier.value)
+        allowed = [
+            pt for pt, rank in _PRICE_TIER_RANK.items()
+            if rank <= _PRICE_TIER_RANK[target]
+        ]
+        conditions.append(
+            Dish.price_tier.in_(allowed) | Dish.price_tier.is_(None)
+        )
+
+    if inputs.category_slug:
+        stmt = stmt.join(
+            Category, Restaurant.category_id == Category.id, isouter=False
+        )
+        conditions.append(Category.slug == inputs.category_slug)
+
+    # Pillar minima are stored on dish_reviews (one-to-many). We pull
+    # dishes whose *latest* review meets the minimum on each requested
+    # pillar via correlated EXISTS so we don't accidentally fan-out.
+    pillar_filters = (
+        ("min_value_prop", DishReview.value_prop, inputs.min_value_prop),
+        ("min_presentation", DishReview.presentation, inputs.min_presentation),
+        ("min_execution", DishReview.execution, inputs.min_execution),
+    )
+    for _, col, value in pillar_filters:
+        if value is None:
+            continue
+        subq = (
+            select(DishReview.id)
+            .where(DishReview.dish_id == Dish.id)
+            .where(col >= int(value))
+            .limit(1)
+        )
+        conditions.append(subq.exists())
+
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+
+    if query_vector is not None:
+        stmt = (
+            stmt.join(
+                DishEmbedding,
+                DishEmbedding.dish_id == Dish.id,
+                isouter=True,
+            )
+            .order_by(
+                DishEmbedding.embedding.cosine_distance(query_vector).asc().nullslast(),
+                Dish.computed_rating.desc(),
+            )
+            .limit(inputs.limit)
+        )
+    else:
+        stmt = stmt.order_by(
+            Dish.computed_rating.desc(), Dish.review_count.desc()
+        ).limit(inputs.limit)
+
+    result = await db.execute(stmt)
+    dishes = list(result.scalars().unique().all())
+
+    # Allergy guard: drop any unsafe dish BEFORE the agent reads the
+    # rows. The agent treats the search output as ground truth, so
+    # showing it a Malabi-with-nuez when the user is nut-allergic
+    # invites the model to either include it (bad) or self-censor
+    # the entire answer ("no encontré ningún postre que esté libre
+    # de nueces"). Surfacing only safe candidates lets the agent
+    # recommend confidently from a pre-filtered set; we still
+    # surface ``allergy_drops`` so it can frame the answer
+    # ("descarté X y Y por tu restricción de nueces"). The
+    # downstream ``recommend_dishes`` filter stays in place as a
+    # second layer.
+    allergies = await get_user_allergies(db, user_id=user_id)
+    kept_dishes, dropped = filter_dishes_by_allergies(dishes, allergies)
+
+    payload: dict[str, Any] = {
+        "count": len(kept_dishes),
+        "dishes": [_serialize_dish(d) for d in kept_dishes],
+        # ``semantic_used`` reflects whether KNN actually ran: true iff
+        # we had a usable vector. Honest about degraded paths (Gemini
+        # down → no vector → rating-fallback → semantic_used=false).
+        "semantic_used": query_vector is not None,
+    }
+    if dropped:
+        payload["allergy_drops"] = dropped
+        payload["respected_allergies"] = allergies
+        # Explicit instruction for the agent. Production bug: Flash
+        # Lite saw ``allergy_drops`` and self-censored ("no encontré
+        # postres registrados como libres de nueces") even when
+        # ``dishes`` still had safe candidates — it treated the
+        # partial drop as evidence of unsafe data instead of
+        # confirmation that filtering happened.
+        if kept_dishes:
+            payload["safe_subset_note"] = (
+                "Los dishes que aparecen en ``dishes`` YA pasaron "
+                "el filtro de alergias del comensal — son seguros. "
+                "Recomendá normalmente desde este subset llamando "
+                "``recommend_dishes`` con sus dish_ids. NO digas "
+                "'no encontré platos libres de X': eso es falso, "
+                "los que están en la lista lo son. Mencioná los "
+                "drops sólo si suma editorialmente (ej. 'descarté "
+                "el Malabi por las nueces, pero el Kanafeh es "
+                "seguro')."
+            )
+        else:
+            payload["safe_subset_note"] = (
+                "Después de filtrar por las alergias declaradas, "
+                "no quedó NINGÚN plato seguro de los que matchean "
+                "los filtros de búsqueda. Decílo en texto y "
+                "ofrecé buscar en otra cocina/categoría/zona; NO "
+                "llames recommend_dishes con un set vacío."
+            )
+    return payload
+
+
 def make_search_dishes_tool(
     db: AsyncSession,
     *,
@@ -130,163 +304,25 @@ def make_search_dishes_tool(
                 "details": exc.errors(include_url=False),
             }
 
-        stmt = (
-            select(Dish)
-            .join(Restaurant, Dish.restaurant_id == Restaurant.id)
-            .options(
-                selectinload(Dish.restaurant).selectinload(Restaurant.category),
-            )
-        )
-
-        conditions: list[Any] = []
-
-        if restaurant_scope_id:
-            conditions.append(Restaurant.id == restaurant_scope_id)
-
-        if inputs.neighborhood:
-            conditions.append(
-                Restaurant.location_name.ilike(f"%{inputs.neighborhood}%")
-            )
-
-        if inputs.city:
-            conditions.append(func.lower(Restaurant.city) == inputs.city.lower())
-
-        if inputs.bbox is not None:
-            bbox = inputs.bbox
-            conditions.append(Restaurant.latitude.is_not(None))
-            conditions.append(Restaurant.longitude.is_not(None))
-            conditions.append(Restaurant.latitude.between(bbox.south, bbox.north))
-            conditions.append(Restaurant.longitude.between(bbox.west, bbox.east))
-
-        if inputs.min_rating is not None:
-            conditions.append(Dish.computed_rating >= inputs.min_rating)
-
-        if inputs.max_price_tier is not None:
-            target = PriceTier(inputs.max_price_tier.value)
-            allowed = [
-                pt for pt, rank in _PRICE_TIER_RANK.items()
-                if rank <= _PRICE_TIER_RANK[target]
-            ]
-            conditions.append(
-                Dish.price_tier.in_(allowed) | Dish.price_tier.is_(None)
-            )
-
-        if inputs.category_slug:
-            stmt = stmt.join(
-                Category, Restaurant.category_id == Category.id, isouter=False
-            )
-            conditions.append(Category.slug == inputs.category_slug)
-
-        # Pillar minima are stored on dish_reviews (one-to-many). We pull
-        # dishes whose *latest* review meets the minimum on each requested
-        # pillar via correlated EXISTS so we don't accidentally fan-out.
-        from app.models.dish import DishReview  # local import to avoid cycle
-
-        pillar_filters = (
-            ("min_value_prop", DishReview.value_prop, inputs.min_value_prop),
-            ("min_presentation", DishReview.presentation, inputs.min_presentation),
-            ("min_execution", DishReview.execution, inputs.min_execution),
-        )
-        for _, col, value in pillar_filters:
-            if value is None:
-                continue
-            subq = (
-                select(DishReview.id)
-                .where(DishReview.dish_id == Dish.id)
-                .where(col >= int(value))
-                .limit(1)
-            )
-            conditions.append(subq.exists())
-
-        if conditions:
-            stmt = stmt.where(and_(*conditions))
-
-        # Semantic re-ranking (only if we got an embed_query callable AND
-        # the LLM asked for it).
+        # Embed the semantic_query (if any) up front, then delegate
+        # the SQL build + KNN + allergy filter to the shared kernel.
+        # Multimodal callers (identify_dish_from_photo) skip this
+        # block entirely and call execute_dish_search directly with
+        # an image-derived vector.
+        query_vector: list[float] | None = None
         if inputs.semantic_query and embed_query is not None:
             try:
-                vec = await embed_query(inputs.semantic_query)
+                query_vector = await embed_query(inputs.semantic_query)
             except Exception:
-                vec = None
-            if vec is not None:
-                stmt = (
-                    stmt.join(
-                        DishEmbedding,
-                        DishEmbedding.dish_id == Dish.id,
-                        isouter=True,
-                    )
-                    .order_by(
-                        DishEmbedding.embedding.cosine_distance(vec).asc().nullslast(),
-                        Dish.computed_rating.desc(),
-                    )
-                    .limit(inputs.limit)
-                )
-            else:
-                stmt = stmt.order_by(
-                    Dish.computed_rating.desc(), Dish.review_count.desc()
-                ).limit(inputs.limit)
-        else:
-            stmt = stmt.order_by(
-                Dish.computed_rating.desc(), Dish.review_count.desc()
-            ).limit(inputs.limit)
+                query_vector = None
 
-        result = await db.execute(stmt)
-        dishes = list(result.scalars().unique().all())
-
-        # Allergy guard: drop any unsafe dish BEFORE the agent reads
-        # the rows. The agent treats the search output as ground
-        # truth, so showing it a Malabi-with-nuez when the user is
-        # nut-allergic invites the model to either include it (bad)
-        # or self-censor the entire answer ("no encontré ningún
-        # postre que esté libre de nueces"). Surfacing only safe
-        # candidates lets the agent recommend confidently from a
-        # pre-filtered set; we still surface ``allergy_drops`` so it
-        # can frame the answer ("descarté X y Y por tu restricción
-        # de nueces"). The downstream ``recommend_dishes`` filter
-        # stays in place as a second layer.
-        allergies = await get_user_allergies(db, user_id=user_id)
-        kept_dishes, dropped = filter_dishes_by_allergies(
-            dishes, allergies
+        return await execute_dish_search(
+            db,
+            inputs=inputs,
+            restaurant_scope_id=restaurant_scope_id,
+            user_id=user_id,
+            query_vector=query_vector,
         )
-
-        payload: dict[str, Any] = {
-            "count": len(kept_dishes),
-            "dishes": [_serialize_dish(d) for d in kept_dishes],
-            "semantic_used": bool(
-                inputs.semantic_query and embed_query is not None
-            ),
-        }
-        if dropped:
-            payload["allergy_drops"] = dropped
-            payload["respected_allergies"] = allergies
-            # Explicit instruction for the agent. Production bug:
-            # Flash Lite saw ``allergy_drops`` and self-censored
-            # ("no encontré postres registrados como libres de
-            # nueces") even when ``dishes`` still had safe candidates
-            # — it treated the partial drop as evidence of unsafe
-            # data instead of confirmation that filtering happened.
-            # The note below has to spell out the intended reading.
-            if kept_dishes:
-                payload["safe_subset_note"] = (
-                    "Los dishes que aparecen en ``dishes`` YA pasaron "
-                    "el filtro de alergias del comensal — son seguros. "
-                    "Recomendá normalmente desde este subset llamando "
-                    "``recommend_dishes`` con sus dish_ids. NO digas "
-                    "'no encontré platos libres de X': eso es falso, "
-                    "los que están en la lista lo son. Mencioná los "
-                    "drops sólo si suma editorialmente (ej. 'descarté "
-                    "el Malabi por las nueces, pero el Kanafeh es "
-                    "seguro')."
-                )
-            else:
-                payload["safe_subset_note"] = (
-                    "Después de filtrar por las alergias declaradas, "
-                    "no quedó NINGÚN plato seguro de los que matchean "
-                    "los filtros de búsqueda. Decílo en texto y "
-                    "ofrecé buscar en otra cocina/categoría/zona; NO "
-                    "llames recommend_dishes con un set vacío."
-                )
-        return payload
 
     return ToolSpec(
         name="search_dishes",

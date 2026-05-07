@@ -15,6 +15,12 @@ class EntityType(str, enum.Enum):
     restaurant_official_photo = "restaurant_official_photo"
     dish_cover = "dish_cover"
     menu = "menu"
+    # Foto adjunta a un mensaje del chat (ej. el comensal manda una
+    # foto al Sommelier para que identifique el plato). El ``entity_id``
+    # puede ser la conversación cuando ya existe; en el primer turno
+    # es un UUID generado por el cliente — no hay constraint FK porque
+    # el entity_type abarca varios destinos heterogéneos.
+    chat_attachment = "chat_attachment"
 
 
 class Image(Base):
