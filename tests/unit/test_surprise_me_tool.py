@@ -110,7 +110,7 @@ class TestAllergyBlocklist:
     def test_celiac_blocks_italian_burgers(self):
         blocked = _blocked_categories_for(["gluten"])
         assert "italiana" in blocked
-        assert "burguers" in blocked
+        assert "burgers" in blocked
 
     def test_lactose_blocks_helados(self):
         blocked = _blocked_categories_for(["lácteo"])
@@ -160,7 +160,7 @@ class TestHandlerErrors:
 
 class TestHandlerHappyPath:
     async def test_anonymous_returns_a_pick(self):
-        d = _make_dish("Café Turco", category_slug="israelfood", neighborhood="Palermo")
+        d = _make_dish("Café Turco", category_slug="israeli", neighborhood="Palermo")
         db = AsyncMock()
         db.execute = AsyncMock(return_value=_FakeResult([d]))
         tool = make_surprise_me_tool(db, user_id=None)

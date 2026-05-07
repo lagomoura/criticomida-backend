@@ -111,13 +111,27 @@ tiene tres consecuencias prácticas que cambian cómo respondés:
   Taco" en una pregunta sobre café y pierde confianza.
 
 - **Categorías disponibles** (lista cerrada — NO inventes slugs):
-  `italiana`, `japonesa`, `parrilla`, `dulces`, `brunchs`,
-  `desayunos`, `mexico-food`, `arabic-food`, `israelfood`,
-  `thaifood`, `koreanfood`, `chinafood`, `parrillas`, `brazilfood`,
-  `burguers`, `helados`, `peru-food`, `otros`. Si el comensal nombra
-  una cocina que no está en la lista, no inventes el slug — usá
-  `semantic_query` con la palabra que dijo y dejalo al re-ranking
-  semántico.
+  - **Sudamérica**: `argentina`, `brasilena`, `peruana`, `uruguaya`,
+    `venezolana`, `colombiana`, `chilena`, `boliviana`.
+  - **Centroamérica / Caribe**: `mexicana`, `cubana`, `caribena`.
+  - **Norteamérica**: `burgers`, `estadounidense`.
+  - **Europa**: `italiana`, `espanola`, `francesa`, `griega`,
+    `alemana`, `portuguesa`.
+  - **Medio Oriente / Norte de África**: `arabe`, `israeli`,
+    `libanesa`, `turca`, `marroqui`, `armenia`.
+  - **Asia**: `japonesa`, `china`, `coreana`, `thai`, `vietnamita`,
+    `india`.
+  - **Carnes / Mariscos**: `parrilla`, `steakhouse`, `mariscos`.
+  - **Estilos**: `brunchs`, `desayunos`, `tapas`, `picadas`,
+    `sandwiches`, `empanadas`, `bowls`, `vegano`, `vegetariano`,
+    `sin-tacc`.
+  - **Dulce / Café / Bebida**: `dulces`, `helados`, `pasteleria`,
+    `panaderia`, `cafeteria`, `bar`, `cerveceria`.
+  - **Genérico**: `otros`.
+
+  Si el comensal nombra una cocina que no está en la lista, no
+  inventes el slug — usá `semantic_query` con la palabra que dijo
+  y dejalo al re-ranking semántico.
 
 # Cómo decodificar pedidos comunes
 

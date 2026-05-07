@@ -45,6 +45,7 @@ async def list_categories(
             "description": cat.description,
             "image_url": cat.image_url,
             "display_order": cat.display_order,
+            "parent_id": cat.parent_id,
             "review_count": count,
         }
         for cat, count in rows
@@ -77,6 +78,7 @@ async def get_category(
         "description": category.description,
         "image_url": category.image_url,
         "display_order": category.display_order,
+        "parent_id": category.parent_id,
         "restaurant_count": restaurant_count,
     }
 

@@ -35,76 +35,76 @@ RULES: list[tuple[list[str], str]] = [
     (["helado"],                "helados"),
 
     # ── Parrilla ─────────────────────────────────────────────────────────────
-    (["parrilla"],              "parrillas"),
-    (["grill"],                 "parrillas"),
-    (["estancia"],              "parrillas"),
-    (["rancho"],                "parrillas"),
-    (["la rural"],              "parrillas"),
-    (["la campiña"],            "parrillas"),
-    (["patio de los lecheros"], "parrillas"),
+    (["parrilla"],              "parrilla"),
+    (["grill"],                 "parrilla"),
+    (["estancia"],              "parrilla"),
+    (["rancho"],                "parrilla"),
+    (["la rural"],              "parrilla"),
+    (["la campiña"],            "parrilla"),
+    (["patio de los lecheros"], "parrilla"),
 
     # ── Hamburguesas ─────────────────────────────────────────────────────────
-    (["burger"],                "burguers"),
-    (["burguer"],               "burguers"),
-    (["mcdonald"],              "burguers"),
-    (["mostaza"],               "burguers"),
+    (["burger"],                "burgers"),
+    (["burguer"],               "burgers"),
+    (["mcdonald"],              "burgers"),
+    (["mostaza"],               "burgers"),
 
     # ── Japonesa ─────────────────────────────────────────────────────────────
-    (["ramen"],                 "japan-food"),
-    (["sushi"],                 "japan-food"),
-    (["poke"],                  "japan-food"),
-    (["bao kitchen"],           "japan-food"),
+    (["ramen"],                 "japonesa"),
+    (["sushi"],                 "japonesa"),
+    (["poke"],                  "japonesa"),
+    (["bao kitchen"],           "japonesa"),
 
     # ── China ────────────────────────────────────────────────────────────────
-    (["dumpling"],              "chinafood"),
-    (["koi"],                   "chinafood"),
-    (["rong cheng"],            "chinafood"),
-    (["gāo"],                   "chinafood"),
-    (["cang tin"],              "chinafood"),
+    (["dumpling"],              "china"),
+    (["koi"],                   "china"),
+    (["rong cheng"],            "china"),
+    (["gāo"],                   "china"),
+    (["cang tin"],              "china"),
 
     # ── Tailandesa ───────────────────────────────────────────────────────────
-    (["thai"],                  "thaifood"),
-    (["khaosan"],               "thaifood"),
+    (["thai"],                  "thai"),
+    (["khaosan"],               "thai"),
 
     # ── Coreana ──────────────────────────────────────────────────────────────
-    (["bbq"],                   "koreanfood"),
-    (["mocozi"],                "koreanfood"),
-    (["k-bbq"],                 "koreanfood"),
+    (["bbq"],                   "coreana"),
+    (["mocozi"],                "coreana"),
+    (["k-bbq"],                 "coreana"),
 
     # ── Mexicana ─────────────────────────────────────────────────────────────
-    (["taco"],                  "mexico-food"),
-    (["mexican"],               "mexico-food"),
-    (["mexicana"],              "mexico-food"),
-    (["chichilo"],              "mexico-food"),
+    (["taco"],                  "mexicana"),
+    (["mexican"],               "mexicana"),
+    (["mexicana"],              "mexicana"),
+    (["chichilo"],              "mexicana"),
 
     # ── Israelí ──────────────────────────────────────────────────────────────
-    (["israeli"],               "israelfood"),
-    (["israel"],                "israelfood"),
-    (["eretz"],                 "israelfood"),
+    (["israeli"],               "israeli"),
+    (["israel"],                "israeli"),
+    (["eretz"],                 "israeli"),
 
     # ── Árabe ────────────────────────────────────────────────────────────────
-    (["shawarma"],              "arabic-food"),
-    (["kebab"],                 "arabic-food"),
-    (["shami"],                 "arabic-food"),
+    (["shawarma"],              "arabe"),
+    (["kebab"],                 "arabe"),
+    (["shami"],                 "arabe"),
 
     # ── Dulces / Pastelería ───────────────────────────────────────────────────
-    (["panadería"],             "dulces"),
-    (["obrador"],               "dulces"),
-    (["tartas"],                "dulces"),
-    (["tarta"],                 "dulces"),
+    (["panadería"],             "panaderia"),
+    (["obrador"],               "pasteleria"),
+    (["tartas"],                "pasteleria"),
+    (["tarta"],                 "pasteleria"),
     (["delicias"],              "dulces"),
-    (["pastel"],                "dulces"),
-    (["repostería"],            "dulces"),
+    (["pastel"],                "pasteleria"),
+    (["repostería"],            "pasteleria"),
 
-    # ── Desayunos / Brunch ────────────────────────────────────────────────────
-    (["starbucks"],             "desayunos"),
+    # ── Desayunos / Brunch / Café ─────────────────────────────────────────────
+    (["starbucks"],             "cafeteria"),
     (["nucha"],                 "desayunos"),
-    (["panera"],                "desayunos"),
-    (["coffee"],                "desayunos"),
-    (["café"],                  "desayunos"),
-    (["cafe"],                  "desayunos"),
+    (["panera"],                "panaderia"),
+    (["coffee"],                "cafeteria"),
+    (["café"],                  "cafeteria"),
+    (["cafe"],                  "cafeteria"),
     (["brunch"],                "brunchs"),
-    (["1870 beer"],             "brunchs"),
+    (["1870 beer"],             "cerveceria"),
 ]
 
 

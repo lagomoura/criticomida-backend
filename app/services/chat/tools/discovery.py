@@ -58,7 +58,7 @@ from app.services.taste_profile_service import get_taste_profile
 
 # Conservative mapping: when in doubt we EXCLUDE the category. A
 # "pizza sin gluten" exists, but the conservative choice for a
-# celíaco's surprise pick is to skip the whole italiana / burguers
+# celíaco's surprise pick is to skip the whole italiana / burgers
 # bucket rather than recommend a dish whose default is gluten-heavy.
 # False positives ("we missed offering you the gluten-free pizza")
 # are recoverable; false negatives ("we recommended you a pizza
@@ -67,34 +67,46 @@ _ALLERGY_CATEGORY_BLOCKLIST: dict[str, set[str]] = {
     # Wheat / gluten-containing.
     "gluten": {
         "italiana",
-        "burguers",
-        "mexico-food",
-        "thaifood",
-        "chinafood",
+        "pasteleria",
+        "panaderia",
+        "burgers",
+        "sandwiches",
+        "empanadas",
+        "mexicana",
+        "thai",
+        "china",
         "brunchs",
     },
     "trigo": {
         "italiana",
-        "burguers",
-        "mexico-food",
-        "thaifood",
-        "chinafood",
+        "pasteleria",
+        "panaderia",
+        "burgers",
+        "sandwiches",
+        "empanadas",
+        "mexicana",
+        "thai",
+        "china",
     },
     "wheat": {
         "italiana",
-        "burguers",
-        "mexico-food",
-        "thaifood",
-        "chinafood",
+        "pasteleria",
+        "panaderia",
+        "burgers",
+        "sandwiches",
+        "empanadas",
+        "mexicana",
+        "thai",
+        "china",
     },
-    # Dairy. Helados/dulces are dessert-leaning; conservatively skip.
-    "lácteo": {"helados", "dulces"},
-    "lacteo": {"helados", "dulces"},
-    "lácteos": {"helados", "dulces"},
-    "lactose": {"helados", "dulces"},
-    "leche": {"helados", "dulces"},
-    "dairy": {"helados", "dulces"},
-    "milk": {"helados", "dulces"},
+    # Dairy. Dessert-leaning categories conservatively skipped.
+    "lácteo": {"helados", "dulces", "pasteleria"},
+    "lacteo": {"helados", "dulces", "pasteleria"},
+    "lácteos": {"helados", "dulces", "pasteleria"},
+    "lactose": {"helados", "dulces", "pasteleria"},
+    "leche": {"helados", "dulces", "pasteleria"},
+    "dairy": {"helados", "dulces", "pasteleria"},
+    "milk": {"helados", "dulces", "pasteleria"},
 }
 
 

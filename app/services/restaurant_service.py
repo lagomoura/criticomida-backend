@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import Float, case, cast, desc, func, select, text
+from sqlalchemy import Float, case, cast, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,13 +29,29 @@ async def get_restaurant_list(
     search: str | None = None,
     min_rating: Decimal | None = None,
     max_rating: Decimal | None = None,
+    uncategorized: bool = False,
     page: int = 1,
     per_page: int = 20,
 ) -> tuple[list[Restaurant], int]:
-    """Return paginated list of restaurants with filters applied."""
+    """Return paginated list of restaurants with filters applied.
+
+    `uncategorized=True` returns restaurantes con `category_id IS NULL` o
+    asignados a la categoría `otros` — el conjunto al que apunta la página
+    `/admin/restaurantes-sin-categoria` para re-clasificar manualmente.
+    """
     stmt = select(Restaurant).options(selectinload(Restaurant.category))
 
-    if category_slug:
+    if uncategorized:
+        otros_subq = (
+            select(Category.id).where(Category.slug == "otros").scalar_subquery()
+        )
+        stmt = stmt.where(
+            or_(
+                Restaurant.category_id.is_(None),
+                Restaurant.category_id == otros_subq,
+            )
+        )
+    elif category_slug:
         stmt = stmt.join(Category).where(Category.slug == category_slug)
 
     if search:

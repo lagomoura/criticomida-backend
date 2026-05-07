@@ -36,21 +36,67 @@ from app.services.claim_service import (
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 SEED_CATEGORIES = [
-    {"slug": "dulces", "name": "Dulces", "display_order": 1},
-    {"slug": "brunchs", "name": "Brunchs", "display_order": 2},
-    {"slug": "desayunos", "name": "Desayunos", "display_order": 3},
-    {"slug": "mexico-food", "name": "Mexicana", "display_order": 4},
-    {"slug": "japan-food", "name": "Japonesa", "display_order": 5},
-    {"slug": "arabic-food", "name": "Árabe", "display_order": 6},
-    {"slug": "israelfood", "name": "Israelí", "display_order": 7},
-    {"slug": "thaifood", "name": "Tailandesa", "display_order": 8},
-    {"slug": "koreanfood", "name": "Coreana", "display_order": 9},
-    {"slug": "chinafood", "name": "China", "display_order": 10},
-    {"slug": "parrillas", "name": "Parrilla", "display_order": 11},
-    {"slug": "brazilfood", "name": "Brasileña", "display_order": 12},
-    {"slug": "burguers", "name": "Hamburguesas", "display_order": 13},
-    {"slug": "helados", "name": "Helados", "display_order": 14},
-    {"slug": "peru-food", "name": "Peruana", "display_order": 15},
+    # Sudamérica
+    {"slug": "argentina",      "name": "Argentina",      "display_order": 100},
+    {"slug": "brasilena",      "name": "Brasileña",      "display_order": 102},
+    {"slug": "peruana",        "name": "Peruana",        "display_order": 103},
+    {"slug": "uruguaya",       "name": "Uruguaya",       "display_order": 104},
+    {"slug": "venezolana",     "name": "Venezolana",     "display_order": 105},
+    {"slug": "colombiana",     "name": "Colombiana",     "display_order": 106},
+    {"slug": "chilena",        "name": "Chilena",        "display_order": 107},
+    {"slug": "boliviana",      "name": "Boliviana",      "display_order": 108},
+    # Centroamérica / Caribe
+    {"slug": "mexicana",       "name": "Mexicana",       "display_order": 120},
+    {"slug": "cubana",         "name": "Cubana",         "display_order": 121},
+    {"slug": "caribena",       "name": "Caribeña",       "display_order": 122},
+    # Norteamérica
+    {"slug": "burgers",        "name": "Hamburguesas",   "display_order": 140},
+    {"slug": "estadounidense", "name": "Estadounidense", "display_order": 141},
+    # Europa
+    {"slug": "italiana",       "name": "Italiana",       "display_order": 150},
+    {"slug": "espanola",       "name": "Española",       "display_order": 151},
+    {"slug": "francesa",       "name": "Francesa",       "display_order": 152},
+    {"slug": "griega",         "name": "Griega",         "display_order": 153},
+    {"slug": "alemana",        "name": "Alemana",        "display_order": 154},
+    {"slug": "portuguesa",     "name": "Portuguesa",     "display_order": 155},
+    # Medio Oriente / Norte de África
+    {"slug": "arabe",          "name": "Árabe",          "display_order": 180},
+    {"slug": "israeli",        "name": "Israelí",        "display_order": 181},
+    {"slug": "libanesa",       "name": "Libanesa",       "display_order": 182},
+    {"slug": "turca",          "name": "Turca",          "display_order": 183},
+    {"slug": "marroqui",       "name": "Marroquí",       "display_order": 184},
+    {"slug": "armenia",        "name": "Armenia",        "display_order": 185},
+    # Asia
+    {"slug": "japonesa",       "name": "Japonesa",       "display_order": 200},
+    {"slug": "china",          "name": "China",          "display_order": 201},
+    {"slug": "coreana",        "name": "Coreana",        "display_order": 202},
+    {"slug": "thai",           "name": "Tailandesa",     "display_order": 203},
+    {"slug": "vietnamita",     "name": "Vietnamita",     "display_order": 204},
+    {"slug": "india",          "name": "India",          "display_order": 205},
+    # Carnes
+    {"slug": "parrilla",       "name": "Parrilla",       "display_order": 230},
+    {"slug": "steakhouse",     "name": "Steakhouse",     "display_order": 231},
+    # Mariscos
+    {"slug": "mariscos",       "name": "Mariscos",       "display_order": 240},
+    # Estilos
+    {"slug": "brunchs",        "name": "Brunchs",        "display_order": 300},
+    {"slug": "desayunos",      "name": "Desayunos",      "display_order": 301},
+    {"slug": "tapas",          "name": "Tapas",          "display_order": 302},
+    {"slug": "picadas",        "name": "Picadas",        "display_order": 303},
+    {"slug": "sandwiches",     "name": "Sándwiches",     "display_order": 304},
+    {"slug": "empanadas",      "name": "Empanadas",      "display_order": 305},
+    {"slug": "bowls",          "name": "Bowls",          "display_order": 306},
+    {"slug": "vegano",         "name": "Vegano",         "display_order": 307},
+    {"slug": "vegetariano",    "name": "Vegetariano",    "display_order": 308},
+    {"slug": "sin-tacc",       "name": "Sin TACC",       "display_order": 309},
+    # Dulce / Café / Bebida
+    {"slug": "dulces",         "name": "Dulces",         "display_order": 330},
+    {"slug": "helados",        "name": "Helados",        "display_order": 331},
+    {"slug": "pasteleria",     "name": "Pastelería",     "display_order": 332},
+    {"slug": "panaderia",      "name": "Panadería",      "display_order": 333},
+    {"slug": "cafeteria",      "name": "Cafetería",      "display_order": 334},
+    {"slug": "bar",            "name": "Bar",            "display_order": 335},
+    {"slug": "cerveceria",     "name": "Cervecería",     "display_order": 336},
 ]
 
 

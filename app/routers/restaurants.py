@@ -73,6 +73,7 @@ async def list_restaurants(
     search: str | None = None,
     min_rating: Decimal | None = None,
     max_rating: Decimal | None = None,
+    uncategorized: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
 ) -> dict:
@@ -82,6 +83,7 @@ async def list_restaurants(
         search=search,
         min_rating=min_rating,
         max_rating=max_rating,
+        uncategorized=uncategorized,
         page=page,
         per_page=per_page,
     )

@@ -7,6 +7,7 @@ class CategoryCreate(BaseModel):
     description: str | None = Field(None, max_length=500)
     image_url: str | None = None
     display_order: int = 0
+    parent_id: int | None = None
 
 
 class CategoryUpdate(BaseModel):
@@ -15,6 +16,7 @@ class CategoryUpdate(BaseModel):
     description: str | None = Field(None, max_length=500)
     image_url: str | None = None
     display_order: int | None = None
+    parent_id: int | None = None
 
 
 class CategoryResponse(BaseModel):
@@ -24,6 +26,7 @@ class CategoryResponse(BaseModel):
     description: str | None
     image_url: str | None
     display_order: int
+    parent_id: int | None = None
     review_count: int = 0
 
     model_config = {"from_attributes": True}
