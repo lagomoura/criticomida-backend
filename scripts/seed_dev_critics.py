@@ -11,7 +11,7 @@ Strategy
 - Variedad de pilares garantizada por crítico: al menos uno con
   `execution=3`, uno con `value_prop=3`, uno con `presentation=3` y uno sin
   pilares completos (texto legacy de la notificación).
-- `admin@criticomida.com` (o el `--follower-email` que pases) sigue a los 5
+- `gustavoandroid1802@gmail.com` (o el `--follower-email` que pases) sigue a los 5
   críticos para que su tab "Siguiendo" tenga material.
 - Recalcula `dishes.computed_rating` y `dishes.review_count` al final.
 
@@ -277,7 +277,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(
         "--follower-email",
-        default="admin@criticomida.com",
+        default="gustavoandroid1802@gmail.com",
         help="Email del usuario que sigue a los 5 críticos.",
     )
     args = ap.parse_args()

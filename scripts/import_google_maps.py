@@ -8,7 +8,7 @@ Usage (from backend/ directory):
     # Dry-run (default):
     python scripts/import_google_maps.py \\
         --input "../google_maps_data/Takeout/Maps (Seus lugares)/Comentários.json" \\
-        --user-email admin@criticomida.com \\
+        --user-email gustavoandroid1802@gmail.com \\
         --db-url "postgresql+asyncpg://user:pass@localhost:5433/criticomida"
 
     # Commit to DB:

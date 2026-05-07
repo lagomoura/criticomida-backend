@@ -6,7 +6,7 @@ are provided. Run from backend/:
 
     # Dry-run (default):
     python scripts/import_dishes.py \\
-        --user-email admin@criticomida.com \\
+        --user-email gustavoandroid1802@gmail.com \\
         --db-url "postgresql+asyncpg://user:pass@localhost:5433/criticomida"
 
     # Commit:

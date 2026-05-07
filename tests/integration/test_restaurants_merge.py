@@ -21,7 +21,7 @@ async def _admin_user_id() -> str:
     async with engine.connect() as conn:
         result = await conn.execute(
             text("SELECT id FROM users WHERE email = :e"),
-            {"e": "admin@criticomida.com"},
+            {"e": "gustavoandroid1802@gmail.com"},
         )
         return str(result.scalar_one())
 
