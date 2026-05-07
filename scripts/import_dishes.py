@@ -1,5 +1,5 @@
 """
-Import dishes from dish_mapping.yaml into CritiComida database.
+Import dishes from dish_mapping.yaml into Palato database.
 
 Creates a Dish for each entry, and optionally a DishReview if rating/note
 are provided. Run from backend/:

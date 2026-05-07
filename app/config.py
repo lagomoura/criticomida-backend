@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # send_email() loguea un dry-run y no falla — para que dev/staging
     # corran sin necesidad de una cuenta del proveedor.
     RESEND_API_KEY: str | None = None
-    EMAIL_FROM: str = "CritiComida <noreply@palato.me>"
+    EMAIL_FROM: str = "Palato <noreply@palato.me>"
     # URL base usada para construir links absolutos en los emails (verify
     # token, panel del owner). En prod se setea desde la env de Vercel.
     PUBLIC_APP_URL: str = "http://localhost:3000"

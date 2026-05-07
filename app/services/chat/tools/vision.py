@@ -346,7 +346,7 @@ def make_identify_dish_from_photo_tool(
     return ToolSpec(
         name="identify_dish_from_photo",
         description=(
-            "Identify a dish in a photo against the CritiComida catalog. "
+            "Identify a dish in a photo against the Palato catalog. "
             "Call this the moment a user message arrives with a "
             "[foto: <url>] prefix — that prefix is the FE convention for "
             "an attached image. Internally: (1) Gemini 2.5 Flash extracts "

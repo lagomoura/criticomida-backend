@@ -9,7 +9,7 @@ Gemini to return:
   recognizes on the plate.
 - ``plating_style`` — one of ``minimalist``, ``family-style``,
   ``deconstructed``, ``rustic``, ``classic``.
-- ``editorial_blurb`` — 1-2 sentences in CritiComida's editorial tone.
+- ``editorial_blurb`` — 1-2 sentences in Palato's editorial tone.
 - ``suggested_pros`` / ``suggested_cons`` — short bullets the
   reviewer can accept verbatim or edit.
 
@@ -51,7 +51,7 @@ _PLATING_STYLES = {
 }
 
 
-_SYSTEM_INSTRUCTION = """Sos el Ghostwriter de CritiComida. Mirás fotos de platos y proponés etiquetas + texto editorial corto, en español rioplatense, tono cálido y específico (sin clichés tipo "delicioso").
+_SYSTEM_INSTRUCTION = """Sos el Ghostwriter de Palato. Mirás fotos de platos y proponés etiquetas + texto editorial corto, en español rioplatense, tono cálido y específico (sin clichés tipo "delicioso").
 
 Devolvé SIEMPRE un JSON válido con esta forma exacta:
 

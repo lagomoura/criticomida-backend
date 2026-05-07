@@ -1,4 +1,4 @@
-"""Eval runner for the CritiComida chat agents.
+"""Eval runner for the Palato chat agents.
 
 Each eval case is a YAML record with:
 

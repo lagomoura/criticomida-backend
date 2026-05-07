@@ -290,7 +290,7 @@ async def _resolve_dish_global(
         "query": needle,
         "message": (
             f"No encontré ningún plato cuyo nombre contenga '{needle}' "
-            "en el catálogo de CritiComida. Llamá `search_dishes` con "
+            "en el catálogo de Palato. Llamá `search_dishes` con "
             f"`semantic_query='{needle}'` para que el motor busque por "
             "similitud semántica (puede que el plato exista bajo otro "
             f"nombre), o decile {actor_dat} que no aparece en la base "

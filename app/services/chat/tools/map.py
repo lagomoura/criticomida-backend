@@ -57,7 +57,7 @@ def make_open_in_map_tool() -> ToolSpec:
     return ToolSpec(
         name="open_in_map",
         description=(
-            "Open the CritiComida discovery map. Use a bbox for an area "
+            "Open the Palato discovery map. Use a bbox for an area "
             "('Palermo'), a center for a point of interest, or a list of "
             "dish_ids to drop pins on specific dishes you just suggested. "
             "Pure UI tool — no DB writes — the FE handles the navigation."

@@ -327,7 +327,7 @@ def make_search_dishes_tool(
     return ToolSpec(
         name="search_dishes",
         description=(
-            "Search the CritiComida catalog of dishes. Combine structured "
+            "Search the Palato catalog of dishes. Combine structured "
             "filters (neighborhood, pillar minima, bbox, category, price "
             "tier) with an optional semantic_query for vibe-based ranking. "
             "Hard filters are AND and never relaxed. **Data-only**: the "

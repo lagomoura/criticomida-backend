@@ -116,7 +116,7 @@ def make_request_reservation_tool(
                 "reservation_provider": rest.reservation_provider,
                 "message": (
                     "Este restaurante no tiene equipo verificado en "
-                    "CritiComida. Te paso el link directo del partner."
+                    "Palato. Te paso el link directo del partner."
                     if rest.reservation_url
                     else "No hay canal de reserva activo todavía."
                 ),
@@ -195,7 +195,7 @@ def make_request_reservation_tool(
         name="request_reservation",
         description=(
             "Request a table at a restaurant. When the restaurant has a "
-            "verified owner on CritiComida, the request is delivered to "
+            "verified owner on Palato, the request is delivered to "
             "their dashboard and email; otherwise the tool returns the "
             "partner deeplink so the user can book externally. Requires "
             "an authenticated user."

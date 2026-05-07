@@ -1,4 +1,4 @@
-"""Analytics tools for the CritiComida Business agent (Phase 3).
+"""Analytics tools for the Palato Business agent (Phase 3).
 
 All tools are scoped to the verified owner's restaurant. The
 ``restaurant_scope_id`` set on the conversation is enforced both here

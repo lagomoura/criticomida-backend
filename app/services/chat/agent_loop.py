@@ -1,4 +1,4 @@
-"""Agentic tool-use loop for the CritiComida chatbot.
+"""Agentic tool-use loop for the Palato chatbot.
 
 This is the core orchestrator. It deliberately avoids LangChain/LangGraph
 because the surface needed (single-shot tool loop with cap, streaming

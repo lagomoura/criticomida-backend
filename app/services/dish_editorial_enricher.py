@@ -39,7 +39,7 @@ EDITORIAL_PROMPT_VERSION = "v2"
 
 
 SYSTEM_PROMPT = (
-    "Eres un editor gastronómico para CritiComida. Te dan el nombre de un "
+    "Eres un editor gastronómico para Palato. Te dan el nombre de un "
     "plato y la cocina a la que pertenece. Devolvé un JSON con dos campos:\n"
     '  "origin": etiqueta corta (máx. 5 palabras) que ubique al plato en su '
     "tradición. Ejemplos: \"Cocina napolitana\", \"Sushi · Edo, Japón\", "

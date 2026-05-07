@@ -76,7 +76,7 @@ def create_app(
         lifespan if lifespan is not None else production_lifespan
     )
     application = FastAPI(
-        title="CritiComida API",
+        title="Palato API",
         description=(
             "Food review platform where users review individual dishes"
         ),

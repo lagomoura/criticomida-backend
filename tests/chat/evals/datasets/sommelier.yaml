@@ -598,7 +598,7 @@
 - id: no_made_up_chain_es
   locale: es
   description: McDonald's, Burger King, Subway — cadenas que no son
-    parte del catálogo de CritiComida.
+    parte del catálogo de Palato.
   user_input: "Algo rápido y económico."
   expected:
     tools_called:

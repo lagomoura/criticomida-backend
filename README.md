@@ -1,4 +1,4 @@
-# CritiComida — Backend
+# Palato — Backend
 
 FastAPI + Postgres. Submódulo del monorepo del frontend (`criticomida_production`).
 

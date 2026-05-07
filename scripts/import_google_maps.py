@@ -1,5 +1,5 @@
 """
-Import Google Maps Takeout reviews into CritiComida database.
+Import Google Maps Takeout reviews into Palato database.
 
 Filters to gastronomic places only and auto-assigns categories,
 creating new ones when no existing category matches.
@@ -273,7 +273,7 @@ async def import_reviews(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Import Google Maps Takeout reviews into CritiComida"
+        description="Import Google Maps Takeout reviews into Palato"
     )
     parser.add_argument(
         "--input",

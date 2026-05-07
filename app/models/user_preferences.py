@@ -8,7 +8,7 @@ comensal asks for something persistent ("siempre respondé en inglés",
 or via the form on ``/me/preferencias``.
 
 Sin fila → defaults from the prompt: the agent adapts language to
-the input and uses the "editorial" voice CritiComida default.
+the input and uses the "editorial" voice Palato default.
 """
 
 import uuid
