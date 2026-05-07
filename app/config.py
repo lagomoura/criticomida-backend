@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     )
     JWT_SECRET: str = _PLACEHOLDER_SECRET
     JWT_ALGORITHM: str = "HS256"
-    JWT_ISSUER: str = "criticomida-api"
-    JWT_AUDIENCE: str = "criticomida-clients"
+    JWT_ISSUER: str = "palato-api"
+    JWT_AUDIENCE: str = "palato-clients"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     CORS_ORIGINS: str = "http://localhost:3000"
