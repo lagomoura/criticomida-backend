@@ -49,6 +49,7 @@ class FeedExtras(BaseModel):
     tags: list[str] = []
     date_tasted: date | None = None
     time_tasted: time | None = None
+    meal_period: Literal["breakfast", "lunch", "snack", "dinner"] | None = None
     visited_with: str | None = None
     is_anonymous: bool | None = None
     price_tier: Literal["$", "$$", "$$$"] | None = None

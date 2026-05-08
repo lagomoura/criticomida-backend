@@ -26,6 +26,7 @@ from app.models.dish import (
     DishReviewProsCons,
     DishReviewProsConsType,
     DishReviewTag,
+    MealPeriod as ModelMealPeriod,
     PortionSize as ModelPortionSize,
     PriceTier as ModelPriceTier,
 )
@@ -281,10 +282,16 @@ async def create_post(
         db, dish_id=dish.id, price_paid=price_paid_value,
     )
 
+    meal_period_value = None
+    if extras and extras.meal_period:
+        meal_period_value = ModelMealPeriod(extras.meal_period)
+
     review = DishReview(
         dish_id=dish.id,
         user_id=current_user.id,
         date_tasted=(extras.date_tasted if extras and extras.date_tasted else date.today()),
+        time_tasted=(extras.time_tasted if extras else None),
+        meal_period=meal_period_value,
         note=payload.text.strip(),
         rating=payload.score,
         price_paid=price_paid_value,

@@ -42,6 +42,13 @@ class DishReviewProsConsType(str, enum.Enum):
     con = "con"
 
 
+class MealPeriod(str, enum.Enum):
+    breakfast = "breakfast"
+    lunch = "lunch"
+    snack = "snack"
+    dinner = "dinner"
+
+
 class SentimentLabel(str, enum.Enum):
     positive = "positive"
     neutral = "neutral"
@@ -128,6 +135,9 @@ class DishReview(Base):
     )
     date_tasted: Mapped[date] = mapped_column(Date, nullable=False)
     time_tasted: Mapped[time | None] = mapped_column(Time, nullable=True)
+    meal_period: Mapped[MealPeriod | None] = mapped_column(
+        Enum(MealPeriod, name="meal_period"), nullable=True
+    )
     note: Mapped[str] = mapped_column(Text, nullable=False)
     rating: Mapped[Decimal] = mapped_column(Numeric(2, 1), nullable=False)
     price_paid: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)

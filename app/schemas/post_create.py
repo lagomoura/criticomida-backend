@@ -1,7 +1,7 @@
 """Input schema for POST /api/posts (social compose flow)."""
 
 import uuid
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from typing import Literal
 
@@ -20,6 +20,8 @@ class PostCreateExtras(BaseModel):
     visited_with: str | None = Field(default=None, max_length=200)
     is_anonymous: bool | None = None
     date_tasted: date | None = None
+    time_tasted: time | None = None
+    meal_period: Literal["breakfast", "lunch", "snack", "dinner"] | None = None
     price_tier: Literal["$", "$$", "$$$"] | None = None
     price_paid: Decimal | None = Field(
         default=None, gt=0, max_digits=12, decimal_places=2

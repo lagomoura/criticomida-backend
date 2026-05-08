@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.models.dish import DishReviewProsConsType, PortionSize, PriceTier
+from app.models.dish import DishReviewProsConsType, MealPeriod, PortionSize, PriceTier
 
 
 class DishCreate(BaseModel):
@@ -81,6 +81,7 @@ class DishReviewCreate(BaseModel):
     dish_id: uuid.UUID
     date_tasted: date
     time_tasted: time | None = None
+    meal_period: MealPeriod | None = None
     note: str
     rating: Decimal = Field(ge=1, le=5, decimal_places=1)
     price_paid: Decimal | None = Field(
@@ -101,6 +102,7 @@ class DishReviewCreate(BaseModel):
 class DishReviewUpdate(BaseModel):
     date_tasted: date | None = None
     time_tasted: time | None = None
+    meal_period: MealPeriod | None = None
     note: str | None = None
     rating: Decimal | None = Field(None, ge=1, le=5, decimal_places=1)
     price_paid: Decimal | None = Field(
@@ -130,6 +132,7 @@ class DishReviewResponse(BaseModel):
     user_display_name: str | None = None
     date_tasted: date
     time_tasted: time | None
+    meal_period: MealPeriod | None = None
     note: str
     rating: Decimal
     price_paid: Decimal | None = None

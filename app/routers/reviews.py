@@ -143,6 +143,7 @@ async def create_review(
         user_id=current_user.id,
         date_tasted=review_data.date_tasted,
         time_tasted=review_data.time_tasted,
+        meal_period=review_data.meal_period,
         note=review_data.note,
         rating=review_data.rating,
         price_paid=review_data.price_paid,
