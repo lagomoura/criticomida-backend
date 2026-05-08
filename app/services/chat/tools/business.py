@@ -381,32 +381,61 @@ def make_benchmark_dish_tool(
         # We exclude the anchor's own restaurant entirely — the owner
         # is asking about *competition*, not their other dishes.
         deg_buffer = radius_km / 80.0
-        cohort_stmt = (
-            select(Dish)
-            .join(Restaurant, Dish.restaurant_id == Restaurant.id)
-            .where(
-                and_(
-                    Dish.restaurant_id != anchor.restaurant_id,
-                    Restaurant.latitude.is_not(None),
-                    Restaurant.longitude.is_not(None),
-                    Restaurant.latitude.between(
-                        float(rest.latitude) - deg_buffer,
-                        float(rest.latitude) + deg_buffer,
-                    ),
-                    Restaurant.longitude.between(
-                        float(rest.longitude) - deg_buffer,
-                        float(rest.longitude) + deg_buffer,
-                    ),
-                )
-            )
-            .options(selectinload(Dish.restaurant))
-            .limit(200)
+        bbox_filter = and_(
+            Dish.restaurant_id != anchor.restaurant_id,
+            Restaurant.latitude.is_not(None),
+            Restaurant.longitude.is_not(None),
+            Restaurant.latitude.between(
+                float(rest.latitude) - deg_buffer,
+                float(rest.latitude) + deg_buffer,
+            ),
+            Restaurant.longitude.between(
+                float(rest.longitude) - deg_buffer,
+                float(rest.longitude) + deg_buffer,
+            ),
         )
-        candidates = list((await db.execute(cohort_stmt)).scalars().all())
 
-        # Trim to within radius and rank by embedding distance.
+        # Single query: bbox filter en SQL + LEFT JOIN al embedding +
+        # cosine_distance computado por Postgres usando el índice HNSW
+        # (vector_cosine_ops). Antes era N+1 con la distancia coseno
+        # calculada a mano en Python.
+        if anchor_emb is not None:
+            sim_col = DishEmbedding.embedding.cosine_distance(
+                anchor_emb.embedding
+            ).label("sim_distance")
+            cohort_stmt = (
+                select(Dish, sim_col)
+                .join(Restaurant, Dish.restaurant_id == Restaurant.id)
+                .outerjoin(
+                    DishEmbedding, DishEmbedding.dish_id == Dish.id
+                )
+                .where(bbox_filter)
+                .options(selectinload(Dish.restaurant))
+                .order_by(sim_col.asc().nullslast())
+                .limit(200)
+            )
+            candidates: list[tuple[Dish, float | None]] = [
+                (dish, float(sim) if sim is not None else None)
+                for dish, sim in (await db.execute(cohort_stmt)).all()
+            ]
+        else:
+            cohort_stmt = (
+                select(Dish)
+                .join(Restaurant, Dish.restaurant_id == Restaurant.id)
+                .where(bbox_filter)
+                .options(selectinload(Dish.restaurant))
+                .limit(200)
+            )
+            candidates = [
+                (dish, None)
+                for dish in (
+                    await db.execute(cohort_stmt)
+                ).scalars().all()
+            ]
+
+        # Haversine refinement post-bbox (PostGIS está fuera de stack).
         scored: list[tuple[Dish, float, float | None]] = []
-        for cand in candidates:
+        for cand, sim_distance in candidates:
             r = cand.restaurant
             dist = _haversine_km(
                 float(rest.latitude),
@@ -416,34 +445,20 @@ def make_benchmark_dish_tool(
             )
             if dist > radius_km:
                 continue
-            sim_distance: float | None = None
-            if anchor_emb is not None:
-                cand_emb = (
-                    await db.execute(
-                        select(DishEmbedding).where(
-                            DishEmbedding.dish_id == cand.id
-                        )
-                    )
-                ).scalars().first()
-                if cand_emb is not None:
-                    sim_distance = float(
-                        sum(
-                            (a - b) * (a - b)
-                            for a, b in zip(
-                                anchor_emb.embedding,
-                                cand_emb.embedding,
-                                strict=False,
-                            )
-                        )
-                        ** 0.5
-                    )
             scored.append((cand, dist, sim_distance))
 
-        # Order: nearest semantic neighbours first when we have vectors,
-        # otherwise nearest physical neighbours.
-        scored.sort(
-            key=lambda t: (t[2] if t[2] is not None else float("inf"), t[1])
-        )
+        # Cuando hay vectores, el SQL ya ordenó por similaridad — sólo
+        # romper empates por distancia física. Sin vectores, ordenamos
+        # por cercanía pura.
+        if anchor_emb is not None:
+            scored.sort(
+                key=lambda t: (
+                    t[2] if t[2] is not None else float("inf"),
+                    t[1],
+                )
+            )
+        else:
+            scored.sort(key=lambda t: t[1])
         cohort = scored[:limit]
 
         # Percentile of the anchor on each pillar across the cohort.
