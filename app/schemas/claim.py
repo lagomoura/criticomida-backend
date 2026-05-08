@@ -30,6 +30,18 @@ class ClaimResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ClaimCreateResponse(ClaimResponse):
+    """Devuelta solo en POST /api/restaurants/{slug}/claims.
+
+    ``email_token`` es el secret en plano para construir el link de
+    verificación. Se devuelve **una sola vez** y no se persiste — la DB
+    guarda únicamente el SHA-256 del token. Si el cliente o admin lo
+    pierde, hay que regenerar (no se puede recuperar).
+    """
+
+    email_token: str | None = None
+
+
 class ClaimListResponse(BaseModel):
     items: list[ClaimResponse]
 

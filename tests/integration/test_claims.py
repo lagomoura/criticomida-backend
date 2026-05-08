@@ -4,9 +4,6 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import text
-
-from app.database import engine
 
 if os.environ.get("RUN_INTEGRATION") != "1":
     pytest.skip(
@@ -30,20 +27,6 @@ async def _create_resto(client, admin_cookies) -> dict:
     )
     assert r.status_code == 201, r.text
     return r.json()
-
-
-async def _read_email_token(claim_id: str) -> str | None:
-    async with engine.connect() as conn:
-        row = (
-            await conn.execute(
-                text(
-                    "SELECT verification_payload->>'email_token' "
-                    "FROM restaurant_claims WHERE id = :id"
-                ),
-                {"id": claim_id},
-            )
-        ).first()
-    return row[0] if row else None
 
 
 @pytest.mark.asyncio
@@ -129,10 +112,11 @@ async def test_verify_email_token_auto_approves(
         cookies=user_a.cookies,
     )
     assert create.status_code == 201
-    claim_id = create.json()["id"]
-
-    token = await _read_email_token(claim_id)
-    assert token and len(token) >= 32
+    payload = create.json()
+    token = payload.get("email_token")
+    assert token and len(token) >= 32, (
+        "POST /claims must return the plain email_token one-time"
+    )
 
     verify = await async_client_integration.post(
         f"/api/claims/verify-email-token/{token}"
@@ -169,8 +153,7 @@ async def test_verify_email_token_idempotent(
         },
         cookies=user_a.cookies,
     )
-    claim_id = create.json()["id"]
-    token = await _read_email_token(claim_id)
+    token = create.json().get("email_token")
 
     first = await async_client_integration.post(
         f"/api/claims/verify-email-token/{token}"
@@ -199,8 +182,7 @@ async def test_cannot_claim_already_verified_restaurant(
         },
         cookies=user_a.cookies,
     )
-    claim_id = create.json()["id"]
-    token = await _read_email_token(claim_id)
+    token = create.json().get("email_token")
     await async_client_integration.post(
         f"/api/claims/verify-email-token/{token}"
     )
