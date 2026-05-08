@@ -79,8 +79,10 @@ class Dish(Base):
         Numeric(3, 2), default=Decimal("0"), nullable=False
     )
     review_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    # SET NULL: si el creador se borra (GDPR / cuenta abandonada), el dish
+    # queda como creado anónimamente. Los UGC del catálogo son del público.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -130,8 +132,9 @@ class DishReview(Base):
     dish_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("dishes.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False, index=True
+    # SET NULL para preservar la review como anónima si el autor se borra.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     date_tasted: Mapped[date] = mapped_column(Date, nullable=False)
     time_tasted: Mapped[time | None] = mapped_column(Time, nullable=True)
@@ -184,7 +187,7 @@ class DishReview(Base):
 
     # Relationships
     dish: Mapped["Dish"] = relationship(back_populates="reviews")
-    user: Mapped["User"] = relationship(  # noqa: F821
+    user: Mapped["User | None"] = relationship(  # noqa: F821
         back_populates="dish_reviews", foreign_keys=[user_id]
     )
     pros_cons: Mapped[list["DishReviewProsCons"]] = relationship(
