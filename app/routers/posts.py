@@ -63,13 +63,28 @@ def _slugify(name: str) -> str:
     return slug.strip("-") or "sin-nombre"
 
 
-async def _find_category_id(db: AsyncSession, category_name: str | None) -> int | None:
-    if not category_name:
+async def _find_category_id(db: AsyncSession, category_value: str | None) -> int | None:
+    """Resuelve un valor del dropdown de compose a `categories.id`.
+
+    El form envía el slug canónico (ej. `italiana`); como fallback admitimos
+    el `name` en cualquier locale (ej. "Italiana") para tolerar pre-fills
+    legacy donde la API devuelve el display name del Category.
+    """
+    if not category_value:
         return None
-    result = await db.execute(
-        select(Category.id).where(func.lower(Category.name) == category_name.lower())
+    cleaned = category_value.strip()
+    if not cleaned:
+        return None
+    by_slug = await db.execute(
+        select(Category.id).where(Category.slug == cleaned.lower())
     )
-    return result.scalar_one_or_none()
+    cat_id = by_slug.scalar_one_or_none()
+    if cat_id is not None:
+        return cat_id
+    by_name = await db.execute(
+        select(Category.id).where(func.lower(Category.name) == cleaned.lower())
+    )
+    return by_name.scalar_one_or_none()
 
 
 async def _unique_slug_for(db: AsyncSession, base: str) -> str:
