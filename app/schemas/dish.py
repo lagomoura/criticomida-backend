@@ -113,6 +113,10 @@ class DishReviewUpdate(BaseModel):
     presentation: int | None = Field(None, ge=1, le=3)
     value_prop: int | None = Field(None, ge=1, le=3)
     execution: int | None = Field(None, ge=1, le=3)
+    # When provided, re-link the review to a dish with this name in the
+    # same restaurant (find-or-create). Same normalized name = no-op so we
+    # don't disturb other reviews on a shared dish.
+    dish_name: str | None = Field(None, min_length=1, max_length=200)
     # When None, leave the existing rows alone. When [], clear all.
     pros_cons: list[DishReviewProsConsCreate] | None = None
     tags: list[DishReviewTagCreate] | None = None

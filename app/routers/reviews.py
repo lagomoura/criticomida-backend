@@ -2,7 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -300,9 +300,52 @@ async def update_review(
                 currency_row[0] if currency_row else None,
             )
 
+    # Rename del plato. Re-linkeamos por nombre normalizado: si el normalized
+    # no cambia es no-op (no tocamos el Dish compartido por otras reviews).
+    # Si cambia, find-or-create dentro del mismo restaurante.
+    previous_dish_id = review.dish_id
+    if "dish_name" in review_data.model_fields_set and review_data.dish_name is not None:
+        cleaned_dish_name = review_data.dish_name.strip()
+        if not cleaned_dish_name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="dish_name no puede estar vacío.",
+            )
+        current_dish = await db.get(Dish, review.dish_id)
+        if current_dish is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Dish not found",
+            )
+        new_normalized = (
+            await db.execute(select(func.dish_name_normalized(cleaned_dish_name)))
+        ).scalar_one()
+        if new_normalized != current_dish.name_normalized:
+            existing_dish = (
+                await db.execute(
+                    select(Dish).where(
+                        Dish.restaurant_id == current_dish.restaurant_id,
+                        Dish.name_normalized == new_normalized,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_dish is not None:
+                review.dish_id = existing_dish.id
+            else:
+                new_dish = Dish(
+                    restaurant_id=current_dish.restaurant_id,
+                    name=cleaned_dish_name,
+                    price_tier=current_dish.price_tier,
+                    created_by=current_user.id,
+                )
+                db.add(new_dish)
+                await db.flush()
+                review.dish_id = new_dish.id
+
     previous_note = review.note
     update_data = review_data.model_dump(
-        exclude_unset=True, exclude={"pros_cons", "tags", "images"}
+        exclude_unset=True,
+        exclude={"pros_cons", "tags", "images", "dish_name"},
     )
     for field, value in update_data.items():
         setattr(review, field, value)
@@ -383,7 +426,10 @@ async def update_review(
 
     await db.flush()
 
-    # Recompute ratings
+    # Recompute ratings — incluye el dish viejo si el rename re-linkeó la
+    # review a otro Dish, así su computed_rating refleja la pérdida.
+    if previous_dish_id != review.dish_id:
+        await update_dish_rating(db, previous_dish_id)
     await update_dish_rating(db, review.dish_id)
 
     # Get restaurant_id through dish
