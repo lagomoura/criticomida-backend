@@ -357,7 +357,7 @@ async def create_post(
         skip_recipient_ids=skip,
     )
 
-    await db.commit()
+    await db.flush()
     schedule_reembed_review(review.id)
 
     # Rehydrate the FeedItem using the shared feed helper so the response shape

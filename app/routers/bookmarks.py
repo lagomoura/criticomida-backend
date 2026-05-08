@@ -53,7 +53,7 @@ async def save_review(
     if existing.scalar_one_or_none() is None:
         db.add(Bookmark(user_id=current_user.id, review_id=review_id))
         try:
-            await db.commit()
+            await db.flush()
         except IntegrityError:
             await db.rollback()
 
@@ -82,7 +82,7 @@ async def unsave_review(
     row = existing.scalar_one_or_none()
     if row is not None:
         await db.delete(row)
-        await db.commit()
+        await db.flush()
 
     return BookmarkActionResponse(
         review_id=review_id,

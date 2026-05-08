@@ -45,7 +45,7 @@ async def create_report(
         reason=payload.reason.strip(),
     )
     db.add(report)
-    await db.commit()
+    await db.flush()
     await db.refresh(report)
     return report
 
@@ -198,6 +198,6 @@ async def update_report_status(
     if report is None:
         raise HTTPException(status_code=404, detail="Reporte no encontrado")
     report.status = payload.status
-    await db.commit()
+    await db.flush()
     await db.refresh(report)
     return report

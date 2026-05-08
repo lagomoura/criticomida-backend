@@ -62,7 +62,7 @@ async def like_review(
             review_owner_id=owner_id,
         )
         try:
-            await db.commit()
+            await db.flush()
         except IntegrityError:
             await db.rollback()
 
@@ -87,7 +87,7 @@ async def unlike_review(
     row = existing.scalar_one_or_none()
     if row is not None:
         await db.delete(row)
-        await db.commit()
+        await db.flush()
 
     count = await _likes_count(db, review_id)
     return LikeActionResponse(review_id=review_id, liked=False, likes_count=count)

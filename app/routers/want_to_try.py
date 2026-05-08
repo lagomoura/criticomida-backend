@@ -56,7 +56,7 @@ async def add_want_to_try(
     if existing.scalar_one_or_none() is None:
         db.add(WantToTryDish(user_id=current_user.id, dish_id=dish_id))
         try:
-            await db.commit()
+            await db.flush()
         except IntegrityError:
             await db.rollback()
 
@@ -81,7 +81,7 @@ async def remove_want_to_try(
     row = existing.scalar_one_or_none()
     if row is not None:
         await db.delete(row)
-        await db.commit()
+        await db.flush()
 
     return WantToTryActionResponse(dish_id=dish_id, want_to_try=False)
 

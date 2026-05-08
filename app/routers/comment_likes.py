@@ -67,7 +67,7 @@ async def like_comment(
             review_id=comment.review_id,
         )
         try:
-            await db.commit()
+            await db.flush()
         except IntegrityError:
             await db.rollback()
 
@@ -97,7 +97,7 @@ async def unlike_comment(
     row = existing.scalar_one_or_none()
     if row is not None:
         await db.delete(row)
-        await db.commit()
+        await db.flush()
 
     count = await _likes_count(db, comment_id)
     return CommentLikeActionResponse(

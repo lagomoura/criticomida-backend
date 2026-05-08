@@ -53,7 +53,7 @@ async def update_my_profile(
         setattr(current_user, field, value)
 
     try:
-        await db.commit()
+        await db.flush()
     except IntegrityError as exc:
         await db.rollback()
         if is_unique_violation(exc):
