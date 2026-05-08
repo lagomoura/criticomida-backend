@@ -57,7 +57,7 @@ class Restaurant(Base):
         Numeric(10, 7), nullable=True
     )
     category_id: Mapped[int | None] = mapped_column(
-        ForeignKey("categories.id"), nullable=True, index=True
+        ForeignKey("categories.id", ondelete="SET NULL"), nullable=True, index=True
     )
     cover_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     google_place_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -99,8 +99,10 @@ class Restaurant(Base):
         Numeric(3, 2), default=Decimal("0"), nullable=False
     )
     review_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    # SET NULL: el restaurante sobrevive al hard-delete de su creador.
+    # Los datos del lugar son públicos; la autoría es informativa.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -116,7 +118,7 @@ class Restaurant(Base):
 
     # Relationships
     category: Mapped["Category | None"] = relationship(back_populates="restaurants")  # noqa: F821
-    creator: Mapped["User"] = relationship(  # noqa: F821
+    creator: Mapped["User | None"] = relationship(  # noqa: F821
         back_populates="restaurants", foreign_keys=[created_by]
     )
     dishes: Mapped[list["Dish"]] = relationship(back_populates="restaurant")  # noqa: F821
@@ -174,8 +176,8 @@ class RestaurantRatingDimension(Base):
     restaurant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     dimension: Mapped[RatingDimension] = mapped_column(
         Enum(RatingDimension, name="rating_dimension"), nullable=False
@@ -194,8 +196,8 @@ class RestaurantProsCons(Base):
     restaurant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     type: Mapped[ProsConsType] = mapped_column(
         Enum(ProsConsType, name="pros_cons_type"), nullable=False
@@ -215,8 +217,8 @@ class VisitDiaryEntry(Base):
     )
     visit_date: Mapped[date] = mapped_column(Date, nullable=False)
     diary_text: Mapped[str] = mapped_column(Text, nullable=False)
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
