@@ -7,7 +7,7 @@ Usage:
     python scripts/migrate_mock_data.py
 
 Requires the backend to be running at http://localhost:8000 with:
-  - Admin user seeded: gustavoandroid1802@gmail.com / admin123
+  - Admin user seeded: adminpalato@gmail.com / admin123
   - 15 categories seeded
 """
 
@@ -779,7 +779,7 @@ def main():
     # Step 1: Login
     print("\n[1] Logging in as admin...")
     try:
-        session = login_session("gustavoandroid1802@gmail.com", "admin123")
+        session = login_session("adminpalato@gmail.com", "admin123")
         print("    Logged in successfully.")
     except Exception as e:
         print(f"    FAILED to login: {e}")

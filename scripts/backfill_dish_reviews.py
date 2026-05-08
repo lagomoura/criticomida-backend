@@ -8,7 +8,7 @@ For each dish without a review:
 
 Run from backend/:
     python scripts/backfill_dish_reviews.py \\
-        --user-email gustavoandroid1802@gmail.com \\
+        --user-email adminpalato@gmail.com \\
         --db-url "postgresql+asyncpg://user:pass@localhost:5433/criticomida"
     # add --commit to write
 """

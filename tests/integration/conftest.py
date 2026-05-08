@@ -160,11 +160,11 @@ async def user_b(async_client_integration) -> RegisteredUser:
 async def admin_client(async_client_integration):
     """Logs in as the seeded admin account.
 
-    The seed user in dev is `gustavoandroid1802@gmail.com` / `admin123`. Override via
+    The seed user in dev is `adminpalato@gmail.com` / `admin123`. Override via
     env vars `INTEGRATION_ADMIN_EMAIL` / `INTEGRATION_ADMIN_PASSWORD` when the
     seed differs (CI, staging).
     """
-    email = os.environ.get("INTEGRATION_ADMIN_EMAIL", "gustavoandroid1802@gmail.com")
+    email = os.environ.get("INTEGRATION_ADMIN_EMAIL", "adminpalato@gmail.com")
     password = os.environ.get("INTEGRATION_ADMIN_PASSWORD", "admin123")
     r = await async_client_integration.post(
         "/api/auth/login", json={"email": email, "password": password}
