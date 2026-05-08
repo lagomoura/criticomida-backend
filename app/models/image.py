@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, Integer, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,4 +42,14 @@ class Image(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+    # Nullable because legacy rows pre-date this column. Migration 054
+    # back-fills ``dish_cover`` rows from ``dishes.created_by`` as a
+    # best-effort approximation; everything else stays NULL. The
+    # router falls back to admin-only delete when this is NULL — same
+    # behaviour as before, no regression for legacy data.
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )

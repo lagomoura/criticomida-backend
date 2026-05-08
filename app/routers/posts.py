@@ -358,7 +358,7 @@ async def create_post(
     )
 
     await db.flush()
-    schedule_reembed_review(review.id)
+    await schedule_reembed_review(db, review.id)
 
     # Rehydrate the FeedItem using the shared feed helper so the response shape
     # matches the rest of the social UI (counts, viewer_state, etc.).

@@ -27,7 +27,6 @@ search without crashing.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import uuid
@@ -41,7 +40,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.database import async_session
 from app.models.chat import (
     EMBEDDING_DIMENSIONS,
     DishEmbedding,
@@ -363,32 +361,22 @@ async def reembed_dish(db: AsyncSession, dish_id: uuid.UUID) -> None:
     await db.execute(upsert)
 
 
-def schedule_reembed_review(review_id: uuid.UUID) -> None:
-    """Fire-and-forget invocation safe to call from a request handler.
+async def schedule_reembed_review(
+    db: AsyncSession, review_id: uuid.UUID
+) -> None:
+    """Enqueue a re-embed job tied to ``review_id``.
 
-    Abre su propia sesión: la del request (de ``get_db``) ya cerró el
-    yield al volver la respuesta y reusarla genera ``IllegalStateChange``
-    o un commit silencioso sobre conexión cerrada. Patrón canónico =
-    ``sentiment_service.schedule_analyze_review``.
-
-    Las fallas se loguean y se tragan: un embedding que no se actualiza
-    degrada la búsqueda semántica del Sommelier pero no debe bouncear
-    el write del usuario.
+    Persists into ``async_job`` inside the **caller's** transaction so
+    the queued intent and the review row succeed or fail together. Was
+    previously ``asyncio.create_task`` — that lost work on every Railway
+    SIGTERM. The dedicated worker loop (``async_job_worker``) drains
+    the queue with retry/backoff. Caller commits the surrounding
+    transaction; we never commit here.
     """
+    from app.models.async_job import AsyncJobKind
+    from app.services.async_job_worker import enqueue
 
-    async def _run() -> None:
-        try:
-            async with async_session() as db:
-                try:
-                    await reembed_review(db, review_id)
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    raise
-        except Exception:
-            logger.exception("schedule_reembed_review failed")
-
-    asyncio.create_task(_run())
+    await enqueue(db, kind=AsyncJobKind.embed_review, review_id=review_id)
 
 
 def chunked(items: Iterable[Any], size: int) -> Iterable[list[Any]]:

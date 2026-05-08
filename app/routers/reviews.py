@@ -256,8 +256,12 @@ async def create_review(
 
     # Reload with relationships
     loaded = await _load_review_with_relations(db, review.id)
-    schedule_analyze_review(review.id)
-    schedule_reembed_review(review.id)
+    # Both schedules persist into the async_job queue inside this
+    # request's transaction (committed by ``get_db``). The worker
+    # process drains the queue with retry/backoff — replaces the old
+    # ``asyncio.create_task`` pattern that lost work on Railway SIGTERM.
+    await schedule_analyze_review(db, review.id)
+    await schedule_reembed_review(db, review.id)
     return loaded  # type: ignore[return-value]
 
 
@@ -450,11 +454,11 @@ async def update_review(
 
     loaded = await _load_review_with_relations(db, review.id)
     if note_changed:
-        schedule_analyze_review(review.id)
+        await schedule_analyze_review(db, review.id)
     # Re-embed siempre que se actualiza: además del note, el texto de
     # _review_text incluye pros/cons y tags, que también pueden haber
     # cambiado en este PUT.
-    schedule_reembed_review(review.id)
+    await schedule_reembed_review(db, review.id)
     return loaded  # type: ignore[return-value]
 
 

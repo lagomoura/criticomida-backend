@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -14,6 +16,10 @@ from app.config import settings
 from app.database import engine
 from app.middleware.rate_limit import limiter
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.services.async_job_worker import run_worker_loop
+
+
+logger = logging.getLogger(__name__)
 from app.routers import (
     admin,
     auth,
@@ -68,9 +74,36 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
             await conn.run_sync(Base.metadata.create_all)
 
-    yield
-    # Shutdown
-    await engine.dispose()
+    # Async-job worker drains the ``async_job`` queue (re-embed +
+    # sentiment for reviews). One coroutine per uvicorn worker; the
+    # ``UPDATE ... FOR UPDATE SKIP LOCKED`` claim inside the loop
+    # guarantees at-most-one process picks any given job. Toggleable
+    # so tests and one-shot scripts run without it.
+    worker_task: asyncio.Task[None] | None = None
+    worker_stop_event: asyncio.Event | None = None
+    if settings.ASYNC_JOB_WORKER_ENABLED:
+        worker_stop_event = asyncio.Event()
+        worker_task = asyncio.create_task(
+            run_worker_loop(worker_stop_event), name="async_job_worker"
+        )
+
+    try:
+        yield
+    finally:
+        # Shutdown — signal the worker to exit and give it a moment to
+        # finish the in-flight job. The DB cascade on ``async_job``
+        # plus the retry logic mean a hard kill is recoverable, but a
+        # graceful drain keeps the next request snappier.
+        if worker_stop_event is not None and worker_task is not None:
+            worker_stop_event.set()
+            try:
+                await asyncio.wait_for(worker_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "async_job worker did not stop within 5s; cancelling"
+                )
+                worker_task.cancel()
+        await engine.dispose()
 
 
 def create_app(

@@ -3,6 +3,7 @@
 import os
 import uuid
 
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,12 +16,29 @@ UPLOAD_DIR = os.path.join(
 
 
 async def _delete_image_files(db: AsyncSession, images: list[Image]) -> None:
+    """Remove the on-disk files first, then delete the rows in a single
+    statement.
+
+    Was previously a per-image ``await db.delete(image)`` loop — N+1
+    writes against the DB for entity teardown. The bulk ``DELETE WHERE
+    id IN (...)`` keeps it to one round-trip. Filesystem cleanup stays
+    in a Python loop because every URL is a separate file path; we
+    swallow ``FileNotFoundError`` defensively in case a previous
+    aborted cleanup already removed the file.
+    """
+    if not images:
+        return
     for image in images:
-        if image.url.startswith('/uploads/'):
-            filepath = os.path.join(UPLOAD_DIR, os.path.basename(image.url))
-            if os.path.exists(filepath):
-                os.remove(filepath)
-        await db.delete(image)
+        if not image.url.startswith('/uploads/'):
+            continue
+        filepath = os.path.join(UPLOAD_DIR, os.path.basename(image.url))
+        try:
+            os.remove(filepath)
+        except FileNotFoundError:
+            pass
+    await db.execute(
+        sql_delete(Image).where(Image.id.in_([img.id for img in images]))
+    )
 
 
 async def delete_images_for_restaurant(

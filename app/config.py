@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # Per-agent model override. Falls back to CHAT_MODEL for back-compat.
     CHAT_MODEL_B2C: str | None = None
     CHAT_MODEL_B2B: str = "anthropic/claude-sonnet-4-6"
+    # Toggle for the in-process worker that drains the ``async_job``
+    # queue (re-embed / sentiment for reviews). On in production and
+    # local dev (so ``docker compose up`` exercises the same flow as
+    # prod); off in pytest / one-shot scripts to keep tests
+    # deterministic and avoid contaminating shared state.
+    ASYNC_JOB_WORKER_ENABLED: bool = True
 
     model_config = {
         "env_file": ".env",

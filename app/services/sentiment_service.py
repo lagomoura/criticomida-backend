@@ -29,7 +29,6 @@ review write path stays uncoloured by the LLM dependency.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -44,7 +43,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import async_session
 from app.models.dish import DishReview, SentimentLabel
 
 logger = logging.getLogger(__name__)
@@ -247,27 +245,22 @@ async def analyze_and_persist_review(
     review.sentiment_analyzed_at = datetime.now(timezone.utc)
 
 
-def schedule_analyze_review(review_id: uuid.UUID) -> None:
-    """Fire-and-forget invocation safe to call from a request handler.
+async def schedule_analyze_review(
+    db: AsyncSession, review_id: uuid.UUID
+) -> None:
+    """Enqueue a sentiment-analysis job tied to ``review_id``.
 
-    Opens its own session so we don't depend on the request session
-    still being alive after the response is sent. Failures log and are
-    swallowed: a missed sentiment column is never worth bouncing the
-    user write."""
+    Persists into ``async_job`` inside the **caller's** transaction so
+    the queued intent and the review row succeed or fail together. Was
+    previously ``asyncio.create_task`` — that lost work on every Railway
+    SIGTERM. The dedicated worker loop (``async_job_worker``) drains
+    the queue with retry/backoff. Caller commits the surrounding
+    transaction; we never commit here.
+    """
+    from app.models.async_job import AsyncJobKind
+    from app.services.async_job_worker import enqueue
 
-    async def _run() -> None:
-        try:
-            async with async_session() as db:
-                try:
-                    await analyze_and_persist_review(db, review_id)
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    raise
-        except Exception:
-            logger.exception("schedule_analyze_review failed")
-
-    asyncio.create_task(_run())
+    await enqueue(db, kind=AsyncJobKind.sentiment_review, review_id=review_id)
 
 
 def note_hash(review: DishReview) -> str:

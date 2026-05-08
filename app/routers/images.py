@@ -64,6 +64,7 @@ async def upload_image(
         url=url,
         alt_text=alt_text,
         display_order=display_order,
+        uploaded_by_user_id=current_user.id,
     )
     db.add(image)
     await db.flush()
@@ -85,12 +86,19 @@ async def delete_image(
             detail="Image not found",
         )
 
-    # Only admin or the uploader (we don't track uploader in the Image model,
-    # so only admin can delete for now; or we allow any authenticated user)
-    if current_user.role != UserRole.admin:
+    # The uploader can delete their own image; admin can delete any.
+    # Legacy rows (pre-054) carry ``uploaded_by_user_id IS NULL`` — for
+    # those we fall back to admin-only, matching the previous behaviour
+    # so no existing image silently becomes deletable by everyone.
+    is_uploader = (
+        image.uploaded_by_user_id is not None
+        and image.uploaded_by_user_id == current_user.id
+    )
+    is_admin = current_user.role == UserRole.admin
+    if not (is_uploader or is_admin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can delete images",
+            detail="No podés borrar esta imagen",
         )
 
     # Try to delete file from disk
