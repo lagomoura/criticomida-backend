@@ -51,7 +51,7 @@ _PLATING_STYLES = {
 }
 
 
-_SYSTEM_INSTRUCTION = """Sos el Ghostwriter de Palato. Mirás fotos de platos y proponés etiquetas + texto editorial corto, en español rioplatense, tono cálido y específico (sin clichés tipo "delicioso").
+_SYSTEM_INSTRUCTION = """Sos el Ghostwriter de Palato. Mirás fotos de platos y proponés etiquetas + texto editorial corto, en español rioplatense, tono cálido y específico (sin clichés tipo "delicioso", "exquisito", "una explosión de sabor").
 
 Devolvé SIEMPRE un JSON válido con esta forma exacta:
 
@@ -59,18 +59,19 @@ Devolvé SIEMPRE un JSON válido con esta forma exacta:
   "tags": ["palabra1", "palabra2"],          // EXACTAMENTE 3-6 tags, lowercase, sin "#", sin espacios
   "visible_ingredients": ["arroz", "azafrán"], // MÁX 6 ingredientes únicos, lowercase, en español
   "plating_style": "minimalist|family-style|deconstructed|rustic|classic",
-  "editorial_blurb": "Frase 1. Frase 2.",    // 1-2 frases, MÁX 200 caracteres total
-  "suggested_pros": ["punto 1", "punto 2"],  // MÁX 2 ítems, ≤60 caracteres c/u
-  "suggested_cons": ["punto 1"]              // MÁX 2 ítems, ≤60 caracteres c/u
+  "editorial_blurb": "Frase 1. Frase 2.",    // OBLIGATORIO. 1-2 frases, MÁX 200 caracteres
+  "suggested_pros": ["punto 1", "punto 2"],  // OBLIGATORIO 1-2 ítems, ≤60 caracteres c/u
+  "suggested_cons": ["punto 1"]              // OPCIONAL 0-2 ítems, ≤60 caracteres c/u
 }
 
 Reglas innegociables:
+- `editorial_blurb`, `tags` y `suggested_pros` NUNCA pueden ir vacíos: dale algo concreto basado en lo que efectivamente ves (textura, dorado, cantidad, presentación). Si no podés identificar el plato exacto, escribí sobre lo visual.
+- `suggested_cons` puede ir vacío SOLO si la foto no muestra ningún detalle observable que justifique una crítica (no inventes contras genéricas tipo "podría tener más sabor" — eso no se ve).
 - NO enumeres variantes del mismo ingrediente (un único "caldo", no "caldo de pollo / de carne / de pescado").
 - NO repitas conceptos entre tags e ingredientes.
-- Si no estás seguro de un campo, devolvé array vacío.
+- Pros/contras tienen que ser observables en la foto: "queso bien fundido", "porción generosa", "presentación apretada", "salsa escasa". Nada que requiera probar el plato.
 - La respuesta entera tiene que ser JSON válido y compacto.
-
-Si el plato no se puede identificar, devolvé arrays vacíos pero sostené la forma."""
+"""
 
 
 _SCHEMA: dict[str, Any] = {
@@ -79,22 +80,38 @@ _SCHEMA: dict[str, Any] = {
         "tags": {
             "type": "ARRAY",
             "items": {"type": "STRING"},
+            "minItems": 3,
+            "maxItems": 6,
         },
         "visible_ingredients": {
             "type": "ARRAY",
             "items": {"type": "STRING"},
+            "maxItems": 6,
         },
         "plating_style": {"type": "STRING"},
-        "editorial_blurb": {"type": "STRING"},
+        "editorial_blurb": {"type": "STRING", "minLength": 30},
         "suggested_pros": {
             "type": "ARRAY",
             "items": {"type": "STRING"},
+            "minItems": 1,
+            "maxItems": 2,
         },
         "suggested_cons": {
             "type": "ARRAY",
             "items": {"type": "STRING"},
+            "maxItems": 2,
         },
     },
+    # `required` is what actually forces Gemini to populate these fields;
+    # without it, the prompt's "OBLIGATORIO" is just a suggestion.
+    "required": [
+        "tags",
+        "visible_ingredients",
+        "plating_style",
+        "editorial_blurb",
+        "suggested_pros",
+        "suggested_cons",
+    ],
 }
 
 
