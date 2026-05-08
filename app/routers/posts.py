@@ -35,6 +35,7 @@ from app.models.user import User
 from app.routers.feed import _build_feed_items
 from app.schemas.feed import FeedItem
 from app.schemas.post_create import PostCreate, RestaurantFromPlace
+from app.services.embeddings_service import schedule_reembed_review
 from app.services.notification_service import record_mention_notifications
 from app.services.price_validation import (
     evaluate_price_outlier,
@@ -357,6 +358,7 @@ async def create_post(
     )
 
     await db.commit()
+    schedule_reembed_review(review.id)
 
     # Rehydrate the FeedItem using the shared feed helper so the response shape
     # matches the rest of the social UI (counts, viewer_state, etc.).

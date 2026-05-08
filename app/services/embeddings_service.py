@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.database import async_session
 from app.models.chat import (
     EMBEDDING_DIMENSIONS,
     DishEmbedding,
@@ -362,20 +363,28 @@ async def reembed_dish(db: AsyncSession, dish_id: uuid.UUID) -> None:
     await db.execute(upsert)
 
 
-async def schedule_reembed_review(
-    db: AsyncSession, review_id: uuid.UUID
-) -> None:
-    """Fire-and-forget wrapper safe to call from request handlers.
+def schedule_reembed_review(review_id: uuid.UUID) -> None:
+    """Fire-and-forget invocation safe to call from a request handler.
 
-    The work is real (not just queued) but the request returns regardless
-    of outcome. Until we add a proper background queue, we run it inline
-    on a detached task tied to the event loop.
+    Abre su propia sesión: la del request (de ``get_db``) ya cerró el
+    yield al volver la respuesta y reusarla genera ``IllegalStateChange``
+    o un commit silencioso sobre conexión cerrada. Patrón canónico =
+    ``sentiment_service.schedule_analyze_review``.
+
+    Las fallas se loguean y se tragan: un embedding que no se actualiza
+    degrada la búsqueda semántica del Sommelier pero no debe bouncear
+    el write del usuario.
     """
 
     async def _run() -> None:
         try:
-            await reembed_review(db, review_id)
-            await db.commit()
+            async with async_session() as db:
+                try:
+                    await reembed_review(db, review_id)
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    raise
         except Exception:
             logger.exception("schedule_reembed_review failed")
 

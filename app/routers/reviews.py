@@ -31,6 +31,7 @@ from app.services.price_validation import (
     evaluate_price_outlier,
     validate_price_paid,
 )
+from app.services.embeddings_service import schedule_reembed_review
 from app.services.rating_service import update_dish_rating, update_restaurant_rating
 from app.services.sentiment_service import schedule_analyze_review
 
@@ -248,6 +249,7 @@ async def create_review(
     # Reload with relationships
     loaded = await _load_review_with_relations(db, review.id)
     schedule_analyze_review(review.id)
+    schedule_reembed_review(review.id)
     return loaded  # type: ignore[return-value]
 
 
@@ -441,6 +443,10 @@ async def update_review(
     loaded = await _load_review_with_relations(db, review.id)
     if note_changed:
         schedule_analyze_review(review.id)
+    # Re-embed siempre que se actualiza: además del note, el texto de
+    # _review_text incluye pros/cons y tags, que también pueden haber
+    # cambiado en este PUT.
+    schedule_reembed_review(review.id)
     return loaded  # type: ignore[return-value]
 
 
