@@ -7,6 +7,7 @@ subir fotos oficiales. La revisión admin vive en `routers/admin.py`.
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from typing import Annotated
 
@@ -26,11 +27,18 @@ from app.models.restaurant_claim import (
 from app.models.user import User
 from app.schemas.claim import (
     ClaimCreate,
+    ClaimCreateResponse,
     ClaimListResponse,
     ClaimResponse,
     ClaimStatusResponse,
 )
 from app.services.claim_service import approve_claim
+
+
+def _hash_email_token(token: str) -> str:
+    """SHA-256 hex digest. Solo el hash se persiste; el plano se pierde
+    apenas se devuelve en la response del create."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 router = APIRouter(tags=["claims"])
@@ -48,7 +56,7 @@ async def _get_restaurant_by_slug(db: AsyncSession, slug: str) -> Restaurant:
 
 @router.post(
     "/api/restaurants/{slug}/claims",
-    response_model=ClaimResponse,
+    response_model=ClaimCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 @limiter.limit(CLAIM_CREATE_LIMIT)
@@ -58,14 +66,15 @@ async def create_claim(
     payload: ClaimCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> RestaurantClaim:
+) -> ClaimCreateResponse:
     """Crea un claim pending para el restaurant identificado por slug.
 
     Las features que distinguen entre métodos (auto-aprobación por
     `domain_email`, generación de token de email) se ejecutan acá pero el
-    envío real del email queda para el hito de transaccionales — el token
-    se guarda en `verification_payload` y un admin puede dispararlo manual
-    mientras tanto.
+    envío real del email queda para el hito de transaccionales — la DB
+    persiste el SHA-256 del token y la response devuelve el plano una
+    sola vez. Si el admin necesita reenviar el email, hay que regenerar
+    el token (no se puede leer del DB).
     """
     restaurant = await _get_restaurant_by_slug(db, slug)
 
@@ -95,13 +104,15 @@ async def create_claim(
         )
 
     payload_meta: dict[str, str] = {}
+    plain_token: str | None = None
     if payload.verification_method == VerificationMethod.domain_email:
         if not payload.contact_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="contact_email is required for domain_email verification",
             )
-        payload_meta["email_token"] = secrets.token_urlsafe(32)
+        plain_token = secrets.token_urlsafe(32)
+        payload_meta["email_token_hash"] = _hash_email_token(plain_token)
 
     claim = RestaurantClaim(
         restaurant_id=restaurant.id,
@@ -115,7 +126,11 @@ async def create_claim(
     db.add(claim)
     await db.flush()
     await db.refresh(claim)
-    return claim
+
+    # Devolvemos el token en plano UNA sola vez. La DB sólo tiene el hash.
+    response = ClaimCreateResponse.model_validate(claim, from_attributes=True)
+    response.email_token = plain_token
+    return response
 
 
 @router.get("/api/me/claims", response_model=ClaimListResponse)
@@ -165,11 +180,13 @@ async def verify_email_token(
             detail="Invalid token",
         )
 
+    token_hash = _hash_email_token(token)
     rows = await db.execute(
         select(RestaurantClaim).where(
             RestaurantClaim.verification_method
             == VerificationMethod.domain_email.value,
-            RestaurantClaim.verification_payload["email_token"].astext == token,
+            RestaurantClaim.verification_payload["email_token_hash"].astext
+            == token_hash,
         )
     )
     claim = rows.scalar_one_or_none()
@@ -178,10 +195,12 @@ async def verify_email_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Token not found"
         )
 
-    # Rotar el token antes de aprobar — un solo uso. Si el approve falla, el
-    # claim queda sin token y el flujo continúa por revisión admin manual.
+    # Rotar el hash antes de aprobar — un solo uso. Si el approve falla, el
+    # claim queda sin hash y el flujo continúa por revisión admin manual.
     if claim.verification_payload is not None:
         new_payload = dict(claim.verification_payload)
+        new_payload.pop("email_token_hash", None)
+        # Limpia también la key legacy por si quedó alguna fila pre-052.
         new_payload.pop("email_token", None)
         new_payload["verified_via"] = "email_token"
         claim.verification_payload = new_payload
