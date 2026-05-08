@@ -110,7 +110,7 @@ async def mark_read(
         raise HTTPException(status_code=404, detail="Notificación no encontrada")
     if notif.read_at is None:
         notif.read_at = datetime.now(timezone.utc)
-        await db.commit()
+        await db.flush()
 
 
 @router.post("/read-all", status_code=status.HTTP_204_NO_CONTENT)
@@ -127,4 +127,4 @@ async def mark_all_read(
         )
         .values(read_at=now)
     )
-    await db.commit()
+    await db.flush()

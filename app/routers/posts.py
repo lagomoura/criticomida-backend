@@ -356,7 +356,7 @@ async def create_post(
         skip_recipient_ids=skip,
     )
 
-    await db.commit()
+    await db.flush()
 
     # Rehydrate the FeedItem using the shared feed helper so the response shape
     # matches the rest of the social UI (counts, viewer_state, etc.).

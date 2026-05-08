@@ -79,7 +79,7 @@ async def follow_user(
             db, actor_id=current_user.id, target_user_id=target.id
         )
         try:
-            await db.commit()
+            await db.flush()
         except IntegrityError:
             # Concurrent insert race — the other insert won, we're already
             # following; proceed as if the call succeeded.
@@ -114,7 +114,7 @@ async def unfollow_user(
     row = existing.scalar_one_or_none()
     if row is not None:
         await db.delete(row)
-        await db.commit()
+        await db.flush()
 
     followers = await _followers_count(db, target.id)
     return FollowActionResponse(

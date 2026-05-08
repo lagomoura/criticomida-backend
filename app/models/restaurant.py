@@ -119,7 +119,11 @@ class Restaurant(Base):
     creator: Mapped["User"] = relationship(  # noqa: F821
         back_populates="restaurants", foreign_keys=[created_by]
     )
-    dishes: Mapped[list["Dish"]] = relationship(back_populates="restaurant")  # noqa: F821
+    dishes: Mapped[list["Dish"]] = relationship(  # noqa: F821
+        back_populates="restaurant",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     dimension_ratings: Mapped[list["RestaurantRatingDimension"]] = relationship(
         back_populates="restaurant", cascade="all, delete-orphan"
     )
@@ -130,7 +134,11 @@ class Restaurant(Base):
         back_populates="restaurant", cascade="all, delete-orphan"
     )
     menu: Mapped["Menu | None"] = relationship(  # noqa: F821
-        back_populates="restaurant", uselist=False
+        back_populates="restaurant",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        single_parent=True,
     )
     official_photos: Mapped[list["RestaurantOfficialPhoto"]] = relationship(  # noqa: F821
         primaryjoin=(

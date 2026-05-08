@@ -269,7 +269,7 @@ async def create_comment(
         skip_recipient_ids={review.user_id},
     )
 
-    await db.commit()
+    await db.flush()
     await db.refresh(comment)
 
     return await _load_response(db, comment.id, viewer=current_user)
@@ -344,7 +344,7 @@ async def create_reply(
         skip_recipient_ids={parent.user_id, review_owner_id},
     )
 
-    await db.commit()
+    await db.flush()
     await db.refresh(reply)
 
     return await _load_response(db, reply.id, viewer=current_user)
@@ -371,7 +371,7 @@ async def update_comment(
     if body != comment.body:
         await _anti_spam_check(db, user_id=current_user.id, body=body)
         comment.body = body
-        await db.commit()
+        await db.flush()
         await db.refresh(comment)
 
     return await _load_response(db, comment.id, viewer=current_user)
@@ -394,4 +394,4 @@ async def delete_comment(
         raise HTTPException(status_code=403, detail="No podés borrar este comentario")
 
     comment.removed_at = datetime.now(timezone.utc)
-    await db.commit()
+    await db.flush()
