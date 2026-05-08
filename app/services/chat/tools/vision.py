@@ -218,20 +218,30 @@ def make_identify_dish_from_photo_tool(
         else:
             # Absolute URL — fetch once with a short timeout so a
             # slow CDN does not hold the whole tool call hostage.
+            # SSRF-hardened via ``safe_fetch_bytes``: scheme allowlist,
+            # DNS denylist (private / loopback / link-local / metadata),
+            # no redirects, response size capped.
             import httpx as _httpx
 
+            from app.services._safe_url import (
+                UnsafeURLError,
+                safe_fetch_bytes,
+            )
+
             try:
-                async with _httpx.AsyncClient(
-                    timeout=10.0, follow_redirects=True
-                ) as client:
-                    r = await client.get(photo_url)
-                    r.raise_for_status()
-                    photo_bytes = r.content
-                    photo_mime = (
-                        r.headers.get("content-type", "image/jpeg")
-                        .split(";")[0]
-                        .strip()
-                    )
+                photo_bytes, photo_mime = await safe_fetch_bytes(
+                    photo_url, timeout=10.0
+                )
+            except UnsafeURLError:
+                return {
+                    "error": "photo_url_rejected",
+                    "matches": [],
+                    "count": 0,
+                    "message": (
+                        "La URL de la foto fue rechazada por seguridad. "
+                        "Pedile al comensal que la suba de nuevo."
+                    ),
+                }
             except _httpx.HTTPError:
                 return {
                     "error": "photo_fetch_failed",

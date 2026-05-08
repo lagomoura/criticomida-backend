@@ -22,6 +22,16 @@ from app.middleware.auth import (
     hash_password,
     verify_password,
 )
+from app.middleware.rate_limit import (
+    AUTH_FORGOT_PASSWORD_LIMIT,
+    AUTH_LOGIN_LIMIT,
+    AUTH_REFRESH_LIMIT,
+    AUTH_REGISTER_LIMIT,
+    AUTH_RESEND_VERIFICATION_LIMIT,
+    AUTH_RESET_PASSWORD_LIMIT,
+    AUTH_VERIFY_EMAIL_LIMIT,
+    limiter,
+)
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.user import (
@@ -169,7 +179,9 @@ async def rotate_refresh_session(
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(AUTH_REGISTER_LIMIT)
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
@@ -236,7 +248,9 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit(AUTH_LOGIN_LIMIT)
 async def login(
+    request: Request,
     credentials: UserLogin,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -278,9 +292,10 @@ async def login(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit(AUTH_REFRESH_LIMIT)
 async def refresh_token(
-    body: TokenRefresh,
     request: Request,
+    body: TokenRefresh,
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenResponse:
@@ -339,7 +354,9 @@ async def get_me(
 
 
 @router.post("/resend-verification", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(AUTH_RESEND_VERIFICATION_LIMIT)
 async def resend_verification(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> Response:
@@ -355,7 +372,9 @@ async def resend_verification(
 
 
 @router.post("/verify-email/{token}", response_model=UserResponse)
+@limiter.limit(AUTH_VERIFY_EMAIL_LIMIT)
 async def verify_email(
+    request: Request,
     token: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
@@ -372,7 +391,9 @@ async def verify_email(
 
 
 @router.post("/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(AUTH_FORGOT_PASSWORD_LIMIT)
 async def forgot_password(
+    request: Request,
     payload: ForgotPasswordRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Response:
@@ -384,7 +405,9 @@ async def forgot_password(
 
 
 @router.post("/reset-password", response_model=UserResponse)
+@limiter.limit(AUTH_RESET_PASSWORD_LIMIT)
 async def reset_password(
+    request: Request,
     payload: ResetPasswordRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:

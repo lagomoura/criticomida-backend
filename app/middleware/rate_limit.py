@@ -57,3 +57,22 @@ FOLLOW_LIMIT = "30/minute"
 POST_CREATE_LIMIT = "10/hour"
 REPORT_CREATE_LIMIT = "20/hour"
 CLAIM_CREATE_LIMIT = "3/day"
+
+# Auth — bucketed mostly by IP since the actor is pre-auth. Tight on the
+# pre-auth surface (login / forgot / reset / verify) to slow down brute
+# force and email-flood attacks; looser on post-auth resend so a
+# legitimate user retrying twice doesn't trip it.
+AUTH_LOGIN_LIMIT = "10/minute"
+AUTH_REGISTER_LIMIT = "5/hour"
+AUTH_FORGOT_PASSWORD_LIMIT = "5/hour"
+AUTH_RESET_PASSWORD_LIMIT = "10/hour"
+AUTH_REFRESH_LIMIT = "60/minute"
+AUTH_VERIFY_EMAIL_LIMIT = "20/hour"
+AUTH_RESEND_VERIFICATION_LIMIT = "5/hour"
+
+# IA / LLM — chat stream and ghostwriter assist talk to paid providers.
+# Cap aggressively per (user|ip) to keep cost runaway out of the threat
+# model. Anonymous Sommelier traffic shares ``CHAT_STREAM_LIMIT`` keyed
+# by IP via ``user_or_ip_key``; the limit applies regardless.
+CHAT_STREAM_LIMIT = "30/hour"
+GHOSTWRITER_ASSIST_LIMIT = "20/hour"

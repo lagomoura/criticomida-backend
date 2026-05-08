@@ -13,6 +13,7 @@ from starlette.types import Lifespan
 from app.config import settings
 from app.database import engine
 from app.middleware.rate_limit import limiter
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routers import (
     admin,
     auth,
@@ -55,12 +56,17 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
     uploads_parent = os.path.dirname(os.path.dirname(__file__))
     os.makedirs(os.path.join(uploads_parent, "uploads"), exist_ok=True)
 
-    # Auto-create tables in development
-    from app.database import Base
-    import app.models  # noqa: F401 - ensure all models are imported
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
-        await conn.run_sync(Base.metadata.create_all)
+    # Auto-create tables in development only. In production / staging
+    # the schema is owned by Alembic — running ``create_all`` there
+    # silently masks model/migration drift (creates tables that no
+    # migration knows about).
+    env = settings.APP_ENV.strip().lower()
+    if env in {"development", "test"}:
+        from app.database import Base
+        import app.models  # noqa: F401 - ensure all models are imported
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
+            await conn.run_sync(Base.metadata.create_all)
 
     yield
     # Shutdown
@@ -96,6 +102,7 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.add_middleware(SecurityHeadersMiddleware)
 
     application.include_router(auth.router)
     # Specific /api/users/me/* paths from the legacy reviews router must be

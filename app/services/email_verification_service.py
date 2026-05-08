@@ -106,12 +106,15 @@ async def consume_verification_token(
 async def send_verification_email(user: User, token: str) -> None:
     """Compone el email transaccional y lo dispara. Best-effort — no rompe
     si el provider falla."""
-    verify_url = f"{settings.PUBLIC_APP_URL}/verify-email/{token}"
+    import html as _html_lib
+
+    verify_url = f"{settings.PUBLIC_APP_URL}/verify-email/{_html_lib.escape(token)}"
+    safe_display_name = _html_lib.escape(user.display_name)
     subject = "Confirmá tu email en Palato"
     html = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
-      ¡Hola {user.display_name}! Solo necesitamos confirmar que este es
+      ¡Hola {safe_display_name}! Solo necesitamos confirmar que este es
       tu email para que puedas usar todo Palato sin restricciones.
     </p>
     <p style="margin-top:24px;">

@@ -3,9 +3,20 @@
 import uuid
 from datetime import date, time
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+
+# Per-item caps for free-form lists. Without these the list-level cap
+# (``max_length=20``) only bounds the *count* — a single item could still
+# be a megabyte of text and bloat embeddings / DB rows.
+_BulletString = Annotated[
+    str, StringConstraints(min_length=1, max_length=200, strip_whitespace=True)
+]
+_TagString = Annotated[
+    str, StringConstraints(min_length=1, max_length=80, strip_whitespace=True)
+]
 
 
 class PostCreateImage(BaseModel):
@@ -26,9 +37,9 @@ class PostCreateExtras(BaseModel):
     price_paid: Decimal | None = Field(
         default=None, gt=0, max_digits=12, decimal_places=2
     )
-    pros: list[str] = Field(default_factory=list, max_length=20)
-    cons: list[str] = Field(default_factory=list, max_length=20)
-    tags: list[str] = Field(default_factory=list, max_length=20)
+    pros: list[_BulletString] = Field(default_factory=list, max_length=20)
+    cons: list[_BulletString] = Field(default_factory=list, max_length=20)
+    tags: list[_TagString] = Field(default_factory=list, max_length=20)
     presentation: int | None = Field(default=None, ge=1, le=3)
     value_prop: int | None = Field(default=None, ge=1, le=3)
     execution: int | None = Field(default=None, ge=1, le=3)

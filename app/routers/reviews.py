@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -45,6 +45,8 @@ router = APIRouter(tags=["reviews"])
 async def get_my_reviews(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> list[DishReview]:
     result = await db.execute(
         select(DishReview)
@@ -57,6 +59,8 @@ async def get_my_reviews(
         )
         .where(DishReview.user_id == current_user.id)
         .order_by(DishReview.created_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return list(result.scalars().all())
 
@@ -84,6 +88,8 @@ async def _load_review_with_relations(
 async def list_reviews(
     dish_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> list[DishReview]:
     # Verify dish exists
     dish_result = await db.execute(select(Dish).where(Dish.id == dish_id))
@@ -103,6 +109,8 @@ async def list_reviews(
         )
         .where(DishReview.dish_id == dish_id)
         .order_by(DishReview.created_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return list(result.scalars().all())
 

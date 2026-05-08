@@ -53,15 +53,20 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def jwt_secret_strong_when_production(self) -> Self:
+        # Treat any deployed environment (production, staging, preview)
+        # the same way: the placeholder is only acceptable for local
+        # development. Without this, a misconfigured staging deploy
+        # would silently sign tokens with the well-known default and
+        # would accept dev-issued tokens as valid in real traffic.
         env = self.APP_ENV.strip().lower()
-        if env != "production":
+        if env in {"development", "test"}:
             return self
         too_short = len(self.JWT_SECRET) < 32
         is_placeholder = self.JWT_SECRET == _PLACEHOLDER_SECRET
         if too_short or is_placeholder:
             raise ValueError(
-                "In production, JWT_SECRET must be at least 32 characters "
-                "and must not use the default placeholder value."
+                "Outside development, JWT_SECRET must be at least 32 "
+                "characters and must not use the default placeholder value."
             )
         return self
 

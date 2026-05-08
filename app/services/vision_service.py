@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services._safe_url import UnsafeURLError, safe_fetch_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +122,13 @@ class VisionUnavailable(RuntimeError):
 
 async def _fetch_image(url: str) -> tuple[bytes, str]:
     """Download an image and return (bytes, mime). Times out fast: a
-    review-creation flow can't wait 30s for a slow CDN."""
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as c:
-        r = await c.get(url)
-        r.raise_for_status()
-        mime = r.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        return r.content, mime
+    review-creation flow can't wait 30s for a slow CDN.
+
+    SSRF-hardened via ``safe_fetch_bytes``: scheme allowlist + DNS
+    rejection of private/loopback/link-local/metadata IPs + redirects
+    disabled + 16 MB response cap.
+    """
+    return await safe_fetch_bytes(url, timeout=10.0)
 
 
 def _empty_response() -> dict[str, Any]:
@@ -281,6 +283,9 @@ async def analyze_dish_photo(
     if photo_bytes is None and photo_url:
         try:
             photo_bytes, photo_mime = await _fetch_image(photo_url)
+        except UnsafeURLError as exc:
+            logger.warning("Rejected photo URL %s: %s", photo_url, exc)
+            return _empty_response()
         except httpx.HTTPError as exc:
             logger.warning("Couldn't fetch photo %s: %s", photo_url, exc)
             return _empty_response()

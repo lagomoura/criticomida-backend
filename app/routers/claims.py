@@ -11,7 +11,7 @@ import hashlib
 import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -137,11 +137,18 @@ async def create_claim(
 async def list_my_claims(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict:
+    # Defensive caps so a stale client cannot ask for unbounded pages.
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
     rows = await db.execute(
         select(RestaurantClaim)
         .where(RestaurantClaim.claimant_user_id == current_user.id)
         .order_by(desc(RestaurantClaim.submitted_at))
+        .offset(offset)
+        .limit(limit)
     )
     return {"items": list(rows.scalars().all())}
 

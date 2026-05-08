@@ -273,6 +273,8 @@ async def list_owner_reviews(
             )
         ),
     ] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     """Lista plana de todas las reseñas del restaurant para el dashboard del
     owner. Incluye has_owner_response para que el frontend resalte cuáles
@@ -336,6 +338,7 @@ async def list_owner_reviews(
     else:
         stmt = stmt.order_by(DishReview.created_at.desc())
 
+    stmt = stmt.offset(offset).limit(limit)
     rows = (await db.execute(stmt)).all()
 
     items: list[OwnerReviewItem] = []

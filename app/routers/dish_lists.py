@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -185,12 +185,16 @@ async def _load_list_full(
 async def my_lists(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> list[DishListSummaryOut]:
     stmt = (
         select(DishList)
         .where(DishList.owner_user_id == user.id)
         .options(selectinload(DishList.items))
         .order_by(DishList.created_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     rows = list((await db.execute(stmt)).scalars().unique().all())
     return [

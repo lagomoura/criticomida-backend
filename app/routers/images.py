@@ -11,6 +11,10 @@ from app.middleware.auth import get_current_user, require_role
 from app.models.image import EntityType, Image
 from app.models.user import User, UserRole
 from app.schemas.image import ImageResponse
+from app.services._safe_upload import (
+    DEFAULT_MAX_UPLOAD_BYTES,
+    assert_image_or_raise,
+)
 
 router = APIRouter(prefix="/api/images", tags=["images"])
 
@@ -27,18 +31,27 @@ async def upload_image(
     alt_text: Annotated[str | None, Form()] = None,
     display_order: Annotated[int, Form()] = 0,
 ) -> Image:
+    # Read once into memory; the helper enforces both the size cap and
+    # the magic-bytes whitelist, so we never trust the filename
+    # extension or the client-declared ``content_type``.
+    content = await file.read()
+    try:
+        detected = assert_image_or_raise(content)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Imagen inválida: {exc}",
+        )
+
     # Ensure upload directory exists
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-    # Generate unique filename
-    ext = ""
-    if file.filename:
-        ext = os.path.splitext(file.filename)[1]
-    filename = f"{uuid.uuid4().hex}{ext}"
+    # Filename is the sniffed extension — never the client's. This
+    # keeps mismatched extensions (``foo.html`` claiming to be PNG)
+    # out of the static directory entirely.
+    filename = f"{uuid.uuid4().hex}{detected.extension}"
     filepath = os.path.join(UPLOAD_DIR, filename)
 
-    # Save file
-    content = await file.read()
     with open(filepath, "wb") as f:
         f.write(content)
 

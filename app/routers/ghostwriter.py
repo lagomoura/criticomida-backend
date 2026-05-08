@@ -23,13 +23,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user
+from app.middleware.rate_limit import GHOSTWRITER_ASSIST_LIMIT, limiter
 from app.models.dish import Dish
 from app.models.user import User
 from app.services.vision_service import analyze_dish_photo
@@ -105,7 +106,9 @@ def _build_response(raw: dict[str, Any], draft_text: str | None) -> AssistRespon
 
 
 @router.post("/assist", response_model=AssistResponse)
+@limiter.limit(GHOSTWRITER_ASSIST_LIMIT)
 async def assist_with_url(
+    request: Request,
     body: AssistJsonRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
@@ -126,7 +129,9 @@ async def assist_with_url(
 
 
 @router.post("/assist/upload", response_model=AssistResponse)
+@limiter.limit(GHOSTWRITER_ASSIST_LIMIT)
 async def assist_with_upload(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
     photo: Annotated[UploadFile, File(...)],
@@ -135,22 +140,28 @@ async def assist_with_upload(
 ) -> AssistResponse:
     """Multipart variant: caller uploads the photo bytes directly. Avoids
     needing the photo on a public URL before the review is even saved."""
+    from app.services._safe_upload import assert_image_or_raise
+
     photo_bytes = await photo.read()
-    if not photo_bytes:
+    try:
+        detected = assert_image_or_raise(photo_bytes)
+    except ValueError as exc:
+        # Map "file too large" to 413, everything else to 400. Keeps
+        # the client-side error UI honest about which constraint failed.
+        if "too large" in str(exc):
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Photo must be 8 MB or smaller.",
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Empty photo upload.",
-        )
-    if len(photo_bytes) > 8 * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Photo must be 8 MB or smaller.",
+            detail=f"Imagen inválida: {exc}",
         )
 
     dish_hint = await _resolve_dish_hint(db, dish_id)
     raw = await analyze_dish_photo(
         photo_bytes=photo_bytes,
-        photo_mime=photo.content_type,
+        photo_mime=detected.mime,
         dish_hint=dish_hint,
     )
     return _build_response(raw, draft_text)

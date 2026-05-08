@@ -10,15 +10,15 @@ from app.models.dish import DishReviewProsConsType, MealPeriod, PortionSize, Pri
 class DishCreate(BaseModel):
     restaurant_id: uuid.UUID | None = None
     name: str = Field(max_length=200)
-    description: str | None = None
-    cover_image_url: str | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    cover_image_url: str | None = Field(default=None, max_length=500)
     price_tier: PriceTier | None = None
 
 
 class DishUpdate(BaseModel):
     name: str | None = Field(None, max_length=200)
-    description: str | None = None
-    cover_image_url: str | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    cover_image_url: str | None = Field(default=None, max_length=500)
     price_tier: PriceTier | None = None
 
 
@@ -82,7 +82,7 @@ class DishReviewCreate(BaseModel):
     date_tasted: date
     time_tasted: time | None = None
     meal_period: MealPeriod | None = None
-    note: str
+    note: str = Field(max_length=4000)
     rating: Decimal = Field(ge=1, le=5, decimal_places=1)
     price_paid: Decimal | None = Field(
         None, gt=0, max_digits=12, decimal_places=2
@@ -94,16 +94,22 @@ class DishReviewCreate(BaseModel):
     presentation: int | None = Field(None, ge=1, le=3)
     value_prop: int | None = Field(None, ge=1, le=3)
     execution: int | None = Field(None, ge=1, le=3)
-    pros_cons: list[DishReviewProsConsCreate] = []
-    tags: list[DishReviewTagCreate] = []
-    images: list[DishReviewImageCreate] = []
+    pros_cons: list[DishReviewProsConsCreate] = Field(
+        default_factory=list, max_length=20
+    )
+    tags: list[DishReviewTagCreate] = Field(
+        default_factory=list, max_length=20
+    )
+    images: list[DishReviewImageCreate] = Field(
+        default_factory=list, max_length=10
+    )
 
 
 class DishReviewUpdate(BaseModel):
     date_tasted: date | None = None
     time_tasted: time | None = None
     meal_period: MealPeriod | None = None
-    note: str | None = None
+    note: str | None = Field(None, max_length=4000)
     rating: Decimal | None = Field(None, ge=1, le=5, decimal_places=1)
     price_paid: Decimal | None = Field(
         None, gt=0, max_digits=12, decimal_places=2
@@ -120,9 +126,15 @@ class DishReviewUpdate(BaseModel):
     # don't disturb other reviews on a shared dish.
     dish_name: str | None = Field(None, min_length=1, max_length=200)
     # When None, leave the existing rows alone. When [], clear all.
-    pros_cons: list[DishReviewProsConsCreate] | None = None
-    tags: list[DishReviewTagCreate] | None = None
-    images: list[DishReviewImageCreate] | None = None
+    pros_cons: list[DishReviewProsConsCreate] | None = Field(
+        default=None, max_length=20
+    )
+    tags: list[DishReviewTagCreate] | None = Field(
+        default=None, max_length=20
+    )
+    images: list[DishReviewImageCreate] | None = Field(
+        default=None, max_length=10
+    )
 
 
 class DishReviewResponse(BaseModel):

@@ -72,12 +72,15 @@ async def request_password_reset(
     )
     await db.flush()
 
-    reset_url = f"{settings.PUBLIC_APP_URL}/reset-password/{token}"
+    import html as _html_lib
+
+    reset_url = f"{settings.PUBLIC_APP_URL}/reset-password/{_html_lib.escape(token)}"
+    safe_display_name = _html_lib.escape(user.display_name)
     subject = "Recuperá tu contraseña en Palato"
     html = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
-      Hola {user.display_name}, recibimos una solicitud para resetear la
+      Hola {safe_display_name}, recibimos una solicitud para resetear la
       contraseña de tu cuenta. Si fuiste vos, hacé click en el botón:
     </p>
     <p style="margin-top:24px;">

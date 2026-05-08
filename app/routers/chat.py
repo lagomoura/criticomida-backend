@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, get_current_user_optional
+from app.middleware.rate_limit import CHAT_STREAM_LIMIT, limiter
 from app.models.chat import (
     ChatAgent,
     ChatConversation,
@@ -155,7 +156,9 @@ def _sse_pack(event_type: str, data: Any) -> str:
 
 
 @router.post("/stream")
+@limiter.limit(CHAT_STREAM_LIMIT)
 async def stream_endpoint(
+    request: Request,
     body: StreamChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User | None, Depends(get_current_user_optional)],
@@ -216,7 +219,11 @@ async def stream_endpoint(
         event_stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            # ``private`` blocks any shared proxy from caching this
+            # response; ``no-store`` makes intent explicit even though
+            # SSE wouldn't be cached in practice. Keeps the per-user
+            # transcript out of any well-meaning intermediary.
+            "Cache-Control": "private, no-store, no-cache",
             "X-Accel-Buffering": "no",  # disable proxy buffering
             "Connection": "keep-alive",
         },
@@ -543,7 +550,9 @@ class LegacyChatResponse(BaseModel):
 
 
 @router.post("", response_model=LegacyChatResponse, deprecated=True)
+@limiter.limit(CHAT_STREAM_LIMIT)
 async def legacy_chat(
+    request: Request,
     body: LegacyChatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User | None, Depends(get_current_user_optional)],

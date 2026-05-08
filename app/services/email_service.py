@@ -12,6 +12,8 @@ Diseño:
 
 from __future__ import annotations
 
+import hashlib
+import html
 import logging
 from typing import Any
 
@@ -24,6 +26,30 @@ logger = logging.getLogger(__name__)
 
 
 _RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+
+def _h(value: object) -> str:
+    """HTML-escape a UGC value before interpolating into a template.
+
+    Restaurant / dish / display names land in transactional emails sent
+    from the Palato domain with valid SPF + DKIM. Without escaping, an
+    attacker controlling any of those fields could inject HTML into a
+    legit-looking message (phishing inside a real email). We pass every
+    untrusted value through this helper.
+    """
+    return html.escape(str(value), quote=True)
+
+
+def _email_log_id(address: str) -> str:
+    """Stable, low-cardinality identifier for log lines.
+
+    We never want raw email addresses in Railway logs (PII / GDPR).
+    The hash is correlatable across log events so on-call can join
+    related lines without ever seeing the plaintext.
+    """
+    digest = hashlib.sha256(address.encode("utf-8")).hexdigest()
+    domain = address.split("@", 1)[1] if "@" in address else "?"
+    return f"{digest[:12]}@{domain}"
 
 
 async def send_email(
@@ -47,13 +73,14 @@ async def send_email(
     if text is not None:
         payload["text"] = text
 
+    log_id = _email_log_id(to)
     if not settings.RESEND_API_KEY:
         # WARNING en lugar de INFO para que sea visible en dev sin tocar el
         # config global de logging — es operacionalmente importante saber
         # que un email transaccional NO se envió.
         logger.warning(
-            "email.dry_run to=%s subject=%r body_chars=%d (set RESEND_API_KEY to send)",
-            to,
+            "email.dry_run to_id=%s subject=%r body_chars=%d (set RESEND_API_KEY to send)",
+            log_id,
             subject,
             len(html),
         )
@@ -71,15 +98,15 @@ async def send_email(
             )
         if r.status_code >= 400:
             logger.warning(
-                "email.send_failed to=%s status=%d body=%s",
-                to,
+                "email.send_failed to_id=%s status=%d body=%s",
+                log_id,
                 r.status_code,
                 r.text[:300],
             )
             return False
         return True
     except httpx.HTTPError as exc:
-        logger.warning("email.send_exception to=%s err=%s", to, exc)
+        logger.warning("email.send_exception to_id=%s err=%s", log_id, exc)
         return False
 
 
@@ -107,13 +134,13 @@ def _wrap(body_html: str) -> str:
 def render_claim_approved(
     restaurant_name: str, restaurant_slug: str
 ) -> tuple[str, str, str]:
-    panel_url = f"{settings.PUBLIC_APP_URL}/restaurants/{restaurant_slug}/owner"
+    panel_url = f"{settings.PUBLIC_APP_URL}/restaurants/{_h(restaurant_slug)}/owner"
     subject = f"Tu reclamo de {restaurant_name} fue aprobado"
-    html = _wrap(
+    body = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
       ¡Listo! Verificamos que sos el dueño de
-      <strong>{restaurant_name}</strong> y desbloqueamos las herramientas
+      <strong>{_h(restaurant_name)}</strong> y desbloqueamos las herramientas
       del panel: respondé reseñas, subí fotos oficiales y mantené la ficha
       al día.
     </p>
@@ -130,22 +157,22 @@ def render_claim_approved(
     text = (
         f"Aprobamos tu reclamo de {restaurant_name}. Entrá al panel: {panel_url}"
     )
-    return subject, html, text
+    return subject, body, text
 
 
 def render_claim_rejected(
     restaurant_name: str, reason: str
 ) -> tuple[str, str, str]:
     subject = f"Tu reclamo de {restaurant_name} fue rechazado"
-    html = _wrap(
+    body = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
-      Revisamos tu reclamo de <strong>{restaurant_name}</strong> y por ahora
+      Revisamos tu reclamo de <strong>{_h(restaurant_name)}</strong> y por ahora
       no pudimos aprobarlo. Motivo:
     </p>
     <blockquote style="border-left:3px solid #a04a3c;padding:8px 16px;
                        margin:16px 0;background:#fff5ef;color:#5a4a40;">
-      {reason}
+      {_h(reason)}
     </blockquote>
     <p style="font-size:14px;color:#5a4a40;">
       Si creés que hay un error podés volver a reclamar después de 30 días o
@@ -156,22 +183,22 @@ def render_claim_rejected(
     text = (
         f"Tu reclamo de {restaurant_name} fue rechazado. Motivo: {reason}"
     )
-    return subject, html, text
+    return subject, body, text
 
 
 def render_claim_revoked(
     restaurant_name: str, reason: str
 ) -> tuple[str, str, str]:
     subject = f"Revocamos tu verificación de {restaurant_name}"
-    html = _wrap(
+    body = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
-      Tu verificación como dueño de <strong>{restaurant_name}</strong> fue
+      Tu verificación como dueño de <strong>{_h(restaurant_name)}</strong> fue
       revocada por el equipo de moderación. Motivo:
     </p>
     <blockquote style="border-left:3px solid #a04a3c;padding:8px 16px;
                        margin:16px 0;background:#fff5ef;color:#5a4a40;">
-      {reason}
+      {_h(reason)}
     </blockquote>
     <p style="font-size:14px;color:#5a4a40;">
       Si pensás que es un error, escribinos respondiendo este email para
@@ -182,7 +209,7 @@ def render_claim_revoked(
     text = (
         f"Revocamos tu verificación de {restaurant_name}. Motivo: {reason}"
     )
-    return subject, html, text
+    return subject, body, text
 
 
 def render_reservation_requested(
@@ -197,7 +224,9 @@ def render_reservation_requested(
     """Email sent to a verified owner when a chatbot user requests a
     reservation at their restaurant.
     """
-    panel_url = f"{settings.PUBLIC_APP_URL}/restaurants/{restaurant_slug}/owner"
+    panel_url = (
+        f"{settings.PUBLIC_APP_URL}/restaurants/{_h(restaurant_slug)}/owner"
+    )
     subject = (
         f"Nueva solicitud de reserva en {restaurant_name} ({party_size} pax)"
     )
@@ -205,18 +234,18 @@ def render_reservation_requested(
         f"""
     <blockquote style=\"border-left:3px solid #a04a3c;padding:8px 16px;
                        margin:16px 0;background:#fff5ef;color:#5a4a40;\">
-      {message}
+      {_h(message)}
     </blockquote>
     """
         if message
         else ""
     )
-    html = _wrap(
+    body = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
-      <strong>{requester_name}</strong> pidió una mesa para
+      <strong>{_h(requester_name)}</strong> pidió una mesa para
       <strong>{party_size}</strong> personas el
-      <strong>{requested_for_human}</strong> a través del Sommelier de
+      <strong>{_h(requested_for_human)}</strong> a través del Sommelier de
       Palato.
     </p>
     {quote_block}
@@ -241,7 +270,7 @@ def render_reservation_requested(
     if message:
         text_lines.append(f"Mensaje: {message}")
     text_lines.append(f"Panel del restaurante: {panel_url}")
-    return subject, html, "\n\n".join(text_lines)
+    return subject, body, "\n\n".join(text_lines)
 
 
 def render_review_on_owned_restaurant(
@@ -259,16 +288,16 @@ def render_review_on_owned_restaurant(
     en modal vía query param ``?review={id}``.
     """
     panel_url = (
-        f"{settings.PUBLIC_APP_URL}/restaurants/{restaurant_slug}/owner"
-        f"?review={review_id}"
+        f"{settings.PUBLIC_APP_URL}/restaurants/{_h(restaurant_slug)}/owner"
+        f"?review={_h(review_id)}"
     )
     subject = f"Nueva reseña en {restaurant_name}: {dish_name} ({rating:.1f}★)"
     author_label = "Un comensal anónimo" if is_anonymous else reviewer_display_name
-    html = _wrap(
+    body = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
-      <strong>{author_label}</strong> publicó una reseña de
-      <strong>{dish_name}</strong> en {restaurant_name} con una calificación
+      <strong>{_h(author_label)}</strong> publicó una reseña de
+      <strong>{_h(dish_name)}</strong> en {_h(restaurant_name)} con una calificación
       de <strong>{rating:.1f}★</strong>.
     </p>
     <p style="margin-top:24px;">
@@ -289,4 +318,4 @@ def render_review_on_owned_restaurant(
         f"{author_label} publicó una reseña de {dish_name} en "
         f"{restaurant_name} ({rating:.1f}★).\n\nVer en el panel: {panel_url}"
     )
-    return subject, html, text
+    return subject, body, text
