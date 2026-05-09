@@ -1,8 +1,9 @@
 """Integration tests for /api/search.
 
-The search endpoint matches a word-prefix on a single canonical field per
-entity (Dish.name, Restaurant.name, User.handle), case- and
-accent-insensitive, and returns results sorted alphabetically.
+The search endpoint matches a word-prefix on the canonical field(s) per
+entity (Dish.name, Restaurant.name, and both User.handle and
+User.display_name), case- and accent-insensitive, and returns results
+sorted alphabetically.
 """
 
 import os
@@ -60,6 +61,29 @@ async def test_search_matches_user_by_handle_prefix(
     r2 = await async_client_integration.get(f"/api/search?q={handle[:3]}")
     assert r2.status_code == 200
     assert any(u["handle"] == handle for u in r2.json()["users"])
+
+
+@pytest.mark.asyncio
+async def test_search_matches_user_by_display_name(
+    async_client_integration, user_a
+):
+    """display_name puede divergir del handle (ej. 'Julián Pérez' vs 'julianp');
+    buscar por el nombre visible debe encontrar al usuario igualmente."""
+    token = uuid.uuid4().hex[:6]
+    handle = f"u{token}"
+    display = f"Julián {token}"
+    patch = await async_client_integration.patch(
+        "/api/users/me",
+        json={"handle": handle, "display_name": display},
+        cookies=user_a.cookies,
+    )
+    assert patch.status_code == 200, patch.text
+
+    # Buscar por la primera palabra del display_name (acento incluido) hace match
+    # aunque el handle no contenga "Julián".
+    r = await async_client_integration.get("/api/search?q=Juli")
+    assert r.status_code == 200
+    assert any(u["handle"] == handle for u in r.json()["users"])
 
 
 @pytest.mark.asyncio

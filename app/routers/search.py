@@ -1,14 +1,16 @@
 """Unified search across dishes, restaurants, and users.
 
 Word-prefix match (case- and accent-insensitive) over the canonical name
-field of each entity, sorted alphabetically.
+field of each entity, sorted alphabetically. Users match against both
+``handle`` and ``display_name`` so a query like "Julián" finds the user
+whose handle is ``julianp`` but display name is "Julián Pérez".
 """
 
 import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -108,8 +110,14 @@ async def search_all(
     user_stmt = (
         select(User, func.coalesce(followers_sq.c.c, 0))
         .outerjoin(followers_sq, followers_sq.c.following_id == User.id)
-        .where(User.handle.is_not(None), _word_prefix(User.handle, trimmed))
-        .order_by(_alpha(User.handle))
+        .where(
+            User.handle.is_not(None),
+            or_(
+                _word_prefix(User.handle, trimmed),
+                _word_prefix(User.display_name, trimmed),
+            ),
+        )
+        .order_by(_alpha(User.display_name))
         .limit(_PER_TAB_LIMIT)
     )
     user_rows = (await db.execute(user_stmt)).all()
