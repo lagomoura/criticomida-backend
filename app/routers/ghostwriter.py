@@ -132,11 +132,11 @@ async def assist_with_url(
 @limiter.limit(GHOSTWRITER_ASSIST_LIMIT)
 async def assist_with_upload(
     request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    user: Annotated[User, Depends(get_current_user)],
-    photo: Annotated[UploadFile, File(...)],
-    dish_id: Annotated[uuid.UUID | None, Form()] = None,
-    draft_text: Annotated[str | None, Form(max_length=4000)] = None,
+    photo: UploadFile = File(...),
+    dish_id: uuid.UUID | None = Form(default=None),
+    draft_text: str | None = Form(default=None, max_length=4000),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> AssistResponse:
     """Multipart variant: caller uploads the photo bytes directly. Avoids
     needing the photo on a public URL before the review is even saved."""
