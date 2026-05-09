@@ -407,6 +407,7 @@ async def list_messages(
 @router.delete(
     "/conversations/{conversation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def archive_conversation(
     conversation_id: uuid.UUID,
@@ -441,6 +442,7 @@ async def archive_conversation(
 @router.delete(
     "/conversations/{conversation_id}/permanent",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def hard_delete_conversation(
     conversation_id: uuid.UUID,
@@ -503,6 +505,7 @@ async def hard_delete_conversation(
 @router.post(
     "/conversations/{conversation_id}/unarchive",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def unarchive_conversation(
     conversation_id: uuid.UUID,

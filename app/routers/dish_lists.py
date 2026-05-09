@@ -255,7 +255,11 @@ async def patch_list(
     return _serialize_list(dish_list, item_rows=items, owner=owner)
 
 
-@router.delete("/{list_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{list_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
 async def delete_list(
     list_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
