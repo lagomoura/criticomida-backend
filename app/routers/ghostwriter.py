@@ -18,7 +18,19 @@ credits. Rate limiting falls under the same SlowAPI scope as other
 review endpoints (handled at app level).
 """
 
-from __future__ import annotations
+# NB: deliberately NOT using ``from __future__ import annotations`` —
+# the multipart endpoint uses ``UploadFile = File(...)`` under
+# ``@limiter.limit``, and slowapi 0.1.9's wrapper makes FastAPI 0.115.6
+# evaluate the param annotations against ``slowapi.__globals__``, where
+# ``UploadFile``/``File`` aren't in scope. With PEP 563 enabled, the
+# annotation arrives as a ``ForwardRef('UploadFile')`` that never
+# resolves and uvicorn crashes at import time:
+#
+#   fastapi.exceptions.FastAPIError: Invalid args for response field!
+#   Hint: check that ForwardRef('UploadFile') is a valid Pydantic field type.
+#
+# Eager evaluation here makes the annotation a real class object before
+# the slowapi wrapper ever sees it, so FastAPI's introspection works.
 
 import uuid
 from typing import Annotated, Any
