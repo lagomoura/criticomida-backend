@@ -182,6 +182,21 @@ class AgentLoop:
             }
             if self.api_key:
                 kwargs["api_key"] = self.api_key
+            # Disable thinking on Gemini-family models. Two reasons:
+            # (1) thinking_budget>0 makes Gemini emit a `thought_signature`
+            # alongside each functionCall that Vertex AI then *requires* to
+            # be echoed back on the next turn. Re-streaming the assistant
+            # turn back into messages without that signature is what causes
+            # `Function call is missing a thought_signature in functionCall
+            # parts`. (2) Per the comment below, thinking actively *hurt*
+            # tool-use accuracy on our eval suite.
+            #
+            # We pass only the Gemini-native shape — passing both `thinking`
+            # and `thinking_config` makes litellm populate the same Vertex
+            # oneof twice, which Vertex rejects with `_thinking_config is
+            # already set`.
+            if self.model.startswith(("gemini/", "vertex_ai/")):
+                kwargs["thinking_config"] = {"thinking_budget": 0}
 
             stream_started = time.monotonic()
             try:
@@ -426,4 +441,7 @@ def default_b2b_model() -> str:
 
 
 def default_api_key() -> str | None:
-    return os.getenv("CHAT_API_KEY") or None
+    # Fall back to GEMINI_API_KEY so the chat loop has auth even if only
+    # one of the two keys is set. Defensive only — prod and dev both have
+    # CHAT_API_KEY today.
+    return os.getenv("CHAT_API_KEY") or os.getenv("GEMINI_API_KEY") or None
