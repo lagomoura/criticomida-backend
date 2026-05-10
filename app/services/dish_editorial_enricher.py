@@ -22,11 +22,14 @@ import unicodedata
 import uuid
 from datetime import datetime, timezone
 
-import litellm
 from fastapi import BackgroundTasks
+from google import genai
+from google.genai import types as genai_types
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.chat.agent_loop import strip_provider_prefix
 
 from app.database import async_session
 from app.models.dish import Dish, DishEditorialCache
@@ -58,24 +61,19 @@ SYSTEM_PROMPT = (
 
 
 def _model() -> str:
-    return os.getenv(
+    raw = os.getenv(
         "EDITORIAL_MODEL",
-        os.getenv("CHAT_MODEL", "anthropic/claude-haiku-4-5-20251001"),
+        os.getenv("CHAT_MODEL", "gemini-3.1-flash-lite-preview"),
     )
+    return strip_provider_prefix(raw)
 
 
 def _api_key() -> str | None:
-    return os.getenv("EDITORIAL_API_KEY") or os.getenv("CHAT_API_KEY") or os.getenv(
-        "ANTHROPIC_API_KEY"
+    return (
+        os.getenv("EDITORIAL_API_KEY")
+        or os.getenv("CHAT_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
     )
-
-
-def _supports_anthropic_prompt_cache(model: str) -> bool:
-    # `cache_control: ephemeral` es feature de Anthropic. Adjuntarlo en Gemini
-    # dispara el path de Vertex context caching en litellm, que tiene un bug
-    # conocido (`AttributeError: __annotations__`) y rompe la llamada entera.
-    m = model.lower()
-    return m.startswith("anthropic/") or "claude" in m
 
 
 def _build_user_prompt(dish: Dish, restaurant: Restaurant) -> str:
@@ -96,8 +94,9 @@ def _parse_response(raw: str) -> tuple[str, str | None] | None:
     raw = raw.strip()
     if not raw:
         return None
-    # litellm devuelve JSON limpio cuando se setea response_format, pero
-    # toleramos un wrapper de markdown por si el modelo se descarrila.
+    # google-genai con response_mime_type="application/json" devuelve
+    # JSON limpio, pero toleramos wrapper de markdown por si el modelo
+    # se descarrila.
     if raw.startswith("```"):
         raw = raw.strip("`")
         if raw.lower().startswith("json"):
@@ -126,31 +125,27 @@ async def _generate_blurb(
     if not api_key:
         return None
 
-    model = _model()
-    if _supports_anthropic_prompt_cache(model):
-        system_content: str | list[dict] = [
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
-    else:
-        system_content = SYSTEM_PROMPT
-
     try:
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": _build_user_prompt(dish, restaurant)},
-        ]
-        response = await litellm.acompletion(
-            model=model,
-            messages=messages,
-            max_tokens=320,
-            response_format={"type": "json_object"},
-            api_key=api_key,
+        client = genai.Client(api_key=api_key)
+        response = await client.aio.models.generate_content(
+            model=_model(),
+            contents=[
+                genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part.from_text(text=_build_user_prompt(dish, restaurant))],
+                )
+            ],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=320,
+                response_mime_type="application/json",
+                # Trivial classification — el thinking no aporta y
+                # consume budget; lo apagamos para que la latencia no
+                # vuele cuando se piden varios blurbs en paralelo.
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            ),
         )
-        text = response.choices[0].message.content or ""
+        text = response.text or ""
         return _parse_response(text)
     except Exception:
         logger.exception("Dish editorial blurb generation failed (dish_id=%s)", dish.id)
@@ -308,7 +303,7 @@ def _apply_blurb(dish: Dish, story: str, origin: str | None) -> None:
     dish.editorial_blurb = story
     dish.editorial_origin = origin
     dish.editorial_blurb_lang = "es"
-    dish.editorial_blurb_source = "claude"
+    dish.editorial_blurb_source = "gemini"
     dish.editorial_prompt_version = EDITORIAL_PROMPT_VERSION
     dish.editorial_cached_at = datetime.now(timezone.utc)
 

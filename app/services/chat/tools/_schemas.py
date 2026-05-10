@@ -902,11 +902,11 @@ class RequestReservationInput(BaseModel):
 def pydantic_to_anthropic_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Render a Pydantic model as an inlined JSONSchema for tool specs.
 
-    Pydantic emits ``$defs`` plus ``$ref`` for nested enums. Anthropic
-    accepts that shape, but inlining keeps the wire payload smaller and
-    portable across whichever provider litellm is proxying. Sibling
-    keywords on the ``$ref`` node (e.g. ``description``, ``default``)
-    are preserved so per-field documentation survives the inline pass.
+    Pydantic emits ``$defs`` plus ``$ref`` for nested enums. Inlining
+    them keeps the wire payload smaller and avoids surprises with
+    consumers that don't fully resolve ``$ref``. Sibling keywords on
+    the ``$ref`` node (e.g. ``description``, ``default``) are preserved
+    so per-field documentation survives the inline pass.
     """
     raw = model.model_json_schema()
     defs = raw.pop("$defs", {})

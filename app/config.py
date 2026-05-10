@@ -42,13 +42,10 @@ class Settings(BaseSettings):
     # the existing pgvector(768) schema without a migration.
     EMBEDDINGS_MODEL: str = "gemini-embedding-2"
     # Per-agent model override. Falls back to CHAT_MODEL for back-compat.
+    # Both agents (B2C Sommelier/Ghostwriter and B2B Business) run on
+    # Gemini via google-genai directly, no provider prefix needed.
     CHAT_MODEL_B2C: str | None = None
-    CHAT_MODEL_B2B: str = "anthropic/claude-sonnet-4-6"
-    # When true, the chat agent loop bypasses litellm and talks to
-    # Gemini directly via google-genai. Lets us escape the litellm
-    # 1.55.4 ↔ Vertex Beta thoughtSignature bug class. Default off
-    # while we validate; flip on per-environment when ready.
-    GEMINI_DIRECT: bool = False
+    CHAT_MODEL_B2B: str | None = None
     # Toggle for the in-process worker that drains the ``async_job``
     # queue (re-embed / sentiment for reviews). On in production and
     # local dev (so ``docker compose up`` exercises the same flow as
