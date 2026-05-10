@@ -156,12 +156,6 @@ class AgentLoop:
     ) -> None:
         self.model = model
         self.registry = registry
-        # Gemini-family models force serial tool_calls (1 per iter) to
-        # work around the litellm 1.55.4 parallel-call signature bug.
-        # That turns one model turn with 4 calls into 4 iterations, so
-        # bump headroom proportionally for those models.
-        if model.startswith(("gemini/", "vertex_ai/")) and max_iterations < 10:
-            max_iterations = 10
         self.max_iterations = max_iterations
         self.max_tokens = max_tokens
         self.api_key = api_key
@@ -257,31 +251,6 @@ class AgentLoop:
                 for _, bucket in sorted(tool_calls_in_progress.items())
                 if bucket["name"]
             ]
-            # Force serial tool_calls on Gemini-family models. litellm
-            # 1.55.4 transports `thoughtSignature` smuggle-ándolo en el
-            # id de cada tool_call con sufijo `__thought__<base64>` y lo
-            # desempaqueta cuando arma el siguiente request a Vertex. Ese
-            # unpack se rompe para tool_calls paralelos en una misma
-            # respuesta — el primero llega con signature, los siguientes
-            # llegan sin → Vertex rechaza la iteración N+1 con `Function
-            # call is missing a thought_signature in functionCall parts
-            # ... position 2`. El bug es en el unpack, no en el aggregate
-            # del stream (todos los ids llegan con `__thought__` en
-            # ambos lados — verificado).
-            #
-            # Mientras litellm no lo arregle, capamos a 1 tool_call por
-            # iteración. Si Vertex nunca ve un assistant turn con varios
-            # functionCall parts, no puede tirar `position 2`. Los calls
-            # restantes los reintenta el modelo en iteraciones siguientes
-            # (max_iterations=5 deja margen sobrado para 1-3 calls
-            # típicos del sommelier).
-            if self.model.startswith(("gemini/", "vertex_ai/")) and len(ordered_calls) > 1:
-                logger.warning(
-                    "agent_loop: serializing %d parallel tool_call(s) → 1 "
-                    "(Gemini parallel-call signature bug)",
-                    len(ordered_calls),
-                )
-                ordered_calls = ordered_calls[:1]
             for bucket in ordered_calls:
                 if not bucket["id"]:
                     bucket["id"] = f"call_{uuid.uuid4().hex[:12]}"
@@ -457,7 +426,4 @@ def default_b2b_model() -> str:
 
 
 def default_api_key() -> str | None:
-    # Fall back to GEMINI_API_KEY so the chat loop has auth even if only
-    # one of the two keys is set. Defensive only — prod and dev both have
-    # CHAT_API_KEY today.
-    return os.getenv("CHAT_API_KEY") or os.getenv("GEMINI_API_KEY") or None
+    return os.getenv("CHAT_API_KEY") or None
