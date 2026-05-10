@@ -33,10 +33,13 @@ class Comment(Base):
         ForeignKey("dish_reviews.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    # Nullable + SET NULL: cuando un user pide borrado GDPR, sus
+    # comentarios sobreviven anónimos para no romper hilos (migración
+    # 057). El FE renderiza ``Anónimo`` cuando ``user`` es None.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
     parent_comment_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

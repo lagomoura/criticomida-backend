@@ -102,22 +102,29 @@ def _viewer_liked_sq(viewer: User | None):
 
 
 def _base_select(viewer: User | None) -> Select:
+    # outer join: comentarios con user_id NULL (autor borró su cuenta —
+    # migración 057) tienen que seguir apareciendo en el hilo, renderizados
+    # como Anónimo en el FE.
     return select(
         Comment,
         User,
         _replies_count_sq().label("replies_count"),
         _likes_count_sq().label("likes_count"),
         _viewer_liked_sq(viewer).label("viewer_liked"),
-    ).join(User, Comment.user_id == User.id)
+    ).outerjoin(User, Comment.user_id == User.id)
 
 
 def _row_to_response(row, *, viewer: User | None) -> CommentResponse:
     comment: Comment = row[0]
-    author: User = row[1]
+    author: User | None = row[1]
     replies_count: int = int(row[2] or 0)
     likes_count: int = int(row[3] or 0)
     viewer_liked: bool = bool(row[4])
-    is_owner = viewer is not None and viewer.id == comment.user_id
+    is_owner = (
+        viewer is not None
+        and comment.user_id is not None
+        and viewer.id == comment.user_id
+    )
     is_admin = viewer is not None and viewer.role == UserRole.admin
     return CommentResponse(
         id=comment.id,
@@ -126,18 +133,25 @@ def _row_to_response(row, *, viewer: User | None) -> CommentResponse:
         created_at=comment.created_at,
         updated_at=comment.updated_at,
         body=comment.body,
-        author=CommentAuthor(
-            id=author.id,
-            display_name=author.display_name,
-            handle=author.handle,
-            avatar_url=author.avatar_url,
+        author=(
+            CommentAuthor(
+                id=author.id,
+                display_name=author.display_name,
+                handle=author.handle,
+                avatar_url=author.avatar_url,
+            )
+            if author is not None
+            else None
         ),
         replies_count=replies_count,
         likes_count=likes_count,
         viewer_liked=viewer_liked,
         can_delete=is_owner or is_admin,
         can_edit=is_owner,
-        can_report=viewer is not None and not is_owner,
+        # No se reporta un comentario sin autor — el target del report
+        # debe ser un usuario; un comment anónimo (user borrado) no
+        # apunta a nadie reportable.
+        can_report=viewer is not None and not is_owner and author is not None,
     )
 
 

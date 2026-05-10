@@ -25,7 +25,10 @@ class CommentResponse(BaseModel):
     parent_comment_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
-    author: CommentAuthor
+    # ``author`` es None cuando el usuario que lo escribió borró su
+    # cuenta (migración 057: SET NULL preserva el contexto del hilo,
+    # el FE lo renderiza como "Anónimo").
+    author: CommentAuthor | None = None
     body: str
     replies_count: int = 0
     likes_count: int = 0
