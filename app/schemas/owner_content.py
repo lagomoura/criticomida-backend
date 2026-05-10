@@ -97,3 +97,37 @@ class OwnerReviewsListResponse(BaseModel):
     items: list[OwnerReviewItem]
     total: int
     pending_count: int
+
+
+# ----- Dish cover image (owner-managed) -----
+
+
+class DishCoverUpdate(BaseModel):
+    """Body para promover una URL ya subida (vía /api/images/upload o
+    proveniente de una review existente) a foto oficial del plato."""
+
+    url: str = Field(min_length=1, max_length=500)
+
+
+class DishCoverRead(BaseModel):
+    dish_id: uuid.UUID
+    cover_image_url: str | None
+
+
+class DishPhotoCandidate(BaseModel):
+    """Foto subida por un comensal en una review, candidata a ser promovida
+    a foto oficial del plato. Solo se ofrecen las fotos visibles (review no
+    eliminada). Para reviews anónimas se omite el autor."""
+
+    review_id: uuid.UUID
+    image_id: uuid.UUID
+    url: str
+    alt_text: str | None
+    review_rating: float
+    review_created_at: datetime
+    user_display_name: str | None
+    is_anonymous: bool
+
+
+class DishPhotoCandidatesResponse(BaseModel):
+    items: list[DishPhotoCandidate]

@@ -42,6 +42,7 @@ from app.routers import (
     menus,
     notifications,
     owner_content,
+    owner_dishes,
     owner_preferences,
     posts,
     ratings,
@@ -172,6 +173,7 @@ def create_app(
     application.include_router(admin.router)
     application.include_router(claims.router)
     application.include_router(owner_content.router)
+    application.include_router(owner_dishes.router)
     application.include_router(owner_preferences.router)
     application.include_router(user_preferences.router)
     application.include_router(ghostwriter.router)
