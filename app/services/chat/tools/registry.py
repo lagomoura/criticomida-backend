@@ -83,9 +83,15 @@ def build_registry(
         # Detail lookups respect the conversation scope: a verified
         # owner asking about "el risotto" must not be answered with a
         # competitor's dish even if the LLM passed an unrelated UUID.
+        # ``user_id`` solo se propaga cuando NO hay scope (Sommelier) —
+        # habilita el filtro de safety en top_reviews. El Business deja
+        # el filtro fuera a propósito: la tool ahí es de diagnóstico
+        # interno del owner, no de consumo social del comensal.
         registry.register(
             make_get_dish_detail_tool(
-                db, restaurant_scope_id=restaurant_scope_id
+                db,
+                restaurant_scope_id=restaurant_scope_id,
+                user_id=user_id if restaurant_scope_id is None else None,
             )
         )
 

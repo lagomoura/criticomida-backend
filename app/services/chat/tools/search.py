@@ -353,6 +353,7 @@ def make_get_dish_detail_tool(
     db: AsyncSession,
     *,
     restaurant_scope_id: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> ToolSpec:
     """Build the ``get_dish_detail`` tool.
 
@@ -363,10 +364,20 @@ def make_get_dish_detail_tool(
     The Business agent passes ``restaurant_scope_id`` so detail lookups
     can't leak across restaurants; the Sommelier leaves it None and
     searches the whole catalog.
+
+    ``user_id`` (optional, Sommelier-only) habilita el filtro de safety
+    sobre los ``top_reviews``: cuando el comensal autenticado bloqueó o
+    muteó al autor de una reseña, el texto NO llega al LLM (cierra el
+    caveat anotado en docs/ia_services.md). El Business deliberadamente
+    no pasa ``user_id`` — la tool ahí sirve para diagnóstico de pilares,
+    no para consumo social.
     """
 
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         from app.models.dish import DishReview
+        from app.services.safety_service import (
+            excluded_author_ids_subquery,
+        )
 
         try:
             inputs = GetDishDetailInput.model_validate(args)
@@ -408,8 +419,22 @@ def make_get_dish_detail_tool(
         if dish is None:  # race: deleted between resolver and reload
             return {"error": "Dish disappeared mid-call. Try again."}
 
+        # Safety filter: si el viewer está autenticado, dropear las reviews
+        # de autores bloqueados/muteados antes de que el LLM las vea.
+        # Trabajamos en memoria sobre el resultado del selectinload —
+        # invertirlo en SQL requeriría re-armar la query desde cero. La
+        # cantidad de reviews por plato es chica (decenas como mucho), así
+        # que un set-membership en Python alcanza.
+        reviews = list(dish.reviews)
+        if user_id is not None and reviews:
+            excluded_rows = await db.execute(
+                excluded_author_ids_subquery(user_id)
+            )
+            excluded_ids = {row[0] for row in excluded_rows.all()}
+            reviews = [r for r in reviews if r.user_id not in excluded_ids]
+
         top_reviews = sorted(
-            dish.reviews, key=lambda r: float(r.rating or 0), reverse=True
+            reviews, key=lambda r: float(r.rating or 0), reverse=True
         )[:3]
         return {
             **_serialize_dish(dish),
