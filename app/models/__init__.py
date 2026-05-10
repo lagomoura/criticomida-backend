@@ -35,7 +35,14 @@ from app.models.menu import Menu
 from app.models.user_feedback import UserFeedback
 from app.models.follow import Follow
 from app.models.like import CommentLike, Like
-from app.models.social import Bookmark, Comment, Notification, Report
+from app.models.social import (
+    Bookmark,
+    Comment,
+    Notification,
+    Report,
+    UserBlock,
+    UserMute,
+)
 from app.models.chat import (
     ChatAgent,
     ChatConversation,
@@ -83,6 +90,8 @@ __all__ = [
     "Notification",
     "Bookmark",
     "Report",
+    "UserBlock",
+    "UserMute",
     "ChatAgent",
     "ChatConversation",
     "ChatMessage",

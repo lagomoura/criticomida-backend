@@ -1,4 +1,4 @@
-"""Models for comments, notifications, bookmarks, reports (PR 3)."""
+"""Models for comments, notifications, bookmarks, reports, blocks, mutes."""
 
 import uuid
 from datetime import datetime, timezone
@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     PrimaryKeyConstraint,
     String,
 )
@@ -170,6 +171,68 @@ class Report(Base):
     entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class UserBlock(Base):
+    """``blocker_id`` blocked ``blocked_id``. Bidirectional in impact:
+    the blocked user can't follow, comment, or notify the blocker, and
+    neither side sees the other in feeds. Hard-delete on unblock —
+    history of blocks isn't a useful artifact."""
+
+    __tablename__ = "user_blocks"
+    __table_args__ = (
+        PrimaryKeyConstraint("blocker_id", "blocked_id", name="pk_user_blocks"),
+        CheckConstraint(
+            "blocker_id <> blocked_id", name="ck_user_blocks_no_self"
+        ),
+        Index("ix_user_blocks_blocked_id", "blocked_id"),
+    )
+
+    blocker_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    blocked_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class UserMute(Base):
+    """``muter_id`` silenced ``muted_id``. Unidirectional and silent:
+    the muted user is unaware. The muter just stops receiving content
+    and notifications from that user."""
+
+    __tablename__ = "user_mutes"
+    __table_args__ = (
+        PrimaryKeyConstraint("muter_id", "muted_id", name="pk_user_mutes"),
+        CheckConstraint(
+            "muter_id <> muted_id", name="ck_user_mutes_no_self"
+        ),
+    )
+
+    muter_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    muted_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

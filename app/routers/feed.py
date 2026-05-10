@@ -42,6 +42,7 @@ from app.schemas.feed import (
     FeedStats,
     FeedViewerState,
 )
+from app.services.safety_service import excluded_author_ids_subquery
 
 router = APIRouter(tags=["feed"])
 
@@ -258,6 +259,17 @@ async def _build_feed_items(
         stmt = stmt.where(predicate)
     if cursor_dt is not None:
         stmt = stmt.where(DishReview.created_at < cursor_dt)
+
+    # Safety filter: si hay viewer, ocultar reviews de autores
+    # bloqueados (cualquier dirección) o muteados. Los authors anónimos
+    # tampoco deberían filtrarse — pero el ``user_id`` real está
+    # presente igual; ocultarlos por block es lo correcto: el viewer
+    # NO debería ver contenido de un user que él mismo bloqueó, ni
+    # siquiera bajo display "Anónimo".
+    if viewer_id is not None:
+        stmt = stmt.where(
+            DishReview.user_id.notin_(excluded_author_ids_subquery(viewer_id))
+        )
 
     if rank_by_priority:
         # Composite ranking: quality (rating ≥ 4 → +2), engagement (scaled so

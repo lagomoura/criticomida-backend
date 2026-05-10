@@ -18,6 +18,7 @@ from app.schemas.social import (
     FollowersPage,
 )
 from app.services.notification_service import record_follow_notification
+from app.services.safety_service import is_blocked_either_way
 
 router = APIRouter(prefix="/api/users", tags=["follows"])
 
@@ -65,6 +66,14 @@ async def follow_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No podés seguirte a vos mismo.",
+        )
+
+    # Block bidireccional: ningún lado puede iniciar follow tras un block.
+    # 404 (no 403) para no filtrar quién bloqueó a quién.
+    if await is_blocked_either_way(db, current_user.id, target.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado",
         )
 
     existing = await db.execute(

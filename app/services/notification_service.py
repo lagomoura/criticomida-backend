@@ -20,6 +20,10 @@ from app.services.mention_service import (
     extract_handles,
     resolve_mention_recipients,
 )
+from app.services.safety_service import (
+    is_blocked_either_way,
+    should_deliver_notification,
+)
 
 
 MentionTargetKind = Literal["comment", "reply", "post", "owner_response"]
@@ -104,6 +108,10 @@ async def record_like_notification(
 ) -> None:
     if actor_id == review_owner_id:
         return
+    if not await should_deliver_notification(
+        db, recipient_id=review_owner_id, actor_id=actor_id
+    ):
+        return
     ctx = await _review_like_context(db, review_id)
     db.add(
         Notification(
@@ -125,6 +133,10 @@ async def record_comment_notification(
     comment_body: str,
 ) -> None:
     if actor_id == review_owner_id:
+        return
+    if not await should_deliver_notification(
+        db, recipient_id=review_owner_id, actor_id=actor_id
+    ):
         return
     excerpt = (comment_body[:60] + "…") if len(comment_body) > 60 else comment_body
     text = f'comentó tu reseña: "{excerpt}"'
@@ -149,6 +161,10 @@ async def record_comment_like_notification(
     review_id: uuid.UUID,
 ) -> None:
     if actor_id == comment_owner_id:
+        return
+    if not await should_deliver_notification(
+        db, recipient_id=comment_owner_id, actor_id=actor_id
+    ):
         return
     excerpt = (comment_body[:60] + "…") if len(comment_body) > 60 else comment_body
     text = f'le dio like a tu comentario: "{excerpt}"'
@@ -175,6 +191,10 @@ async def record_comment_reply_notification(
 ) -> None:
     if actor_id == parent_owner_id:
         return
+    if not await should_deliver_notification(
+        db, recipient_id=parent_owner_id, actor_id=actor_id
+    ):
+        return
     excerpt = (reply_body[:60] + "…") if len(reply_body) > 60 else reply_body
     text = f'respondió tu comentario: "{excerpt}"'
     db.add(
@@ -196,6 +216,10 @@ async def record_follow_notification(
     target_user_id: uuid.UUID,
 ) -> None:
     if actor_id == target_user_id:
+        return
+    if not await should_deliver_notification(
+        db, recipient_id=target_user_id, actor_id=actor_id
+    ):
         return
     db.add(
         Notification(
@@ -248,6 +272,13 @@ async def record_mention_notifications(
         return
     text = _mention_text(target_kind, body)
     for user in recipients:
+        # Cada recipient se verifica individualmente: el actor puede
+        # mencionar a 5 usuarios en un comment y solo 3 deben recibir
+        # la notif (los otros 2 lo bloquearon o lo silenciaron).
+        if not await should_deliver_notification(
+            db, recipient_id=user.id, actor_id=actor_id
+        ):
+            continue
         db.add(
             Notification(
                 recipient_user_id=user.id,
@@ -273,6 +304,12 @@ async def record_review_on_owned_restaurant_notification(
     """Avisa al verified owner cuando un comensal sube una reseña en su
     restaurante. No-op si el autor es el mismo owner."""
     if actor_id == owner_user_id:
+        return
+    # Owner safety: si el reviewer y el owner se bloquearon mutuamente, no
+    # llega la notif. (Si el reviewer está en mute, igual notificamos —
+    # el owner conscientemente eligió silenciar a alguien que reseñó su
+    # restaurante; no le ahorramos la notif crítica del negocio.)
+    if await is_blocked_either_way(db, owner_user_id, actor_id):
         return
     text = (
         f"publicó una reseña de {dish_name} ({rating:.1f}★). "

@@ -49,6 +49,7 @@ from app.routers import (
     reports,
     restaurants,
     reviews,
+    safety,
     search,
     trending,
     user_preferences,
@@ -145,6 +146,7 @@ def create_app(
     application.include_router(reviews.router)
     application.include_router(users.router)
     application.include_router(follows.router)
+    application.include_router(safety.router)
     application.include_router(likes.router)
     application.include_router(comments.router)
     application.include_router(comment_likes.router)
