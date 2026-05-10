@@ -68,6 +68,14 @@ def _api_key() -> str | None:
     )
 
 
+def _supports_anthropic_prompt_cache(model: str) -> bool:
+    # `cache_control: ephemeral` es feature de Anthropic. Adjuntarlo en Gemini
+    # dispara el path de Vertex context caching en litellm, que tiene un bug
+    # conocido (`AttributeError: __annotations__`) y rompe la llamada entera.
+    m = model.lower()
+    return m.startswith("anthropic/") or "claude" in m
+
+
 def _build_user_prompt(dish: Dish, restaurant: Restaurant) -> str:
     parts = [f"Plato: {dish.name}"]
     if restaurant.cuisine_types:
@@ -116,22 +124,25 @@ async def _generate_blurb(
     if not api_key:
         return None
 
+    model = _model()
+    if _supports_anthropic_prompt_cache(model):
+        system_content: str | list[dict] = [
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    else:
+        system_content = SYSTEM_PROMPT
+
     try:
         messages = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": _build_user_prompt(dish, restaurant)},
         ]
         response = await litellm.acompletion(
-            model=_model(),
+            model=model,
             messages=messages,
             max_tokens=320,
             response_format={"type": "json_object"},
