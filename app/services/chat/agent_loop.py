@@ -156,6 +156,12 @@ class AgentLoop:
     ) -> None:
         self.model = model
         self.registry = registry
+        # Gemini-family models force serial tool_calls (1 per iter) to
+        # work around the litellm 1.55.4 parallel-call signature bug.
+        # That turns one model turn with 4 calls into 4 iterations, so
+        # bump headroom proportionally for those models.
+        if model.startswith(("gemini/", "vertex_ai/")) and max_iterations < 10:
+            max_iterations = 10
         self.max_iterations = max_iterations
         self.max_tokens = max_tokens
         self.api_key = api_key
@@ -251,38 +257,31 @@ class AgentLoop:
                 for _, bucket in sorted(tool_calls_in_progress.items())
                 if bucket["name"]
             ]
-            # Vertex AI rejects assistant turns whose functionCall parts
-            # are missing `thoughtSignature`. litellm 1.55.4 transports
-            # the signature by smuggling it into the tool_call id with a
-            # `__thought__<base64>` suffix and unpacks it on the next
-            # request. The aggregation of streamed chunks works fine for
-            # a single tool_call per turn but loses the suffix on some
-            # parallel tool_calls when chunk timing is tight (observed in
-            # Railway us-east4 → Vertex Beta us-east4 — local from a
-            # higher-RTT path always preserves all suffixes). When that
-            # happens, re-sending the assistant turn on iteration N+1
-            # yields `Function call is missing a thought_signature in
-            # functionCall parts ... position 2`.
+            # Force serial tool_calls on Gemini-family models. litellm
+            # 1.55.4 transports `thoughtSignature` smuggle-ándolo en el
+            # id de cada tool_call con sufijo `__thought__<base64>` y lo
+            # desempaqueta cuando arma el siguiente request a Vertex. Ese
+            # unpack se rompe para tool_calls paralelos en una misma
+            # respuesta — el primero llega con signature, los siguientes
+            # llegan sin → Vertex rechaza la iteración N+1 con `Function
+            # call is missing a thought_signature in functionCall parts
+            # ... position 2`. El bug es en el unpack, no en el aggregate
+            # del stream (todos los ids llegan con `__thought__` en
+            # ambos lados — verificado).
             #
-            # Drop tool_calls without the suffix so iteration N+1 only
-            # carries valid functionCall parts. The model will retry the
-            # dropped calls in subsequent iterations. Edge case: if every
-            # call lost its suffix, leave them alone — surfacing the
-            # original Vertex error is better than silently producing
-            # an empty no-op iteration.
-            if self.model.startswith(("gemini/", "vertex_ai/")) and ordered_calls:
-                with_sig = [
-                    tc for tc in ordered_calls
-                    if "__thought__" in (tc.get("id") or "")
-                ]
-                if with_sig and len(with_sig) < len(ordered_calls):
-                    logger.warning(
-                        "agent_loop: dropped %d/%d parallel tool_call(s) "
-                        "missing thoughtSignature suffix",
-                        len(ordered_calls) - len(with_sig),
-                        len(ordered_calls),
-                    )
-                    ordered_calls = with_sig
+            # Mientras litellm no lo arregle, capamos a 1 tool_call por
+            # iteración. Si Vertex nunca ve un assistant turn con varios
+            # functionCall parts, no puede tirar `position 2`. Los calls
+            # restantes los reintenta el modelo en iteraciones siguientes
+            # (max_iterations=5 deja margen sobrado para 1-3 calls
+            # típicos del sommelier).
+            if self.model.startswith(("gemini/", "vertex_ai/")) and len(ordered_calls) > 1:
+                logger.warning(
+                    "agent_loop: serializing %d parallel tool_call(s) → 1 "
+                    "(Gemini parallel-call signature bug)",
+                    len(ordered_calls),
+                )
+                ordered_calls = ordered_calls[:1]
             for bucket in ordered_calls:
                 if not bucket["id"]:
                     bucket["id"] = f"call_{uuid.uuid4().hex[:12]}"
