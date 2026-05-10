@@ -29,6 +29,7 @@ from sqlalchemy.orm import selectinload
 from app.models.dish import Dish, DishReview, SentimentLabel
 from app.models.owner_content import DishReviewOwnerResponse
 from app.models.restaurant import Restaurant
+from app.models.user import User
 from app.services.chat.agent_loop import ToolSpec
 from app.services.chat.tools._schemas import (
     BaselineKind,
@@ -351,12 +352,18 @@ def make_suggest_review_response_tool(
             }
 
         stmt = (
-            select(DishReview, Dish, DishReviewOwnerResponse.review_id)
+            select(
+                DishReview,
+                Dish,
+                DishReviewOwnerResponse.review_id,
+                User.display_name,
+            )
             .join(Dish, DishReview.dish_id == Dish.id)
             .outerjoin(
                 DishReviewOwnerResponse,
                 DishReviewOwnerResponse.review_id == DishReview.id,
             )
+            .outerjoin(User, User.id == DishReview.user_id)
             .where(
                 DishReview.id == review_uuid,
                 Dish.restaurant_id == restaurant_scope_id,
@@ -374,7 +381,17 @@ def make_suggest_review_response_tool(
                 )
             }
 
-        review, dish, existing_response_id = result
+        review, dish, existing_response_id, author_display_name = result
+
+        # Authors who opted into anonymity (is_anonymous=True) o reseñas
+        # de invitados sin user_id quedan reportadas como anónimas. Para
+        # cualquier otro caso usamos display_name del User. La FE ya
+        # respeta is_anonymous en otros lados; replicamos la semántica
+        # acá para no exponer el nombre de un usuario que se anonimizó.
+        if review.is_anonymous or not author_display_name:
+            author_for_payload: str | None = None
+        else:
+            author_for_payload = author_display_name
 
         if existing_response_id is not None:
             # Already responded to — flag clearly so the agent can
@@ -439,6 +456,7 @@ def make_suggest_review_response_tool(
                     if review.sentiment_label is not None
                     else None
                 ),
+                "author_display_name": author_for_payload,
             },
             "dish": {
                 "id": str(dish.id),
@@ -456,9 +474,10 @@ def make_suggest_review_response_tool(
             "format": (
                 "Después de leer este payload, en tu próximo mensaje al "
                 "owner: (1) Citá la reseña original primero en texto "
-                "plano markdown (NO blockquote): "
+                "plano markdown (NO blockquote). Primera línea: "
                 "'**Reseña:** {dish.name} · {review.rating}★ · "
-                "{review.created_at fecha corta}' en una línea y abajo "
+                "{review.created_at fecha corta} · {review.author_display_name "
+                "o \"Anónimo\" si es null}'. Segunda línea: "
                 "_\"{review.note recortado a ~280 chars}\"_ en italics. "
                 "Si review.note es null, escribí _\"Sin comentario "
                 "escrito\"_. (2) UNA línea corta de intro tipo 'Te "

@@ -142,12 +142,17 @@ agregado de los tres pilares. Si nombra uno específico, profundizá ahí.
   la FE lo extrae del primero que encuentra):
 
   ```
-  **Reseña:** [plato] · [rating]★ · [fecha corta]
+  **Reseña:** [plato] · [rating]★ · [fecha corta] · [autor o "Anónimo"]
   _"[texto literal de la reseña, recortado a ~280 chars con `…` si es más largo]"_
   ```
 
-  Si la reseña no tiene texto (solo rating), igual mostrá la línea
-  meta (plato/rating/fecha) y marcá _"Sin comentario escrito"_.
+  - El autor sale de `review.author_display_name`. Si ese campo es
+    `null` (reseña marcada como anónima o usuario sin display_name),
+    escribí `Anónimo` literal — **no** lo omitas. La línea meta
+    siempre tiene exactamente 4 campos separados por `·`.
+  - Si la reseña no tiene texto (solo rating), igual mostrá la
+    línea meta completa y abajo escribí _"Sin comentario escrito"_.
+
   Nunca presentes un draft sin citar — el owner pierde contexto y
   aprueba a ciegas. **El draft sigue siendo el primer (y único)
   blockquote del mensaje.**
@@ -385,7 +390,7 @@ próximo mensaje, en el idioma de la reseña original.
 
 **Respuesta**: "Esta es la reseña que vamos a responder:
 
-**Reseña:** Risotto de Hongos · 1★ · 12 abr 2026
+**Reseña:** Risotto de Hongos · 1★ · 12 abr 2026 · Mariana G.
 _"Insípido y frío. No vuelvo."_
 
 Te propongo este draft (tono empático, en español porque la reseña
