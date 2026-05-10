@@ -182,21 +182,6 @@ class AgentLoop:
             }
             if self.api_key:
                 kwargs["api_key"] = self.api_key
-            # Disable thinking on Gemini-family models. Two reasons:
-            # (1) thinking_budget>0 makes Gemini emit a `thought_signature`
-            # alongside each functionCall that Vertex AI then *requires* to
-            # be echoed back on the next turn. Re-streaming the assistant
-            # turn back into messages without that signature is what causes
-            # `Function call is missing a thought_signature in functionCall
-            # parts`. (2) Per the comment below, thinking actively *hurt*
-            # tool-use accuracy on our eval suite.
-            #
-            # We pass only the Gemini-native shape — passing both `thinking`
-            # and `thinking_config` makes litellm populate the same Vertex
-            # oneof twice, which Vertex rejects with `_thinking_config is
-            # already set`.
-            if self.model.startswith(("gemini/", "vertex_ai/")):
-                kwargs["thinking_config"] = {"thinking_budget": 0}
 
             stream_started = time.monotonic()
             try:
@@ -266,6 +251,38 @@ class AgentLoop:
                 for _, bucket in sorted(tool_calls_in_progress.items())
                 if bucket["name"]
             ]
+            # Vertex AI rejects assistant turns whose functionCall parts
+            # are missing `thoughtSignature`. litellm 1.55.4 transports
+            # the signature by smuggling it into the tool_call id with a
+            # `__thought__<base64>` suffix and unpacks it on the next
+            # request. The aggregation of streamed chunks works fine for
+            # a single tool_call per turn but loses the suffix on some
+            # parallel tool_calls when chunk timing is tight (observed in
+            # Railway us-east4 → Vertex Beta us-east4 — local from a
+            # higher-RTT path always preserves all suffixes). When that
+            # happens, re-sending the assistant turn on iteration N+1
+            # yields `Function call is missing a thought_signature in
+            # functionCall parts ... position 2`.
+            #
+            # Drop tool_calls without the suffix so iteration N+1 only
+            # carries valid functionCall parts. The model will retry the
+            # dropped calls in subsequent iterations. Edge case: if every
+            # call lost its suffix, leave them alone — surfacing the
+            # original Vertex error is better than silently producing
+            # an empty no-op iteration.
+            if self.model.startswith(("gemini/", "vertex_ai/")) and ordered_calls:
+                with_sig = [
+                    tc for tc in ordered_calls
+                    if "__thought__" in (tc.get("id") or "")
+                ]
+                if with_sig and len(with_sig) < len(ordered_calls):
+                    logger.warning(
+                        "agent_loop: dropped %d/%d parallel tool_call(s) "
+                        "missing thoughtSignature suffix",
+                        len(ordered_calls) - len(with_sig),
+                        len(ordered_calls),
+                    )
+                    ordered_calls = with_sig
             for bucket in ordered_calls:
                 if not bucket["id"]:
                     bucket["id"] = f"call_{uuid.uuid4().hex[:12]}"
