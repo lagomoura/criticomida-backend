@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,8 @@ from app.schemas.social import (
     FollowActionResponse,
     FollowerSummary,
     FollowersPage,
+    UserSuggestion,
+    UserSuggestionsPage,
 )
 from app.services.notification_service import record_follow_notification
 from app.services.safety_service import is_blocked_either_way
@@ -166,6 +168,112 @@ async def list_following(
         cursor=cursor,
         limit=limit,
     )
+
+
+@router.get("/me/suggestions", response_model=UserSuggestionsPage)
+async def suggest_users_to_follow(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(default=10, ge=1, le=50),
+) -> UserSuggestionsPage:
+    """People-you-may-know.
+
+    Combina dos señales en SQL puro (raw text para que la CTE sea legible):
+
+    - **Friends-of-friends**: gente que sigue >=1 de los que el viewer ya
+      sigue. ``shared_followers`` = cuántos del grafo del viewer la
+      siguen.
+    - **Co-reviewers**: gente que reseñó >=1 restaurante donde el viewer
+      también reseñó. ``shared_restaurants`` = cantidad de restaurantes
+      en común.
+
+    Score: ``shared_followers * 3 + shared_restaurants``. Excluye:
+    - el viewer mismo
+    - usuarios que ya sigue
+    - usuarios bloqueados (cualquier dirección) o muteados por el viewer.
+
+    Habilitado por ``ix_follows_following_id`` de la migración 056. El
+    audit dejó pendiente un re-rank por cosine de embeddings sobre el
+    top-50 (señal de "gusto gastronómico"). No se implementó en v1:
+    requiere materializar centroides por usuario para no degradar. El
+    score actual con 2 señales suele bastar; el cosine se agrega si la
+    métrica de conversión (follow desde sugerencia) sale baja.
+    """
+    sql = text(
+        """
+        WITH excluded AS (
+            SELECT blocked_id AS uid FROM user_blocks WHERE blocker_id = :viewer_id
+            UNION ALL
+            SELECT blocker_id FROM user_blocks WHERE blocked_id = :viewer_id
+            UNION ALL
+            SELECT muted_id FROM user_mutes WHERE muter_id = :viewer_id
+            UNION ALL
+            SELECT following_id FROM follows WHERE follower_id = :viewer_id
+            UNION ALL
+            SELECT CAST(:viewer_id AS uuid)
+        ),
+        fof AS (
+            SELECT f2.following_id AS candidate_id,
+                   COUNT(DISTINCT f1.following_id) AS shared_followers
+            FROM follows f1
+            JOIN follows f2 ON f2.follower_id = f1.following_id
+            WHERE f1.follower_id = :viewer_id
+              AND f2.following_id NOT IN (SELECT uid FROM excluded)
+            GROUP BY f2.following_id
+        ),
+        co_reviewers AS (
+            SELECT dr2.user_id AS candidate_id,
+                   COUNT(DISTINCT d1.restaurant_id) AS shared_restaurants
+            FROM dish_reviews dr1
+            JOIN dishes d1 ON d1.id = dr1.dish_id
+            JOIN dishes d2 ON d2.restaurant_id = d1.restaurant_id
+            JOIN dish_reviews dr2 ON dr2.dish_id = d2.id
+            WHERE dr1.user_id = :viewer_id
+              AND dr2.user_id <> :viewer_id
+              AND dr2.user_id NOT IN (SELECT uid FROM excluded)
+            GROUP BY dr2.user_id
+        ),
+        candidates AS (
+            SELECT
+                COALESCE(fof.candidate_id, co_reviewers.candidate_id) AS candidate_id,
+                COALESCE(fof.shared_followers, 0) AS shared_followers,
+                COALESCE(co_reviewers.shared_restaurants, 0) AS shared_restaurants
+            FROM fof
+            FULL OUTER JOIN co_reviewers
+                ON fof.candidate_id = co_reviewers.candidate_id
+        )
+        SELECT
+            u.id,
+            u.display_name,
+            u.handle,
+            u.avatar_url,
+            u.bio,
+            c.shared_followers,
+            c.shared_restaurants
+        FROM candidates c
+        JOIN users u ON u.id = c.candidate_id
+        ORDER BY (c.shared_followers * 3 + c.shared_restaurants) DESC,
+                 u.id
+        LIMIT :limit
+        """
+    )
+    result = await db.execute(
+        sql, {"viewer_id": str(current_user.id), "limit": limit}
+    )
+    rows = result.mappings().all()
+    items = [
+        UserSuggestion(
+            id=row["id"],
+            display_name=row["display_name"],
+            handle=row["handle"],
+            avatar_url=row["avatar_url"],
+            bio=row["bio"],
+            shared_followers=int(row["shared_followers"] or 0),
+            shared_restaurants=int(row["shared_restaurants"] or 0),
+        )
+        for row in rows
+    ]
+    return UserSuggestionsPage(items=items)
 
 
 async def _list_follow_edges(

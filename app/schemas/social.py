@@ -33,6 +33,28 @@ class FollowersPage(BaseModel):
     next_cursor: str | None = None
 
 
+class UserSuggestion(BaseModel):
+    """One candidate row from people-you-may-know.
+
+    ``shared_followers`` cuenta a cuántos del grafo de seguidores del viewer
+    sigue este candidato (friends-of-friends).
+    ``shared_restaurants`` cuenta restaurantes donde tanto el viewer como
+    el candidato reseñaron platos (señal de afinidad gastronómica).
+    """
+
+    id: uuid.UUID
+    display_name: str
+    handle: str | None = None
+    avatar_url: str | None = None
+    bio: str | None = None
+    shared_followers: int = 0
+    shared_restaurants: int = 0
+
+
+class UserSuggestionsPage(BaseModel):
+    items: list[UserSuggestion]
+
+
 class LikeActionResponse(BaseModel):
     """Response for POST/DELETE /api/reviews/{id}/like."""
 
