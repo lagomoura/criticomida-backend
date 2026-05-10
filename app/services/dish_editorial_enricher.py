@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 
@@ -167,14 +169,36 @@ def _is_stale(dish: Dish) -> bool:
 def _cuisine_key(restaurant: Restaurant) -> str:
     """Clave estable de cocina para la cache compartida.
 
-    Usamos solo la primera entrada lowercased — el dish_name normalizado ya
-    diferencia "tortilla española" de "tortilla mexicana" en la mayoría de
-    los casos. Si el restaurante no tiene cuisines, key vacía: el blurb se
-    cachea como "neutro".
+    Tomamos la primera cocina **alfabéticamente** (no la primera del array)
+    para que el orden en `cuisine_types` no parta la cache: un restaurante
+    cargado como ["italiana", "argentina"] y otro como ["argentina", "italiana"]
+    convergen al mismo key. El dish_name normalizado ya diferencia
+    "tortilla española" de "tortilla mexicana" en la mayoría de los casos.
+    Sin cuisines → key vacía: el blurb se cachea como "neutro".
     """
     if not restaurant.cuisine_types:
         return ""
-    return restaurant.cuisine_types[0].strip().lower()[:80]
+    cleaned = sorted(
+        c.strip().lower() for c in restaurant.cuisine_types if c and c.strip()
+    )
+    if not cleaned:
+        return ""
+    return cleaned[0][:80]
+
+
+def _normalize_name_fallback(name: str) -> str:
+    """Reproduce `public.dish_name_normalized(name)` en Python.
+
+    SQL: lower(unaccent(regexp_replace(trim($1), '\\s+', ' ', 'g'))). Lo usamos
+    como fallback cuando `dish.name_normalized` viene vacío (p. ej. dishes
+    insertados antes del trigger o por un edge case del normalizador).
+    """
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
 
 
 async def _read_cache(
@@ -256,6 +280,8 @@ async def refresh_dish_blurb(
         return False
 
     name_key = (dish.name_normalized or "").strip()
+    if not name_key:
+        name_key = _normalize_name_fallback(dish.name or "")
     cuisine_key = _cuisine_key(restaurant)
 
     if name_key:
