@@ -34,6 +34,7 @@ from app.models.chat import (
     ChatMessage,
 )
 from app.models.user import User
+from app.config import settings
 from app.services.chat.agent_loop import (
     AgentEvent,
     AgentLoop,
@@ -41,6 +42,12 @@ from app.services.chat.agent_loop import (
     default_api_key,
     default_b2b_model,
     default_b2c_model,
+)
+from app.services.chat.agent_loop_gemini import (
+    AgentLoop as GeminiAgentLoop,
+    default_api_key_gemini,
+    default_b2b_model_gemini,
+    default_b2c_model_gemini,
 )
 from app.services.chat.preference_intent import detect_preference_intent
 from app.services.chat.user_preference_intent import (
@@ -365,16 +372,32 @@ async def stream_chat(
         conversation_id=conversation.id,
     )
 
-    model = (
-        default_b2b_model()
-        if conversation.agent == ChatAgent.business
-        else default_b2c_model()
-    )
-    loop = AgentLoop(
-        model=model,
-        registry=registry,
-        api_key=default_api_key(),
-    )
+    if settings.GEMINI_DIRECT:
+        # google-genai path — bypasses litellm entirely. Lets us
+        # round-trip thoughtSignature as a real protobuf field instead
+        # of smuggling it inside tool_call ids the way litellm 1.55.4
+        # does (and breaks for parallel calls in Vertex Beta us-east4).
+        model = (
+            default_b2b_model_gemini()
+            if conversation.agent == ChatAgent.business
+            else default_b2c_model_gemini()
+        )
+        loop = GeminiAgentLoop(
+            model=model,
+            registry=registry,
+            api_key=default_api_key_gemini(),
+        )
+    else:
+        model = (
+            default_b2b_model()
+            if conversation.agent == ChatAgent.business
+            else default_b2c_model()
+        )
+        loop = AgentLoop(
+            model=model,
+            registry=registry,
+            api_key=default_api_key(),
+        )
 
     # Buffer the most recent assistant turn so we can attach tool result
     # rows to it before it gets persisted on the next iteration.
@@ -392,6 +415,16 @@ async def stream_chat(
                         "id": tc["id"],
                         "name": tc["name"],
                         "arguments": tc.get("arguments") or "",
+                        # Optional: only the Gemini-direct path sets
+                        # this. Carrying it forward into the DB lets the
+                        # next turn rehydrate the full Part with
+                        # signature so Vertex doesn't reject the
+                        # functionCall on history replay.
+                        **(
+                            {"thought_signature": tc["thought_signature"]}
+                            if tc.get("thought_signature")
+                            else {}
+                        ),
                     }
                     for tc in (turn.tool_calls or [])
                 ]
