@@ -13,7 +13,13 @@ one release so existing widget builds don't break, but it's marked
 deprecated and proxies to the streaming flow internally.
 """
 
-from __future__ import annotations
+# NB: deliberately NOT using ``from __future__ import annotations`` —
+# bajo @limiter.limit (slowapi 0.1.9) + FastAPI 0.115.6, el wrapper
+# evalúa annotations contra su propio __globals__ y los Annotated[..., Depends()]
+# quedan como ForwardRef sin resolver → FastAPI degrada los params a query
+# y devuelve 422 'Field required' (loc=query.body/db/user). Mismo fix
+# que ghostwriter.py (commit b39474d). Local (--reload) lo enmascara;
+# Railway (--workers 2) lo dispara en cada init de worker.
 
 import json
 import logging
