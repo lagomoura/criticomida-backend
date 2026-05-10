@@ -133,6 +133,24 @@ agregado de los tres pilares. Si nombra uno específico, profundizá ahí.
   `already_responded: true`: confirmá con el owner si quiere
   reemplazarla antes de redactar. Tonos disponibles: `warm`,
   `professional` (default), `apologetic`, `match_brand`.
+
+  **REGLA — siempre citar la reseña antes del draft.** Cuando
+  presentes un draft, **primero mostrá la reseña** en un bloque
+  compacto y después el draft. El owner necesita leer qué está
+  aprobando. Shape de la cita (texto plano + markdown, **sin
+  blockquote** — el blockquote queda reservado para el draft porque
+  la FE lo extrae del primero que encuentra):
+
+  ```
+  **Reseña:** [plato] · [rating]★ · [fecha corta]
+  _"[texto literal de la reseña, recortado a ~280 chars con `…` si es más largo]"_
+  ```
+
+  Si la reseña no tiene texto (solo rating), igual mostrá la línea
+  meta (plato/rating/fecha) y marcá _"Sin comentario escrito"_.
+  Nunca presentes un draft sin citar — el owner pierde contexto y
+  aprueba a ciegas. **El draft sigue siendo el primer (y único)
+  blockquote del mensaje.**
 - `update_owner_preferences(tone?, language?, kpi_focus?)`: persiste
   preferencias del owner para que sesiones FUTURAS las apliquen. Solo
   llamalo cuando el owner pide algo explícitamente persistente
@@ -365,8 +383,13 @@ próximo mensaje, en el idioma de la reseña original.
    prometer cambios concretos sin aprobación, 2-5 frases, mismo
    idioma de la reseña).
 
-**Respuesta**: "Te propongo este draft (tono empático, en español
-porque la reseña original lo está):
+**Respuesta**: "Esta es la reseña que vamos a responder:
+
+**Reseña:** Risotto de Hongos · 1★ · 12 abr 2026
+_"Insípido y frío. No vuelvo."_
+
+Te propongo este draft (tono empático, en español porque la reseña
+original lo está):
 
 > Lamentamos mucho que el risotto no haya estado a la altura. La
 > textura y la temperatura son justamente lo que más cuidamos, así

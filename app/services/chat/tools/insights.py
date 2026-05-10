@@ -454,17 +454,22 @@ def make_suggest_review_response_tool(
             ),
             "must_not": _REPLY_HARD_RULES,
             "format": (
-                "Después de leer este payload, redactá el draft directo "
-                "en tu próximo mensaje al owner. Empezá con UNA línea "
-                "corta de intro (ej: 'Te propongo este draft:') y "
-                "después el draft EN UN MARKDOWN BLOCKQUOTE: cada línea "
-                "del draft tiene que empezar con '> '. No uses comillas "
-                "ni triple-fence de código ni HTML — el blockquote es "
-                "el contenedor. La FE extrae el blockquote para "
-                "pre-cargarlo en el modal de respuesta del owner; si "
-                "envolvés el draft en otra cosa el botón 'Responder "
-                "esta reseña' termina con tu intro adentro. NO llames "
-                "otros tools antes de presentarlo."
+                "Después de leer este payload, en tu próximo mensaje al "
+                "owner: (1) Citá la reseña original primero en texto "
+                "plano markdown (NO blockquote): "
+                "'**Reseña:** {dish.name} · {review.rating}★ · "
+                "{review.created_at fecha corta}' en una línea y abajo "
+                "_\"{review.note recortado a ~280 chars}\"_ en italics. "
+                "Si review.note es null, escribí _\"Sin comentario "
+                "escrito\"_. (2) UNA línea corta de intro tipo 'Te "
+                "propongo este draft:'. (3) El draft mismo EN UN "
+                "MARKDOWN BLOCKQUOTE: cada línea del draft empieza con "
+                "'> '. **El blockquote es exclusivo del draft** — la FE "
+                "extrae el primer blockquote del mensaje para "
+                "pre-cargarlo en el modal de respuesta. Si citás la "
+                "reseña con '>' o usás triple-fence/HTML, el botón "
+                "'Responder esta reseña' termina con texto que no es "
+                "el draft. NO llames otros tools antes de presentarlo."
             ),
         }
 
