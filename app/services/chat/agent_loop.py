@@ -179,6 +179,19 @@ class AgentLoop:
                 "max_tokens": self.max_tokens,
                 "tools": self.registry.to_anthropic_tools(),
                 "stream": True,
+                # Gemini 3+ devuelve `thoughtSignature` en cada functionCall
+                # que el siguiente turno DEBE replayar. litellm intenta
+                # embeberlo en el tool_call.id; en algunos backends regionales
+                # de Gemini el chunk de streaming llega sin el signature, el
+                # round-trip se rompe y Gemini responde 400 "Function call is
+                # missing a thought_signature in functionCall parts" — solo
+                # observado en prod (Railway us-east4-eqdc4a), no en local.
+                # `reasoning_effort=disable` mapea a thinkingLevel=minimal +
+                # includeThoughts=false en Gemini 3+; sin thoughts emitidos,
+                # no hay signature que perder. Coincide con el comment de
+                # _DEFAULT_MODEL: "thinking ended up *worse* in tool-use
+                # accuracy".
+                "reasoning_effort": "disable",
             }
             if self.api_key:
                 kwargs["api_key"] = self.api_key
