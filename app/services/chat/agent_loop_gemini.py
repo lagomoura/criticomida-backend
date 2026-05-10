@@ -151,7 +151,7 @@ def _messages_to_contents(
         Part.from_text(...), Part(function_call=..., thought_signature=...)
       ])``
     - tool result → ``Content(role="user", parts=[Part.from_function_response(
-        name=..., response={"result": ...})])``
+        name=..., response={...the tool's output dict, top-level})])``
 
     We collapse consecutive ``tool`` rows into a single ``user``-role
     ``Content`` with one ``function_response`` part each — that's how
@@ -183,10 +183,16 @@ def _messages_to_contents(
                 parsed = json.loads(content) if content else {}
             except (TypeError, ValueError):
                 parsed = {"raw": content}
+            # Pass the dict as-is (no `{"result": ...}` wrapper). Tools
+            # in this codebase always return JSON-serializable dicts;
+            # the model is trained to read function_response payloads
+            # at the top level. The wrapper made the model treat
+            # search_dishes results as opaque and skip the
+            # recommend_dishes follow-up that emits photo cards.
             pending_tool_parts.append(
                 genai_types.Part.from_function_response(
                     name=name,
-                    response={"result": parsed},
+                    response=parsed if isinstance(parsed, dict) else {"value": parsed},
                 )
             )
             continue
@@ -420,7 +426,7 @@ class AgentLoop:
                     tool_response_parts.append(
                         genai_types.Part.from_function_response(
                             name=tool_name,
-                            response={"result": err},
+                            response=err,
                         )
                     )
                     continue
@@ -434,7 +440,7 @@ class AgentLoop:
                     tool_response_parts.append(
                         genai_types.Part.from_function_response(
                             name=tool_name,
-                            response={"result": err},
+                            response=err,
                         )
                     )
                     continue
@@ -479,7 +485,7 @@ class AgentLoop:
                 tool_response_parts.append(
                     genai_types.Part.from_function_response(
                         name=tool_name,
-                        response={"result": output},
+                        response=output if isinstance(output, dict) else {"value": output},
                     )
                 )
 
