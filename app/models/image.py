@@ -21,6 +21,10 @@ class EntityType(str, enum.Enum):
     # es un UUID generado por el cliente — no hay constraint FK porque
     # el entity_type abarca varios destinos heterogéneos.
     chat_attachment = "chat_attachment"
+    # Foto de perfil del usuario. ``entity_id`` es el ``users.id`` del
+    # uploader; el router exige ``entity_id == current_user.id`` para
+    # impedir que un usuario asocie uploads al perfil de otro.
+    user_avatar = "user_avatar"
 
 
 class Image(Base):

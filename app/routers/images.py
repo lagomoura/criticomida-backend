@@ -31,6 +31,17 @@ async def upload_image(
     alt_text: Annotated[str | None, Form()] = None,
     display_order: Annotated[int, Form()] = 0,
 ) -> Image:
+    # Avatares: el ``entity_id`` debe ser el del propio usuario. Sin
+    # este guard cualquiera podría inflar la tabla ``images`` con filas
+    # asociadas al user_id de otra cuenta. No afecta el ``avatar_url``
+    # del otro (eso lo setea ``PATCH /users/me`` con su propio JWT),
+    # pero deja basura cruzada y abre la puerta a abusos futuros.
+    if entity_type == EntityType.user_avatar and entity_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No podés subir avatar para otro usuario",
+        )
+
     # Read once into memory; the helper enforces both the size cap and
     # the magic-bytes whitelist, so we never trust the filename
     # extension or the client-declared ``content_type``.
