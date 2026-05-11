@@ -4,8 +4,25 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel
+
+
+PillarKey = Literal["value_prop", "execution", "presentation", "overall_rating"]
+"""Pilares por los que se puede duelar un par de platos.
+
+- `value_prop` / `execution` / `presentation`: pilares técnicos 1..3 cargados
+  por reseña (avg con shrinkage bayesiano server-side).
+- `overall_rating`: rating general 1..5 (también shrunk).
+"""
+
+DuelFallbackReason = Literal[
+    "root_unique_restaurant",
+    "root_not_found",
+    "family_unique_restaurant",
+    "family_not_found",
+]
 
 
 class DiscoveryPillarStats(BaseModel):
@@ -42,10 +59,47 @@ class DiscoveryDishPage(BaseModel):
 
 
 class DishDuelResponse(BaseModel):
-    """Top 2 platos de una categoría rankeados por costo/beneficio."""
+    """Top 2 platos enfrentados por un pilar elegido.
+
+    Modos de scope:
+    - `family`: 2 platos de restaurantes distintos cuyo `dish_root` pertenece
+      a la misma familia (burger, pizza, pasta, ...). Default del rail nuevo.
+    - `root`: 2 platos con la MISMA `dish_root` exacta (más restrictivo).
+    - solo `category`: legacy, top 2 de la categoría del restaurante.
+    """
 
     category: str | None = None
+    root: str | None = None
+    family: str | None = None
+    pillar: PillarKey | None = None
     items: list[DiscoveryDishItem]
+    fallback_reason: DuelFallbackReason | None = None
+
+
+class DuelRootItem(BaseModel):
+    """Raíz semántica con al menos `min_restaurants` contendientes."""
+
+    root: str
+    restaurant_count: int
+    recent_reviews: int
+    sample_name: str
+
+
+class DuelRootsResponse(BaseModel):
+    items: list[DuelRootItem]
+
+
+class DuelFamilyItem(BaseModel):
+    """Familia semántica con al menos `min_restaurants` contendientes."""
+
+    family: str
+    restaurant_count: int
+    recent_reviews: int
+    sample_name: str
+
+
+class DuelFamiliesResponse(BaseModel):
+    items: list[DuelFamilyItem]
 
 
 class MapDishHighlight(BaseModel):

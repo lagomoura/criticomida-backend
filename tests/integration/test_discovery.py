@@ -274,3 +274,261 @@ async def test_duel_returns_at_most_two(async_client_integration):
     assert r.status_code == 200
     items = r.json()["items"]
     assert len(items) <= 2
+
+
+# =====================================================================
+# Duelo de Platos — por raíz semántica + pilar elegido (migración 059)
+# =====================================================================
+
+
+async def _seed_root_duel(
+    client: httpx.AsyncClient,
+    cookies: Any,
+    *,
+    dish_name: str,
+    restaurant_name: str,
+    score: float,
+    value_prop: int | None = None,
+    execution: int | None = None,
+    presentation: int | None = None,
+) -> None:
+    await _post_review_with_pillars(
+        client,
+        cookies,
+        place_id=f"pytest_place_{uuid.uuid4().hex[:8]}",
+        restaurant_name=restaurant_name,
+        dish_name=dish_name,
+        score=score,
+        value_prop=value_prop,
+        execution=execution,
+        presentation=presentation,
+    )
+
+
+@pytest.mark.asyncio
+async def test_duel_by_root_returns_two_distinct_restaurants(async_client_integration):
+    """`?root=sorrentinos` enfrenta dos platos de restaurantes DIFERENTES."""
+    user = await register_and_login(async_client_integration)
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Sorrentinos de jamón y queso",
+        restaurant_name="Resto Root A", score=4.5, value_prop=3,
+    )
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Sorrentinos al pomodoro",
+        restaurant_name="Resto Root B", score=4.0, value_prop=2,
+    )
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Sorrentinos rellenos",
+        restaurant_name="Resto Root C", score=3.5, value_prop=1,
+    )
+
+    r = await async_client_integration.get(
+        "/api/dishes/duel?root=sorrentinos&pillar=value_prop"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pillar"] == "value_prop"
+    assert body["root"] == "sorrentinos"
+    assert body["fallback_reason"] is None
+    items = body["items"]
+    assert len(items) == 2
+    restaurant_ids = {it["restaurant_id"] for it in items}
+    assert len(restaurant_ids) == 2, "Los 2 platos deben ser de restaurantes distintos"
+
+
+@pytest.mark.asyncio
+async def test_duel_pillar_value_prop_vs_execution_changes_order(async_client_integration):
+    """Cambiar `pillar` reordena los contendientes."""
+    user = await register_and_login(async_client_integration)
+    # A: value_prop alto, execution bajo.
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Milanesa napolitana", restaurant_name="Resto Mila A",
+        score=4.0, value_prop=3, execution=1,
+    )
+    # B: execution alto, value_prop bajo.
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Milanesa con papas", restaurant_name="Resto Mila B",
+        score=4.0, value_prop=1, execution=3,
+    )
+
+    r_val = await async_client_integration.get(
+        "/api/dishes/duel?root=milanesa&pillar=value_prop"
+    )
+    r_exec = await async_client_integration.get(
+        "/api/dishes/duel?root=milanesa&pillar=execution"
+    )
+    assert r_val.status_code == 200 and r_exec.status_code == 200
+    val_items = r_val.json()["items"]
+    exec_items = r_exec.json()["items"]
+    assert len(val_items) == 2 and len(exec_items) == 2
+    # Ganador value_prop = restaurante A; ganador execution = restaurante B.
+    assert val_items[0]["restaurant_name"] == "Resto Mila A"
+    assert exec_items[0]["restaurant_name"] == "Resto Mila B"
+
+
+@pytest.mark.asyncio
+async def test_duel_pillar_overall_rating(async_client_integration):
+    """`pillar=overall_rating` ordena por stars."""
+    user = await register_and_login(async_client_integration)
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Pizza fugazzeta",
+        restaurant_name="Resto Pizza High", score=5.0, value_prop=2,
+    )
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Pizza margarita",
+        restaurant_name="Resto Pizza Low", score=2.0, value_prop=2,
+    )
+
+    r = await async_client_integration.get(
+        "/api/dishes/duel?root=pizza&pillar=overall_rating"
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 2
+    assert items[0]["restaurant_name"] == "Resto Pizza High"
+
+
+@pytest.mark.asyncio
+async def test_duel_root_unique_restaurant_returns_fallback(async_client_integration):
+    """Con un solo restaurante para la raíz, items=[] + fallback_reason."""
+    # Sentinel inventado para no colisionar con seeds ni con otros tests del run.
+    sentinel = f"zzzpytuniq{uuid.uuid4().hex[:8]}"
+    user = await register_and_login(async_client_integration)
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name=sentinel,
+        restaurant_name="Resto Único Sentinel", score=4.5, value_prop=3,
+    )
+
+    r = await async_client_integration.get(
+        f"/api/dishes/duel?root={sentinel}&pillar=value_prop"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["items"] == []
+    assert body["fallback_reason"] == "root_unique_restaurant"
+
+
+@pytest.mark.asyncio
+async def test_duel_root_not_found_returns_fallback(async_client_integration):
+    """Raíz inexistente → items=[] + fallback_reason='root_not_found'."""
+    r = await async_client_integration.get(
+        "/api/dishes/duel?root=inventoinventado12345&pillar=value_prop"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["items"] == []
+    assert body["fallback_reason"] == "root_not_found"
+
+
+@pytest.mark.asyncio
+async def test_duel_legacy_category_only(async_client_integration):
+    """Cliente viejo: sólo `category` (sin `root`) sigue funcionando."""
+    user = await register_and_login(async_client_integration)
+    await _post_review_with_pillars(
+        async_client_integration, user.cookies,
+        place_id=f"pytest_place_{uuid.uuid4().hex[:8]}",
+        restaurant_name="Resto Legacy 1", dish_name="Plato L1",
+        score=4.5, value_prop=3,
+    )
+    cats = await async_client_integration.get("/api/categories")
+    if cats.status_code != 200 or not cats.json():
+        pytest.skip("No categories seeded")
+    slug = cats.json()[0]["slug"]
+
+    r = await async_client_integration.get(f"/api/dishes/duel?category={slug}")
+    assert r.status_code == 200
+    body = r.json()
+    assert "items" in body
+    assert isinstance(body["items"], list)
+
+
+@pytest.mark.asyncio
+async def test_duel_normalizes_input_root(async_client_integration):
+    """El handler normaliza el root del cliente (mayúsculas/acentos)."""
+    user = await register_and_login(async_client_integration)
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Empanadas de carne",
+        restaurant_name="Resto Empa 1", score=4.0, value_prop=3,
+    )
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Empanadas de jamón y queso",
+        restaurant_name="Resto Empa 2", score=4.0, value_prop=2,
+    )
+
+    # "EMPANADAS" en mayúsculas debe matchear "empanadas".
+    r = await async_client_integration.get(
+        "/api/dishes/duel?root=EMPANADAS&pillar=value_prop"
+    )
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 2
+
+
+@pytest.mark.asyncio
+async def test_duel_roots_endpoint_lists_popular_roots(async_client_integration):
+    """`/duel/roots` lista raíces con >= min_restaurants contendientes."""
+    user = await register_and_login(async_client_integration)
+    # Usamos sentinels para aislar de seeds y de otros tests que dejen state.
+    popular = f"zzzpytpop{uuid.uuid4().hex[:8]}"
+    solo = f"zzzpytsolo{uuid.uuid4().hex[:8]}"
+
+    # 2 restaurantes con la raíz popular → debería listarse.
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name=f"{popular} con cheddar",
+        restaurant_name="Resto Pop A", score=4.0, value_prop=3,
+    )
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name=f"{popular} doble",
+        restaurant_name="Resto Pop B", score=4.5, value_prop=2,
+    )
+    # 1 solo restaurante con la raíz "solo" → NO debería listarse.
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name=f"{solo} casera",
+        restaurant_name="Resto Solo X", score=4.0, value_prop=2,
+    )
+
+    r = await async_client_integration.get(
+        "/api/dishes/duel/roots?limit=50&min_restaurants=2"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    roots = {it["root"] for it in body["items"]}
+    assert popular in roots
+    assert solo not in roots
+
+
+@pytest.mark.asyncio
+async def test_dish_root_extract_strips_stopwords_and_parens(async_client_integration):
+    """Sanity check de la heurística end-to-end: paréntesis al inicio y
+    stopwords se descartan. Dos restaurantes con "(Especial) Pollo" y
+    "Pollo de campo" comparten root='pollo' y aparecen en el duelo.
+    """
+    user = await register_and_login(async_client_integration)
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="(Especial) Pollo al horno",
+        restaurant_name="Heur Pollo A", score=4.0, value_prop=3,
+    )
+    await _seed_root_duel(
+        async_client_integration, user.cookies,
+        dish_name="Pollo de campo",
+        restaurant_name="Heur Pollo B", score=4.0, value_prop=2,
+    )
+    r = await async_client_integration.get(
+        "/api/dishes/duel?root=pollo&pillar=value_prop"
+    )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["items"]) == 2

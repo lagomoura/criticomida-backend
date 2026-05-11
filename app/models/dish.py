@@ -70,6 +70,14 @@ class Dish(Base):
         Computed("public.dish_name_normalized(name)", persisted=True),
         nullable=False,
     )
+    dish_root: Mapped[str | None] = mapped_column(
+        Text,
+        Computed(
+            "public.dish_root_extract(public.dish_name_normalized(name))",
+            persisted=True,
+        ),
+        nullable=True,
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     cover_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     price_tier: Mapped[PriceTier | None] = mapped_column(
@@ -276,6 +284,24 @@ class DishEditorialCache(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class DishRootFamily(Base):
+    """Lookup `dish_root → familia` seedeado manualmente (migración 060).
+
+    Permite agrupar variantes del mismo "tipo" de plato bajo una familia
+    semántica (hamburguesa + cheeseburger + sandwich → "burger") para que el
+    duelo pueda enfrentar platos que no comparten root exacto pero sí origen.
+
+    El admin puede UPSERT en runtime; el endpoint del duelo resuelve la
+    familia via JOIN, así un rename ("burger" → "burgers") propaga sin
+    recalcular columnas materializadas.
+    """
+
+    __tablename__ = "dish_root_family"
+
+    dish_root: Mapped[str] = mapped_column(Text, primary_key=True)
+    family: Mapped[str] = mapped_column(Text, nullable=False, index=True)
 
 
 class WantToTryDish(Base):

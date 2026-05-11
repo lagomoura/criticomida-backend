@@ -35,14 +35,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 
 from app.models.category import Category
-from app.models.dish import Dish, DishReview, DishReviewImage, WantToTryDish
+from app.models.dish import (
+    Dish,
+    DishReview,
+    DishReviewImage,
+    DishRootFamily,
+    WantToTryDish,
+)
 from app.models.restaurant import Restaurant
 from app.schemas.discovery import (
     DiscoveryDishItem,
     DiscoveryPillarStats,
+    DuelFamilyItem,
+    DuelRootItem,
     MapBboxResponse,
     MapDishHighlight,
     MapRestaurantPin,
+    PillarKey,
 )
 from app.services._geo import haversine_km_expr
 
@@ -276,23 +285,405 @@ async def duel_dishes(
     db: AsyncSession,
     *,
     viewer_id: uuid.UUID | None,
-    category_slug: str,
+    dish_root: str | None = None,
+    dish_family: str | None = None,
+    pillar: PillarKey = "value_prop",
+    category_slug: str | None = None,
     lat: float | None = None,
     lng: float | None = None,
     radius_km: float | None = None,
-) -> list[DiscoveryDishItem]:
-    """Top 2 platos de la categoría, rankeados por costo/beneficio (value_prop)."""
-    return await discover_dishes(
+) -> tuple[list[DiscoveryDishItem], str | None]:
+    """Top 2 platos enfrentados por un pilar.
+
+    Modos de filtrado (uno excluye al otro; `family` gana si vienen los dos):
+
+    - ``dish_family``: los 2 platos vienen de restaurantes DISTINTOS y sus
+      `dish_root` mapean a la misma familia (lookup en `dish_root_family`).
+      Ej. familia "burger" enfrenta `cheeseburger` vs `sandwich` vs `lomito`.
+      Es el modo por defecto del rail nuevo.
+
+    - ``dish_root``: los 2 platos comparten la raíz EXACTA (más estricto).
+      Útil cuando el usuario pide "el mejor sorrentino de la ciudad".
+
+    - solo ``category_slug`` (legacy): delega a ``discover_dishes`` para
+      devolver top 2 de la categoría de restaurante por value_prop.
+
+    Devuelve ``(items, fallback_reason)``. El motivo de fallback se setea solo
+    si quedan <2 contendientes (root/family no existe, o todos los platos
+    están en el mismo restaurante).
+    """
+    if dish_family is not None:
+        return await _duel_by_family(
+            db,
+            viewer_id=viewer_id,
+            family=dish_family,
+            pillar=pillar,
+            category_slug=category_slug,
+            lat=lat,
+            lng=lng,
+            radius_km=radius_km,
+        )
+
+    if dish_root is None:
+        # Modo legacy: usado solo por clientes viejos que mandan `category`
+        # sin `root`/`family`. Cuando el frontend nuevo deploye, este path se
+        # vuelve cold y se puede borrar.
+        if not category_slug:
+            return ([], "root_not_found")
+        items = await discover_dishes(
+            db,
+            viewer_id=viewer_id,
+            lat=lat,
+            lng=lng,
+            radius_km=radius_km,
+            sort="value_prop",
+            category_slug=category_slug,
+            limit=2,
+            offset=0,
+        )
+        return (items, None if len(items) >= 2 else "root_not_found")
+
+    normalized_root_expr = func.f_unaccent(func.lower(dish_root))
+    return await _run_duel_query(
         db,
         viewer_id=viewer_id,
+        pillar=pillar,
+        filter_clause=Dish.dish_root == normalized_root_expr,
+        candidates_clause=Dish.dish_root == normalized_root_expr,
+        unique_reason="root_unique_restaurant",
+        empty_reason="root_not_found",
+        category_slug=category_slug,
         lat=lat,
         lng=lng,
         radius_km=radius_km,
-        sort="value_prop",
-        category_slug=category_slug,
-        limit=2,
-        offset=0,
     )
+
+
+async def _duel_by_family(
+    db: AsyncSession,
+    *,
+    viewer_id: uuid.UUID | None,
+    family: str,
+    pillar: PillarKey,
+    category_slug: str | None,
+    lat: float | None,
+    lng: float | None,
+    radius_km: float | None,
+) -> tuple[list[DiscoveryDishItem], str | None]:
+    """Duelo entre platos cuyo `dish_root` pertenece a la familia X.
+
+    Ejemplo: family=`burger` agrupa hamburguesa, cheeseburger, sandwich, lomito.
+    Se elige UN plato por restaurante (el mejor para el pilar elegido) y los
+    2 ganadores van al duelo.
+    """
+    family_subq = (
+        select(DishRootFamily.dish_root).where(DishRootFamily.family == family)
+    )
+    family_filter = Dish.dish_root.in_(family_subq)
+    return await _run_duel_query(
+        db,
+        viewer_id=viewer_id,
+        pillar=pillar,
+        filter_clause=family_filter,
+        candidates_clause=family_filter,
+        unique_reason="family_unique_restaurant",
+        empty_reason="family_not_found",
+        category_slug=category_slug,
+        lat=lat,
+        lng=lng,
+        radius_km=radius_km,
+    )
+
+
+async def _run_duel_query(
+    db: AsyncSession,
+    *,
+    viewer_id: uuid.UUID | None,
+    pillar: PillarKey,
+    filter_clause: ColumnElement,
+    candidates_clause: ColumnElement,
+    unique_reason: str,
+    empty_reason: str,
+    category_slug: str | None,
+    lat: float | None,
+    lng: float | None,
+    radius_km: float | None,
+) -> tuple[list[DiscoveryDishItem], str | None]:
+    """Backbone del duelo: scoring + row_number por restaurante + top 2.
+
+    `filter_clause` restringe los `Dish` candidatos (por root o por familia).
+    `candidates_clause` se usa para discriminar el motivo del fallback
+    (root/family not found vs unique restaurant). Suelen ser iguales — son
+    distintos solo por simetría con un futuro fallback "near miss".
+    """
+    # Agregados por plato — mismo patrón que discover_dishes.
+    exec_n = cast(func.count(DishReview.execution), Float)
+    exec_avg = func.avg(DishReview.execution)
+    val_n = cast(func.count(DishReview.value_prop), Float)
+    val_avg = func.avg(DishReview.value_prop)
+    pres_n = cast(func.count(DishReview.presentation), Float)
+    pres_avg = func.avg(DishReview.presentation)
+    stars_n = cast(func.count(DishReview.id), Float)
+    stars_avg = func.avg(DishReview.rating)
+
+    exec_shrunk = _shrink(exec_avg, exec_n, C_PILLAR, PRIOR_PILLAR)
+    val_shrunk = _shrink(val_avg, val_n, C_PILLAR, PRIOR_PILLAR)
+    pres_shrunk = _shrink(pres_avg, pres_n, C_PILLAR, PRIOR_PILLAR)
+    stars_shrunk = _shrink(stars_avg, stars_n, C_STARS, PRIOR_STARS)
+
+    geek_score = (
+        W_EXECUTION * (exec_shrunk - 1.0) / 2.0
+        + W_VALUE_PROP * (val_shrunk - 1.0) / 2.0
+        + W_PRESENTATION * (pres_shrunk - 1.0) / 2.0
+        + W_STARS * (stars_shrunk - 1.0) / 4.0
+    ) * 100.0
+
+    distance_expr: ColumnElement | None = None
+    if lat is not None and lng is not None:
+        distance_expr = haversine_km_expr(
+            Restaurant.latitude, Restaurant.longitude, lat=lat, lng=lng
+        )
+
+    if viewer_id is not None:
+        want_to_try_expr = (
+            select(literal(True))
+            .select_from(WantToTryDish)
+            .where(
+                WantToTryDish.user_id == viewer_id,
+                WantToTryDish.dish_id == Dish.id,
+            )
+            .correlate(Dish)
+            .scalar_subquery()
+        )
+        want_to_try_col = func.coalesce(want_to_try_expr, literal(False))
+    else:
+        want_to_try_col = literal(False)
+
+    review_cover_expr = (
+        select(DishReviewImage.url)
+        .join(DishReview, DishReview.id == DishReviewImage.dish_review_id)
+        .where(DishReview.dish_id == Dish.id)
+        .order_by(
+            DishReviewImage.uploaded_at.desc(),
+            DishReviewImage.display_order.asc(),
+        )
+        .limit(1)
+        .correlate(Dish)
+        .scalar_subquery()
+    )
+    cover_image_col = func.coalesce(Dish.cover_image_url, review_cover_expr)
+
+    pillar_to_expr: dict[PillarKey, ColumnElement] = {
+        "value_prop": val_shrunk,
+        "execution": exec_shrunk,
+        "presentation": pres_shrunk,
+        "overall_rating": stars_shrunk,
+    }
+    pillar_expr = pillar_to_expr[pillar]
+
+    columns = [
+        Dish.id.label("dish_id"),
+        Dish.name.label("dish_name"),
+        cover_image_col.label("cover_image_url"),
+        Dish.price_tier,
+        Dish.computed_rating,
+        Dish.review_count,
+        Restaurant.id.label("restaurant_id"),
+        Restaurant.slug.label("restaurant_slug"),
+        Restaurant.name.label("restaurant_name"),
+        Restaurant.city.label("restaurant_city"),
+        Category.name.label("category_name"),
+        exec_avg.label("exec_avg"),
+        exec_n.label("exec_n"),
+        val_avg.label("val_avg"),
+        val_n.label("val_n"),
+        pres_avg.label("pres_avg"),
+        pres_n.label("pres_n"),
+        geek_score.label("geek_score"),
+        pillar_expr.label("pillar_score"),
+        want_to_try_col.label("want_to_try"),
+    ]
+    if distance_expr is not None:
+        columns.append(distance_expr.label("distance_km"))
+
+    base = (
+        select(*columns)
+        .join(DishReview, DishReview.dish_id == Dish.id)
+        .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+        .outerjoin(Category, Category.id == Restaurant.category_id)
+        .where(filter_clause)
+        .group_by(Dish.id, Restaurant.id, Category.id)
+    )
+
+    if category_slug is not None:
+        base = base.where(Category.slug == category_slug)
+
+    if distance_expr is not None and radius_km is not None:
+        base = base.where(
+            Restaurant.latitude.is_not(None),
+            Restaurant.longitude.is_not(None),
+        )
+        base = base.having(distance_expr <= radius_km)
+
+    # CTE con candidatos. row_number() se aplica después del GROUP BY
+    # (no se puede mezclar window con aggregate en el mismo SELECT).
+    scored = base.cte("scored")
+
+    rank_expr = func.row_number().over(
+        partition_by=scored.c.restaurant_id,
+        order_by=[
+            desc(scored.c.pillar_score),
+            desc(scored.c.geek_score),
+            scored.c.dish_id,
+        ],
+    )
+
+    final = (
+        select(*scored.c, rank_expr.label("rk"))
+        .select_from(scored)
+        .subquery()
+    )
+
+    stmt = (
+        select(*final.c)
+        .where(final.c.rk == 1)
+        .order_by(desc(final.c.pillar_score), desc(final.c.geek_score))
+        .limit(2)
+    )
+
+    rows = (await db.execute(stmt)).all()
+    items = [_row_to_item(r, has_distance=distance_expr is not None) for r in rows]
+
+    if len(items) >= 2:
+        return (items, None)
+
+    # Discriminamos el fallback: 0 candidatos vs candidatos pero todos del
+    # mismo restaurante. Sin esto el FE no puede ofrecer "probá otro plato".
+    any_dish_stmt = select(func.count(distinct(Dish.id))).where(candidates_clause)
+    any_count = (await db.execute(any_dish_stmt)).scalar_one()
+    if any_count == 0:
+        return ([], empty_reason)
+    return ([], unique_reason)
+
+
+async def popular_dish_roots(
+    db: AsyncSession,
+    *,
+    category_slug: str | None = None,
+    limit: int = 20,
+    min_restaurants: int = 2,
+    recent_days: int = 90,
+) -> list[DuelRootItem]:
+    """Raíces con al menos `min_restaurants` contendientes, ordenadas por
+    actividad reciente. Alimenta el selector del Duelo en el frontend.
+
+    `restaurant_count` cuenta solo restaurantes con al menos una review
+    cargada en el plato (mismo INNER JOIN que el endpoint del duelo), para
+    no listar raíces "huérfanas" que no podrían generar un duelo real.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=recent_days)
+
+    restaurants_distinct = func.count(distinct(Dish.restaurant_id))
+    recent_reviews_count = func.count(
+        distinct(case((DishReview.created_at >= cutoff, DishReview.id), else_=None))
+    )
+
+    base = (
+        select(
+            Dish.dish_root.label("root"),
+            restaurants_distinct.label("restaurant_count"),
+            recent_reviews_count.label("recent_reviews"),
+            func.min(Dish.name).label("sample_name"),
+        )
+        .join(DishReview, DishReview.dish_id == Dish.id)
+        .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+        .outerjoin(Category, Category.id == Restaurant.category_id)
+        .where(Dish.dish_root.is_not(None))
+        .group_by(Dish.dish_root)
+        .having(restaurants_distinct >= min_restaurants)
+        .order_by(
+            desc("recent_reviews"),
+            desc("restaurant_count"),
+            Dish.dish_root,
+        )
+        .limit(limit)
+    )
+
+    if category_slug is not None:
+        base = base.where(Category.slug == category_slug)
+
+    rows = (await db.execute(base)).all()
+    return [
+        DuelRootItem(
+            root=r.root,
+            restaurant_count=int(r.restaurant_count or 0),
+            recent_reviews=int(r.recent_reviews or 0),
+            sample_name=r.sample_name or r.root,
+        )
+        for r in rows
+    ]
+
+
+async def popular_dish_families(
+    db: AsyncSession,
+    *,
+    category_slug: str | None = None,
+    limit: int = 20,
+    min_restaurants: int = 2,
+    recent_days: int = 90,
+) -> list[DuelFamilyItem]:
+    """Familias semánticas con `>= min_restaurants` restaurantes distintos.
+
+    Alimenta el carrusel del Duelo: cada familia con suficientes contendientes
+    se convierte en un slide. Ordenado por actividad reciente para que las
+    familias "calientes" aparezcan primero.
+
+    `sample_name` es un nombre real de plato (no la familia) para que el FE
+    pueda mostrar un preview cuando sea relevante (ej. "Burgers · top: Cheese
+    Smash").
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
+
+    restaurants_distinct = func.count(distinct(Dish.restaurant_id))
+    recent_reviews_count = func.count(
+        distinct(case((DishReview.created_at >= cutoff, DishReview.id), else_=None))
+    )
+
+    base = (
+        select(
+            DishRootFamily.family.label("family"),
+            restaurants_distinct.label("restaurant_count"),
+            recent_reviews_count.label("recent_reviews"),
+            func.min(Dish.name).label("sample_name"),
+        )
+        .join(DishRootFamily, DishRootFamily.dish_root == Dish.dish_root)
+        .join(DishReview, DishReview.dish_id == Dish.id)
+        .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+        .outerjoin(Category, Category.id == Restaurant.category_id)
+        .group_by(DishRootFamily.family)
+        .having(restaurants_distinct >= min_restaurants)
+        .order_by(
+            desc("recent_reviews"),
+            desc("restaurant_count"),
+            DishRootFamily.family,
+        )
+        .limit(limit)
+    )
+
+    if category_slug is not None:
+        base = base.where(Category.slug == category_slug)
+
+    rows = (await db.execute(base)).all()
+    return [
+        DuelFamilyItem(
+            family=r.family,
+            restaurant_count=int(r.restaurant_count or 0),
+            recent_reviews=int(r.recent_reviews or 0),
+            sample_name=r.sample_name or r.family,
+        )
+        for r in rows
+    ]
 
 
 def _row_to_item(row, *, has_distance: bool) -> DiscoveryDishItem:
