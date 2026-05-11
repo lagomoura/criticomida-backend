@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, get_current_user_optional
 from app.middleware.rate_limit import FOLLOW_LIMIT, limiter
 from app.models.follow import Follow
 from app.models.user import User
@@ -140,6 +140,7 @@ async def unfollow_user(
 async def list_followers(
     id_or_handle: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    viewer: Annotated[User | None, Depends(get_current_user_optional)] = None,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> FollowersPage:
@@ -150,6 +151,7 @@ async def list_followers(
         user_id=target.id,
         cursor=cursor,
         limit=limit,
+        viewer=viewer,
     )
 
 
@@ -157,6 +159,7 @@ async def list_followers(
 async def list_following(
     id_or_handle: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    viewer: Annotated[User | None, Depends(get_current_user_optional)] = None,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> FollowersPage:
@@ -167,6 +170,7 @@ async def list_following(
         user_id=target.id,
         cursor=cursor,
         limit=limit,
+        viewer=viewer,
     )
 
 
@@ -283,6 +287,7 @@ async def _list_follow_edges(
     user_id: uuid.UUID,
     cursor: str | None,
     limit: int,
+    viewer: User | None,
 ) -> FollowersPage:
     cursor_dt: datetime | None = None
     if cursor:
@@ -316,6 +321,20 @@ async def _list_follow_edges(
     has_more = len(rows) > limit
     trimmed = rows[:limit]
 
+    # Bulk-resolve viewer_following for the page in a single query, using the
+    # PK index on follows (follower_id, following_id). At most `limit` IDs
+    # (cap 100), so the IN clause is bounded.
+    viewer_follows: set[uuid.UUID] = set()
+    if viewer is not None and trimmed:
+        item_ids = [user.id for user, _ in trimmed]
+        res = await db.execute(
+            select(Follow.following_id).where(
+                Follow.follower_id == viewer.id,
+                Follow.following_id.in_(item_ids),
+            )
+        )
+        viewer_follows = {row[0] for row in res.all()}
+
     items = [
         FollowerSummary(
             id=user.id,
@@ -324,6 +343,7 @@ async def _list_follow_edges(
             avatar_url=user.avatar_url,
             bio=user.bio,
             created_at=created_at,
+            viewer_following=(user.id in viewer_follows) if viewer is not None else None,
         )
         for user, created_at in trimmed
     ]

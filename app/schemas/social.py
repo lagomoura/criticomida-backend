@@ -24,6 +24,10 @@ class FollowerSummary(BaseModel):
     avatar_url: str | None = None
     bio: str | None = None
     created_at: datetime
+    # None → viewer anónimo. False → autenticado pero no lo sigue.
+    # True → autenticado y lo sigue. Para el viewer dentro de su propia
+    # lista siempre es False (no hay self-follow por ck_follows_no_self).
+    viewer_following: bool | None = None
 
     model_config = {"from_attributes": True}
 
