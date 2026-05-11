@@ -193,6 +193,14 @@ async def create_review(
             display_order=img_data.display_order,
         ))
 
+    # Si el plato no tiene cover, promover la primera foto de la review.
+    # Cubre el caso del FE que creó el dish sin cover (el usuario no llenó
+    # el input 88×88, o `uploadDishCoverImage` falló en silencio) — el
+    # contrato del backend deja de depender de dos requests coordinados.
+    if dish.cover_image_url is None and review_data.images:
+        first_image = min(review_data.images, key=lambda i: i.display_order)
+        dish.cover_image_url = first_image.url
+
     await db.flush()
 
     # Recompute ratings

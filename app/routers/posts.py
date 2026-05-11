@@ -344,6 +344,13 @@ async def create_post(
                 )
             )
 
+        # Si el plato no tiene cover, promover la primera foto de la review.
+        # Mismo contrato que `POST /api/dishes/{id}/reviews`: el dish queda
+        # con cover sin depender de un segundo request del FE.
+        if dish.cover_image_url is None and extras.images:
+            first_image = min(extras.images, key=lambda i: i.display_order)
+            dish.cover_image_url = first_image.url
+
     await update_dish_rating(db, dish.id)
     await update_restaurant_rating(db, restaurant.id)
 
