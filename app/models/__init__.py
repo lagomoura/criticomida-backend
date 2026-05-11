@@ -56,6 +56,7 @@ from app.models.chat import (
 from app.models.dish_list import DishList, DishListItem
 from app.models.reservation_request import ReservationRequest, ReservationStatus
 from app.models.async_job import AsyncJob, AsyncJobKind, AsyncJobStatus
+from app.models.user_ui_state import UserUIState
 
 __all__ = [
     "User",
@@ -107,4 +108,5 @@ __all__ = [
     "AsyncJob",
     "AsyncJobKind",
     "AsyncJobStatus",
+    "UserUIState",
 ]
