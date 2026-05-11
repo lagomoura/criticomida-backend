@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import bcrypt
+import sentry_sdk
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -221,6 +222,16 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
+    # Adjunta el user al scope async de Sentry para esta request. Sin email
+    # (send_default_pii=False); con handle/role para poder correlacionar bugs
+    # a sesiones reales sin pasar PII al vendor.
+    sentry_sdk.set_user(
+        {
+            "id": str(user.id),
+            "username": user.handle,
+            "segment": user.role.value,
+        }
+    )
     return user
 
 

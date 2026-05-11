@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # deterministic and avoid contaminating shared state.
     ASYNC_JOB_WORKER_ENABLED: bool = True
 
+    # Sentry. Empty DSN deshabilita el SDK por completo (dev por default).
+    # SENTRY_RELEASE cae a RAILWAY_GIT_COMMIT_SHA cuando está vacío en prod.
+    SENTRY_DSN: str | None = None
+    SENTRY_ENVIRONMENT: str | None = None
+    SENTRY_RELEASE: str | None = None
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

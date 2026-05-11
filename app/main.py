@@ -4,6 +4,7 @@ import os
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +21,19 @@ from app.services.async_job_worker import run_worker_loop
 
 
 logger = logging.getLogger(__name__)
+
+# Sentry init debe correr ANTES de instanciar FastAPI para que
+# StarletteIntegration + FastApiIntegration se auto-detecten y enganchen
+# el lifecycle de cada request. El guard permite correr local sin DSN.
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.SENTRY_ENVIRONMENT or settings.APP_ENV,
+        release=settings.SENTRY_RELEASE
+        or os.environ.get("RAILWAY_GIT_COMMIT_SHA"),
+        send_default_pii=False,
+        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+    )
 from app.routers import (
     admin,
     auth,
