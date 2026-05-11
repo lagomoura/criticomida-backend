@@ -209,13 +209,6 @@ def create_app(
     async def health_check() -> dict[str, str]:
         return {"status": "ok"}
 
-    @application.get("/api/debug/sentry-test")
-    async def sentry_test() -> None:
-        # Transitorio: smoke test de Sentry en prod. Tira ZeroDivisionError
-        # para que FastApiIntegration lo auto-capture. Lo borra el commit
-        # inmediatamente posterior.
-        1 / 0
-
     return application
 
 
