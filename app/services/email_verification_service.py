@@ -110,12 +110,12 @@ async def send_verification_email(user: User, token: str) -> None:
 
     verify_url = f"{settings.PUBLIC_APP_URL}/verify-email/{_html_lib.escape(token)}"
     safe_display_name = _html_lib.escape(user.display_name)
-    subject = "Confirmá tu email en Palato"
+    subject = "Confirmá tu email en Palato.me"
     html = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
       ¡Hola {safe_display_name}! Solo necesitamos confirmar que este es
-      tu email para que puedas usar todo Palato sin restricciones.
+      tu email para que puedas usar todo Palato.me sin restricciones.
     </p>
     <p style="margin-top:24px;">
       <a href="{verify_url}"
@@ -126,13 +126,13 @@ async def send_verification_email(user: User, token: str) -> None:
       </a>
     </p>
     <p style="font-size:14px;color:#5a4a40;margin-top:24px;">
-      Si no creaste una cuenta en Palato, ignorá este mensaje. El
+      Si no creaste una cuenta en Palato.me, ignorá este mensaje. El
       link expira en {_TOKEN_TTL_HOURS} horas.
     </p>
     """
     )
     text = (
-        f"Confirmá tu email en Palato hacé click en este link "
+        f"Confirmá tu email en Palato.me hacé click en este link "
         f"(expira en {_TOKEN_TTL_HOURS}h): {verify_url}"
     )
     await send_email(to=user.email, subject=subject, html=html, text=text)

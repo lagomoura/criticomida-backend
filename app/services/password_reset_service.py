@@ -76,7 +76,7 @@ async def request_password_reset(
 
     reset_url = f"{settings.PUBLIC_APP_URL}/reset-password/{_html_lib.escape(token)}"
     safe_display_name = _html_lib.escape(user.display_name)
-    subject = "Recuperá tu contraseña en Palato"
+    subject = "Recuperá tu contraseña en Palato.me"
     html = _wrap(
         f"""
     <p style="font-size:16px;line-height:1.5;">
@@ -98,7 +98,7 @@ async def request_password_reset(
     """
     )
     text = (
-        f"Reseteá tu contraseña en Palato (link válido {_TOKEN_TTL_MINUTES} min): "
+        f"Reseteá tu contraseña en Palato.me (link válido {_TOKEN_TTL_MINUTES} min): "
         f"{reset_url}"
     )
     await send_email(to=user.email, subject=subject, html=html, text=text)

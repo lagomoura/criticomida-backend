@@ -32,7 +32,7 @@ def _h(value: object) -> str:
     """HTML-escape a UGC value before interpolating into a template.
 
     Restaurant / dish / display names land in transactional emails sent
-    from the Palato domain with valid SPF + DKIM. Without escaping, an
+    from the Palato.me domain with valid SPF + DKIM. Without escaping, an
     attacker controlling any of those fields could inject HTML into a
     legit-looking message (phishing inside a real email). We pass every
     untrusted value through this helper.
@@ -115,18 +115,32 @@ async def send_email(
 
 def _wrap(body_html: str) -> str:
     """Layout HTML mínimo. Inline styles porque la mayoría de los clientes
-    de email ignoran <style>."""
+    de email ignoran <style>.
+
+    El header es un banner con el wordmark Palato.me (PNG hosteado desde el
+    dominio público de la app) que aporta identidad de marca en el primer
+    fold. La URL absoluta es obligatoria porque los clientes de email NO
+    resuelven paths relativos. El asset trae el fondo crema (#faf7f2)
+    horneado adentro para que matchee el body y no haya bordes visibles
+    aun cuando el cliente de email no respete `background:transparent`."""
+    logo_url = f"{settings.PUBLIC_APP_URL}/img/palato_email_banner.png"
     return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Palato</title></head>
+<html><head><meta charset="utf-8"><title>Palato.me</title></head>
 <body style="margin:0;background:#faf7f2;font-family:Arial,sans-serif;color:#2a2520;">
-  <div style="max-width:560px;margin:0 auto;padding:32px 24px;">
-    <h1 style="font-size:24px;color:#a04a3c;margin:0 0 24px;">Palato</h1>
-    {body_html}
-    <hr style="border:none;border-top:1px solid #e8e0d4;margin:32px 0 16px;">
-    <p style="font-size:12px;color:#8b8076;margin:0;">
-      Este email fue enviado automáticamente. Si tenés alguna duda escribinos
-      a soporte respondiendo este correo.
-    </p>
+  <div style="max-width:560px;margin:0 auto;">
+    <a href="{settings.PUBLIC_APP_URL}" style="display:block;line-height:0;">
+      <img src="{logo_url}" alt="Palato.me" width="560"
+           style="display:block;width:100%;max-width:560px;height:auto;
+                  border:0;outline:none;text-decoration:none;" />
+    </a>
+    <div style="padding:32px 24px;">
+      {body_html}
+      <hr style="border:none;border-top:1px solid #e8e0d4;margin:32px 0 16px;">
+      <p style="font-size:12px;color:#8b8076;margin:0;">
+        Este email fue enviado automáticamente. Si tenés alguna duda escribinos
+        a soporte respondiendo este correo.
+      </p>
+    </div>
   </div>
 </body></html>"""
 
@@ -246,7 +260,7 @@ def render_reservation_requested(
       <strong>{_h(requester_name)}</strong> pidió una mesa para
       <strong>{party_size}</strong> personas el
       <strong>{_h(requested_for_human)}</strong> a través del Sommelier de
-      Palato.
+      Palato.me.
     </p>
     {quote_block}
     <p style="margin-top:24px;">
