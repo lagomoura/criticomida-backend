@@ -2,14 +2,13 @@
 
 Covers the pure helpers (clamping, label/score reconciliation), the
 graceful-degradation path when ``GEMINI_API_KEY`` is unset, and a
-happy-path call with the HTTP layer mocked.
+happy-path call with the SDK layer mocked.
 
 These never touch the database, so they don't require ``RUN_INTEGRATION``.
 """
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +19,7 @@ from app.services.sentiment_service import (
     SentimentResult,
     _clamp_score,
     _coerce_label,
+    _SentimentSchema,
     analyze_review_text,
 )
 
@@ -59,49 +59,37 @@ def test_coerce_label_falls_back_to_neutral_for_unknown_string():
 @pytest.mark.asyncio
 async def test_analyze_review_text_returns_none_without_api_key():
     with patch.object(sentiment_service.settings, "GEMINI_API_KEY", None):
+        # Reset the cached client so the missing key takes effect.
+        sentiment_service._client = None
         result = await analyze_review_text("Excelente plato", rating=5.0)
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_analyze_review_text_returns_none_for_empty_text():
-    with patch.object(sentiment_service.settings, "GEMINI_API_KEY", "fake-key"):
+    fake_client = MagicMock()
+    with (
+        patch.object(sentiment_service.settings, "GEMINI_API_KEY", "fake-key"),
+        patch.object(sentiment_service, "_client", fake_client),
+    ):
         result = await analyze_review_text("   ", rating=4.0)
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_analyze_review_text_happy_path_negative():
-    """Mock httpx so the real Gemini endpoint isn't called. Returns the
-    JSON payload our service parses and normalises."""
-    fake_payload = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "text": json.dumps(
-                                {"label": "negative", "score": -0.8}
-                            )
-                        }
-                    ]
-                }
-            }
-        ]
-    }
+    """Mock the SDK so the real Gemini endpoint isn't called. Returns
+    the typed ``response.parsed`` our service consumes."""
+    parsed = _SentimentSchema(label="negative", score=-0.8)
+    fake_response = MagicMock()
+    fake_response.parsed = parsed
 
-    response_mock = MagicMock()
-    response_mock.raise_for_status = MagicMock(return_value=None)
-    response_mock.json = MagicMock(return_value=fake_payload)
-
-    client_mock = MagicMock()
-    client_mock.post = AsyncMock(return_value=response_mock)
-    client_mock.__aenter__ = AsyncMock(return_value=client_mock)
-    client_mock.__aexit__ = AsyncMock(return_value=False)
+    fake_client = MagicMock()
+    fake_client.aio.models.generate_content = AsyncMock(return_value=fake_response)
 
     with (
         patch.object(sentiment_service.settings, "GEMINI_API_KEY", "fake-key"),
-        patch("app.services.sentiment_service.httpx.AsyncClient", return_value=client_mock),
+        patch.object(sentiment_service, "_client", fake_client),
     ):
         result = await analyze_review_text(
             "El plato llegó frío y la atención fue pésima.", rating=2.0
@@ -114,27 +102,46 @@ async def test_analyze_review_text_happy_path_negative():
 
 @pytest.mark.asyncio
 async def test_analyze_review_text_returns_none_on_unparseable_payload():
-    fake_payload = {
-        "candidates": [
-            {"content": {"parts": [{"text": "this is not json {{{"}]}}
-        ]
-    }
-    response_mock = MagicMock()
-    response_mock.raise_for_status = MagicMock(return_value=None)
-    response_mock.json = MagicMock(return_value=fake_payload)
+    """When neither ``parsed`` nor ``text`` produce a valid schema we
+    must return None instead of crashing."""
+    fake_response = MagicMock()
+    fake_response.parsed = None
+    fake_response.text = "{ this isn't json"
 
-    client_mock = MagicMock()
-    client_mock.post = AsyncMock(return_value=response_mock)
-    client_mock.__aenter__ = AsyncMock(return_value=client_mock)
-    client_mock.__aexit__ = AsyncMock(return_value=False)
+    fake_client = MagicMock()
+    fake_client.aio.models.generate_content = AsyncMock(return_value=fake_response)
 
     with (
         patch.object(sentiment_service.settings, "GEMINI_API_KEY", "fake-key"),
-        patch("app.services.sentiment_service.httpx.AsyncClient", return_value=client_mock),
+        patch.object(sentiment_service, "_client", fake_client),
     ):
         result = await analyze_review_text("texto", rating=3.0)
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_review_text_falls_back_to_text_json_when_parsed_is_none():
+    """Batch responses don't populate ``response.parsed`` — the SDK only
+    deserializes the schema on the sync path. We must fall back to
+    validating ``response.text`` as JSON so the backfill produces the
+    same ``SentimentResult`` as the live path."""
+    fake_response = MagicMock()
+    fake_response.parsed = None
+    fake_response.text = '{"label": "positive", "score": 0.65}'
+
+    fake_client = MagicMock()
+    fake_client.aio.models.generate_content = AsyncMock(return_value=fake_response)
+
+    with (
+        patch.object(sentiment_service.settings, "GEMINI_API_KEY", "fake-key"),
+        patch.object(sentiment_service, "_client", fake_client),
+    ):
+        result = await analyze_review_text("buena pizza", rating=4.5)
+
+    assert isinstance(result, SentimentResult)
+    assert result.label == SentimentLabel.positive
+    assert result.score == 0.65
 
 
 def test_dish_review_response_does_not_expose_sentiment():

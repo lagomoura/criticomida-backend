@@ -14,7 +14,6 @@ blurbs viejos se consideran stale y se regeneran (lazy y/o vía script).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -25,6 +24,7 @@ from datetime import datetime, timezone
 from fastapi import BackgroundTasks
 from google import genai
 from google.genai import types as genai_types
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +76,16 @@ def _api_key() -> str | None:
     )
 
 
+class _EditorialSchema(BaseModel):
+    """Wire shape Gemini fills in. Both fields stay permissive — the
+    cleanup (length cap, blank rejection) lives in ``_normalize_blurb``
+    so that a minor formatting wobble doesn't invalidate the entire
+    response."""
+
+    origin: str | None = None
+    story: str | None = None
+
+
 def _build_user_prompt(dish: Dish, restaurant: Restaurant) -> str:
     parts = [f"Plato: {dish.name}"]
     if restaurant.cuisine_types:
@@ -89,33 +99,17 @@ def _build_user_prompt(dish: Dish, restaurant: Restaurant) -> str:
     return "\n".join(parts)
 
 
-def _parse_response(raw: str) -> tuple[str, str | None] | None:
-    """Parsea la respuesta JSON del modelo. Devuelve (story, origin) o None."""
-    raw = raw.strip()
-    if not raw:
+def _normalize_blurb(parsed: _EditorialSchema) -> tuple[str, str | None] | None:
+    """Validate and clean the parsed response. Returns ``(story, origin)``
+    or ``None`` when the story is missing — without a story there is no
+    blurb to show."""
+    story = (parsed.story or "").strip()
+    if not story:
         return None
-    # google-genai con response_mime_type="application/json" devuelve
-    # JSON limpio, pero toleramos wrapper de markdown por si el modelo
-    # se descarrila.
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if raw.lower().startswith("json"):
-            raw = raw[4:].lstrip()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Editorial blurb: JSON inválido, descartando — %r", raw[:200])
-        return None
-    if not isinstance(payload, dict):
-        return None
-    story = payload.get("story")
-    if not isinstance(story, str) or not story.strip():
-        return None
-    origin = payload.get("origin")
-    origin = origin.strip() if isinstance(origin, str) and origin.strip() else None
+    origin = (parsed.origin or "").strip() or None
     if origin and len(origin) > 80:
         origin = origin[:80]
-    return story.strip(), origin
+    return story, origin
 
 
 async def _generate_blurb(
@@ -139,14 +133,22 @@ async def _generate_blurb(
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=320,
                 response_mime_type="application/json",
+                response_schema=_EditorialSchema,
                 # Trivial classification — el thinking no aporta y
                 # consume budget; lo apagamos para que la latencia no
                 # vuele cuando se piden varios blurbs en paralelo.
                 thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
             ),
         )
-        text = response.text or ""
-        return _parse_response(text)
+        parsed = response.parsed
+        if not isinstance(parsed, _EditorialSchema):
+            logger.warning(
+                "Editorial blurb parse failed (dish_id=%s, parsed=%r)",
+                dish.id,
+                type(parsed).__name__,
+            )
+            return None
+        return _normalize_blurb(parsed)
     except Exception:
         logger.exception("Dish editorial blurb generation failed (dish_id=%s)", dish.id)
         return None

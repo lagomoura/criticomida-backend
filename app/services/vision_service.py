@@ -13,13 +13,17 @@ Gemini to return:
 - ``suggested_pros`` / ``suggested_cons`` — short bullets the
   reviewer can accept verbatim or edit.
 
-The model returns a JSON object thanks to ``response_mime_type``. We
-validate the shape defensively because vision models occasionally drop
-keys or smuggle prose around the JSON.
+The model returns a JSON object thanks to ``response_schema`` pointing
+at a Pydantic model — Gemini deserializes for us into a typed object.
+We still run ``_normalize_output`` afterwards to clip lengths,
+lowercase tags, dedupe and reject unknown plating styles; Pydantic's
+type-shape validation is layered on top of (not replacing) that
+sanitization.
 
-Failures degrade gracefully: every output field is optional, so the
-caller always gets *something* back even if Gemini is misconfigured or
-the image is unreachable.
+Failures degrade gracefully: every output field is optional in the
+returned dict, so the caller always gets *something* back even if
+Gemini is misconfigured, the image is unreachable, or the response
+fails to parse.
 """
 
 from __future__ import annotations
@@ -28,6 +32,10 @@ import logging
 from typing import Any
 
 import httpx
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services._safe_url import UnsafeURLError, safe_fetch_bytes
@@ -35,11 +43,9 @@ from app.services._safe_url import UnsafeURLError, safe_fetch_bytes
 logger = logging.getLogger(__name__)
 
 
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 # Flash is ~10x cheaper than Pro for this task and the latency is
 # noticeable in a "wait for tags" UI flow. Override via env if needed.
 _VISION_MODEL = "gemini-2.5-flash"
-_REQUEST_TIMEOUT = 25.0
 _MAX_TAGS = 8
 _MAX_INGREDIENTS = 12
 
@@ -50,6 +56,11 @@ _PLATING_STYLES = {
     "rustic",
     "classic",
 }
+
+_PROVIDER_ERRORS: tuple[type[BaseException], ...] = (
+    genai_errors.APIError,
+    httpx.HTTPError,
+)
 
 
 def _build_style_block(samples: list[str]) -> str:
@@ -104,49 +115,36 @@ Reglas innegociables:
 """
 
 
-_SCHEMA: dict[str, Any] = {
-    "type": "OBJECT",
-    "properties": {
-        "tags": {
-            "type": "ARRAY",
-            "items": {"type": "STRING"},
-            "minItems": 3,
-            "maxItems": 6,
-        },
-        "visible_ingredients": {
-            "type": "ARRAY",
-            "items": {"type": "STRING"},
-            "maxItems": 6,
-        },
-        "plating_style": {"type": "STRING"},
-        "editorial_blurb": {"type": "STRING", "minLength": 30},
-        "suggested_pros": {
-            "type": "ARRAY",
-            "items": {"type": "STRING"},
-            "minItems": 1,
-            "maxItems": 2,
-        },
-        "suggested_cons": {
-            "type": "ARRAY",
-            "items": {"type": "STRING"},
-            "maxItems": 2,
-        },
-    },
-    # `required` is what actually forces Gemini to populate these fields;
-    # without it, the prompt's "OBLIGATORIO" is just a suggestion.
-    "required": [
-        "tags",
-        "visible_ingredients",
-        "plating_style",
-        "editorial_blurb",
-        "suggested_pros",
-        "suggested_cons",
-    ],
-}
+class _VisionSchema(BaseModel):
+    """Wire shape Gemini fills in. We keep the field types permissive
+    (plain lists of strings) — bounds (min/max items, character caps,
+    plating-style enum) are enforced post-parse in ``_normalize_output``
+    so a single off-by-one violation from the model doesn't invalidate
+    the entire response."""
+
+    tags: list[str] = Field(default_factory=list)
+    visible_ingredients: list[str] = Field(default_factory=list)
+    plating_style: str | None = None
+    editorial_blurb: str | None = None
+    suggested_pros: list[str] = Field(default_factory=list)
+    suggested_cons: list[str] = Field(default_factory=list)
 
 
 class VisionUnavailable(RuntimeError):
     """Raised only when callers explicitly request strict mode."""
+
+
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client | None:
+    global _client
+    key = settings.GEMINI_API_KEY
+    if not key:
+        return None
+    if _client is None:
+        _client = genai.Client(api_key=key)
+    return _client
 
 
 async def _fetch_image(url: str) -> tuple[bytes, str]:
@@ -171,72 +169,15 @@ def _empty_response() -> dict[str, Any]:
     }
 
 
-def _parse_partial_json(text: str) -> dict[str, Any] | None:
-    """Best-effort recovery from truncated JSON output.
-
-    When Gemini hits ``MAX_TOKENS`` mid-array we still want to keep the
-    fields it managed to close. We close any open string, drop the
-    trailing dangling array element, and balance brackets/braces.
-    Returns ``None`` if nothing salvageable.
-    """
-    import json as _json
-
-    # Try strict first.
-    try:
-        return _json.loads(text)
-    except ValueError:
-        pass
-
-    s = text
-    # Trim whitespace at the end and a trailing comma if any.
-    s = s.rstrip().rstrip(",")
-
-    # Count quote pairs ignoring escaped ones — if odd, there's an open string.
-    in_string = False
-    escape = False
-    for ch in s:
-        if escape:
-            escape = False
-            continue
-        if ch == "\\":
-            escape = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-    if in_string:
-        # Drop the unterminated trailing string + the comma that opened it.
-        last_quote = s.rfind('"')
-        # Walk back to the comma or array opener that introduced the bad item.
-        cut = s.rfind(",", 0, last_quote)
-        if cut < 0:
-            cut = s.rfind("[", 0, last_quote)
-        if cut < 0:
-            return None
-        s = s[:cut].rstrip().rstrip(",")
-
-    # Balance brackets/braces.
-    open_brace = s.count("{") - s.count("}")
-    open_bracket = s.count("[") - s.count("]")
-    if open_bracket > 0:
-        s += "]" * open_bracket
-    if open_brace > 0:
-        s += "}" * open_brace
-
-    try:
-        return _json.loads(s)
-    except ValueError:
-        return None
-
-
-def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
+def _normalize_output(raw: _VisionSchema) -> dict[str, Any]:
     """Clamp and sanitize the model output. The vision model is mostly
-    well-behaved but we never trust its bounds."""
+    well-behaved but we never trust its bounds: dedupe tags, lowercase,
+    clip lengths per field, drop unknown plating styles."""
     tags = [
-        str(t).strip().lower().replace(" ", "-").lstrip("#")
-        for t in (raw.get("tags") or [])
-        if t and isinstance(t, str)
+        t.strip().lower().replace(" ", "-").lstrip("#")
+        for t in raw.tags
+        if isinstance(t, str)
     ]
-    # Dedupe, preserve order, cap.
     seen: set[str] = set()
     deduped: list[str] = []
     for t in tags:
@@ -248,12 +189,12 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
             break
 
     ingredients = [
-        str(i).strip().lower()
-        for i in (raw.get("visible_ingredients") or [])
-        if i and isinstance(i, str)
+        i.strip().lower()
+        for i in raw.visible_ingredients
+        if isinstance(i, str) and i.strip()
     ][:_MAX_INGREDIENTS]
 
-    plating_style = raw.get("plating_style")
+    plating_style = raw.plating_style
     if isinstance(plating_style, str):
         plating_style = plating_style.strip().lower()
         if plating_style not in _PLATING_STYLES:
@@ -261,15 +202,15 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
     else:
         plating_style = None
 
-    blurb = raw.get("editorial_blurb")
+    blurb = raw.editorial_blurb
     if isinstance(blurb, str):
         blurb = blurb.strip()[:240] or None
     else:
         blurb = None
 
-    def _clip_list(key: str, n: int, char_cap: int) -> list[str]:
+    def _clip_list(items: list[str], n: int, char_cap: int) -> list[str]:
         out: list[str] = []
-        for x in raw.get(key) or []:
+        for x in items:
             if not isinstance(x, str):
                 continue
             x = x.strip()
@@ -285,8 +226,8 @@ def _normalize(raw: dict[str, Any]) -> dict[str, Any]:
         "visible_ingredients": ingredients,
         "plating_style": plating_style,
         "editorial_blurb": blurb,
-        "suggested_pros": _clip_list("suggested_pros", 3, 80),
-        "suggested_cons": _clip_list("suggested_cons", 2, 80),
+        "suggested_pros": _clip_list(raw.suggested_pros, 3, 80),
+        "suggested_cons": _clip_list(raw.suggested_cons, 2, 80),
     }
 
 
@@ -308,8 +249,8 @@ async def analyze_dish_photo(
     ``style_samples`` son notas de reseñas previas del autor; cuando se
     pasan, el ``editorial_blurb`` imita su voz (ver ``_build_style_block``).
     """
-    key = settings.GEMINI_API_KEY
-    if not key:
+    client = _get_client()
+    if client is None:
         return _empty_response()
 
     if photo_bytes is None and photo_url:
@@ -325,9 +266,6 @@ async def analyze_dish_photo(
     if not photo_bytes:
         return _empty_response()
 
-    import base64
-
-    inline_b64 = base64.b64encode(photo_bytes).decode("ascii")
     text_prompt = "Analizá la foto del plato y devolvé el JSON pedido."
     if dish_hint:
         text_prompt += f" Pista: el plato probablemente es '{dish_hint}'."
@@ -336,80 +274,50 @@ async def analyze_dish_photo(
     if style_samples:
         system_text = f"{system_text}\n\n{_build_style_block(style_samples)}"
 
-    payload: dict[str, Any] = {
-        "system_instruction": {
-            "parts": [{"text": system_text}],
-        },
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": photo_mime or "image/jpeg",
-                            "data": inline_b64,
-                        }
-                    },
-                    {"text": text_prompt},
-                ],
-            }
-        ],
-        "generation_config": {
-            "response_mime_type": "application/json",
-            "response_schema": _SCHEMA,
-            "temperature": 0.4,
-            # 800 was tight: a dish with many ingredients + blurb + pros
-            # + cons can blow past it and we'd get truncated JSON.
-            "max_output_tokens": 2048,
-        },
-    }
-    url = f"{_GEMINI_BASE}/models/{_VISION_MODEL}:generateContent"
+    image_part = genai_types.Part.from_bytes(
+        data=photo_bytes, mime_type=photo_mime or "image/jpeg"
+    )
+    contents = [
+        genai_types.Content(
+            role="user",
+            parts=[image_part, genai_types.Part.from_text(text=text_prompt)],
+        )
+    ]
+    config = genai_types.GenerateContentConfig(
+        system_instruction=system_text,
+        response_mime_type="application/json",
+        response_schema=_VisionSchema,
+        temperature=0.4,
+        # 800 was tight: a dish with many ingredients + blurb + pros
+        # + cons can blow past it and we'd get truncated JSON.
+        max_output_tokens=2048,
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            r = await client.post(url, params={"key": key}, json=payload)
-            r.raise_for_status()
-            data = r.json()
-    except httpx.HTTPError as exc:
+        response = await client.aio.models.generate_content(
+            model=_VISION_MODEL,
+            contents=contents,
+            config=config,
+        )
+    except _PROVIDER_ERRORS as exc:
         logger.warning("Gemini vision call failed: %s", exc)
         return _empty_response()
 
-    try:
-        candidate = data["candidates"][0]
-        finish_reason = candidate.get("finishReason")
-        parts = candidate["content"]["parts"]
-        # When ``response_mime_type=application/json``, ``text`` is a
-        # JSON string; we still parse defensively.
-        import json as _json
-
-        first_text = next(
-            (p["text"] for p in parts if isinstance(p, dict) and "text" in p),
-            None,
+    parsed = response.parsed
+    if not isinstance(parsed, _VisionSchema):
+        # Either the SDK couldn't deserialize (schema mismatch, partial
+        # JSON from MAX_TOKENS) or the response had no candidates.
+        finish_reason = None
+        try:
+            finish_reason = response.candidates[0].finish_reason  # type: ignore[index]
+        except (AttributeError, IndexError):
+            pass
+        logger.warning(
+            "Gemini vision returned unparseable payload "
+            "(finishReason=%s, parsed=%r)",
+            finish_reason,
+            type(parsed).__name__,
         )
-        if not first_text:
-            logger.warning(
-                "Gemini vision returned no text part (finishReason=%s)",
-                finish_reason,
-            )
-            return _empty_response()
-        raw = _parse_partial_json(first_text)
-        if raw is None:
-            logger.warning(
-                "Gemini vision returned unparseable payload "
-                "(finishReason=%s, len=%d, tail=%r)",
-                finish_reason,
-                len(first_text),
-                first_text[-80:],
-            )
-            return _empty_response()
-        if finish_reason == "MAX_TOKENS":
-            logger.info(
-                "Gemini vision response was truncated; recovered partial "
-                "JSON (len=%d)",
-                len(first_text),
-            )
-    except (KeyError, IndexError) as exc:
-        logger.warning("Gemini vision response missing fields: %s", exc)
         return _empty_response()
 
-    return _normalize(raw)
+    return _normalize_output(parsed)

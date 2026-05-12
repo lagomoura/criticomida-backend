@@ -22,17 +22,22 @@ mode is reliable, and the title generation isn't on the user's
 critical response path. ``thinking_budget=0`` is mandatory — without
 it Flash 2.5 truncates short JSON outputs (see memory
 ``feedback_gemini_thinking``).
+
+Transport is the ``google-genai`` SDK with ``response_schema`` pointing
+at a Pydantic model so the title comes back already typed.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
-from typing import Any
 
 import httpx
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,9 +48,7 @@ from app.models.chat import ChatConversation, ChatMessage
 logger = logging.getLogger(__name__)
 
 
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _TITLE_MODEL = "gemini-2.5-flash"
-_REQUEST_TIMEOUT = 12.0
 # How many of the conversation's leading messages we feed to the
 # titler. The first user turn alone is usually enough; the assistant's
 # reply (when available) helps disambiguate ("preguntó por la
@@ -58,6 +61,11 @@ _MAX_CHARS_PER_MESSAGE = 600
 # Hard cap on the generated title. The DB column is ``String(200)``
 # but the panel layout starts to wrap past ~70 chars.
 _TITLE_MAX_LEN = 80
+
+_PROVIDER_ERRORS: tuple[type[BaseException], ...] = (
+    genai_errors.APIError,
+    httpx.HTTPError,
+)
 
 
 _SYSTEM_INSTRUCTION = """Sos un titulador de conversaciones para el panel de historial de un asistente analítico gastronómico.
@@ -79,13 +87,31 @@ Reglas:
 Devolvé el JSON pelado, sin texto extra."""
 
 
-_SCHEMA: dict[str, Any] = {
-    "type": "OBJECT",
-    "properties": {
-        "title": {"type": "STRING"},
-    },
-    "required": ["title"],
-}
+class _TitleSchema(BaseModel):
+    title: str
+
+
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client | None:
+    global _client
+    key = settings.GEMINI_API_KEY
+    if not key:
+        return None
+    if _client is None:
+        _client = genai.Client(api_key=key)
+    return _client
+
+
+def _clean_title(raw: str) -> str | None:
+    title = " ".join(raw.split())  # collapse internal whitespace
+    title = title.strip().strip("\"'“”")
+    if not title:
+        return None
+    if len(title) > _TITLE_MAX_LEN:
+        title = title[: _TITLE_MAX_LEN - 1].rstrip() + "…"
+    return title
 
 
 async def generate_conversation_title(
@@ -97,8 +123,8 @@ async def generate_conversation_title(
     chronological order. Returns ``None`` when Gemini is unconfigured,
     the response is malformed, or the title is empty after cleanup.
     """
-    key = settings.GEMINI_API_KEY
-    if not key:
+    client = _get_client()
+    if client is None:
         return None
     if not messages:
         return None
@@ -115,60 +141,36 @@ async def generate_conversation_title(
         return None
     user_prompt = "\n\n".join(parts)
 
-    payload: dict[str, Any] = {
-        "system_instruction": {"parts": [{"text": _SYSTEM_INSTRUCTION}]},
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": user_prompt}],
-            }
-        ],
-        "generation_config": {
-            "response_mime_type": "application/json",
-            "response_schema": _SCHEMA,
-            "temperature": 0.2,
-            # Mandatory for Flash 2.5 JSON-mode short outputs — see
-            # ``feedback_gemini_thinking``.
-            "thinking_config": {"thinking_budget": 0},
-            "max_output_tokens": 64,
-        },
-    }
-    url = f"{_GEMINI_BASE}/models/{_TITLE_MODEL}:generateContent"
+    config = genai_types.GenerateContentConfig(
+        system_instruction=_SYSTEM_INSTRUCTION,
+        response_mime_type="application/json",
+        response_schema=_TitleSchema,
+        temperature=0.2,
+        # Mandatory for Flash 2.5 JSON-mode short outputs — see
+        # ``feedback_gemini_thinking``.
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+        max_output_tokens=64,
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-            r = await client.post(url, params={"key": key}, json=payload)
-            r.raise_for_status()
-            data = r.json()
-    except httpx.HTTPError as exc:
+        response = await client.aio.models.generate_content(
+            model=_TITLE_MODEL,
+            contents=user_prompt,
+            config=config,
+        )
+    except _PROVIDER_ERRORS as exc:
         logger.warning("gemini chat-title call failed: %s", exc)
         return None
 
-    try:
-        first_text = data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError) as exc:
-        logger.warning("gemini chat-title response shape unexpected: %s", exc)
-        return None
-
-    try:
-        raw = json.loads(first_text)
-    except ValueError:
+    parsed = response.parsed
+    if not isinstance(parsed, _TitleSchema):
         logger.warning(
-            "gemini chat-title returned unparseable JSON (tail=%r)",
-            first_text[-80:] if first_text else "",
+            "gemini chat-title returned unexpected payload (parsed=%r)",
+            type(parsed).__name__,
         )
         return None
 
-    title = raw.get("title")
-    if not isinstance(title, str):
-        return None
-    title = " ".join(title.split())  # collapse internal whitespace
-    title = title.strip().strip("\"'“”")
-    if not title:
-        return None
-    if len(title) > _TITLE_MAX_LEN:
-        title = title[: _TITLE_MAX_LEN - 1].rstrip() + "…"
-    return title
+    return _clean_title(parsed.title)
 
 
 async def analyze_and_persist_title(
