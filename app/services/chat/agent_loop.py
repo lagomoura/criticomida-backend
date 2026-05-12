@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from google import genai
@@ -345,6 +347,335 @@ def _messages_to_contents(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+#   Context-window guard
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# Gemini 3.1 Flash Lite and 2.5 Flash both expose ~1M input tokens. We
+# truncate well before that so the model still has headroom for its
+# own internal state, and so a single oversized tool result doesn't
+# tip us over on the next turn.
+_DEFAULT_INPUT_TOKEN_CAP = 800_000
+# Skip the round-trip to ``count_tokens`` while ``contents`` is short.
+# Token counting is free quota-wise but costs ~100 ms, and turn-1
+# Sommelier prompts never approach the cap. Once history grows past
+# this many rows it's worth measuring before every iteration.
+_GUARD_MIN_CONTENT_ROWS = 12
+
+
+def _is_function_call_content(content: genai_types.Content) -> bool:
+    return content.role == "model" and any(
+        getattr(p, "function_call", None) is not None
+        for p in (content.parts or [])
+    )
+
+
+def _is_function_response_content(content: genai_types.Content) -> bool:
+    return content.role == "user" and any(
+        getattr(p, "function_response", None) is not None
+        for p in (content.parts or [])
+    )
+
+
+def _into_blocks(
+    contents: list[genai_types.Content],
+) -> list[list[genai_types.Content]]:
+    """Group ``contents`` into atomic blocks the truncator can drop as
+    a unit. Gemini rejects an orphan ``function_call`` (without its
+    matching ``function_response``) and vice versa, so when a model
+    turn carries a ``function_call`` we glue the immediately following
+    user turn (the ``function_response``) into the same block. Plain
+    user/assistant text turns become single-row blocks.
+    """
+    blocks: list[list[genai_types.Content]] = []
+    i = 0
+    while i < len(contents):
+        c = contents[i]
+        if (
+            _is_function_call_content(c)
+            and i + 1 < len(contents)
+            and _is_function_response_content(contents[i + 1])
+        ):
+            blocks.append([c, contents[i + 1]])
+            i += 2
+        else:
+            blocks.append([c])
+            i += 1
+    return blocks
+
+
+def _from_blocks(
+    blocks: list[list[genai_types.Content]],
+) -> list[genai_types.Content]:
+    return [c for block in blocks for c in block]
+
+
+async def _truncate_contents_to_fit(
+    *,
+    client: genai.Client,
+    model: str,
+    system: str,
+    tool_list: list[genai_types.Tool],
+    contents: list[genai_types.Content],
+    cap: int = _DEFAULT_INPUT_TOKEN_CAP,
+    min_rows: int = _GUARD_MIN_CONTENT_ROWS,
+) -> tuple[list[genai_types.Content], int | None]:
+    """Drop oldest blocks until the prompt fits under ``cap`` tokens.
+
+    Returns ``(contents, total_tokens_after)``. ``total_tokens_after``
+    is ``None`` when the guard was skipped (short history) or the
+    ``count_tokens`` call itself failed — in both cases we proceed
+    with the original ``contents`` and let the live call surface any
+    real overflow.
+
+    ``min_rows`` is the row threshold below which we skip the
+    ``count_tokens`` round-trip entirely. Exposed as a kwarg only so
+    tests can force the guard to engage with short fixtures; live
+    callers always use the module default.
+
+    Truncation strategy: walk blocks oldest-first and drop one block
+    per attempt, recounting after each drop. We never drop the most
+    recent block (the live user turn). If even keeping the single
+    last block doesn't fit, we log and return what we have — at that
+    point either the live turn itself is gigantic (an explicit user
+    paste) or the model is mid-pathology, and either way truncating
+    further would lie to the agent."""
+    if len(contents) <= min_rows:
+        return contents, None
+
+    # Note: AI Studio's ``count_tokens`` rejects ``system_instruction``
+    # and ``tools`` in ``CountTokensConfig`` (the SDK raises locally
+    # before sending). We count contents-only and shrink the effective
+    # cap to reserve headroom for the prefix. Sommelier system + tools
+    # ≈ 18K, Business ≈ 12K — adding 40K of slack covers both with
+    # plenty of margin against the 1M context window.
+    try:
+        response = await client.aio.models.count_tokens(
+            model=model, contents=contents
+        )
+    except Exception as exc:  # network, auth, validation, etc.
+        logger.warning("count_tokens failed; skipping guard: %s", exc)
+        return contents, None
+
+    total = response.total_tokens or 0
+    if total <= cap:
+        return contents, total
+
+    logger.warning(
+        "agent_loop: prompt at %d tokens > cap %d; truncating oldest blocks",
+        total,
+        cap,
+    )
+    blocks = _into_blocks(contents)
+    dropped = 0
+    while len(blocks) > 1:
+        blocks.pop(0)
+        dropped += 1
+        candidate = _from_blocks(blocks)
+        try:
+            response = await client.aio.models.count_tokens(
+                model=model, contents=candidate
+            )
+        except Exception as exc:
+            logger.warning(
+                "count_tokens during truncation failed after %d drops: %s",
+                dropped,
+                exc,
+            )
+            return candidate, None
+        total = response.total_tokens or 0
+        if total <= cap:
+            logger.info(
+                "agent_loop: truncated %d block(s); now at %d tokens",
+                dropped,
+                total,
+            )
+            return candidate, total
+
+    final = _from_blocks(blocks)
+    logger.warning(
+        "agent_loop: kept only the latest block (still %d tokens, cap %d)",
+        total,
+        cap,
+    )
+    return final, total
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   Context caching (Gemini Cached Contents)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+# TTL for a cache entry. Long enough that multi-turn conversations
+# stay on the same cache (typical chat = 5-10 minutes, dashboard
+# sessions stretch longer); short enough that idle caches don't pile
+# up storage for hours after the user left.
+_CACHE_TTL_SECONDS = 1800
+# Safety margin subtracted from TTL when storing the local expiry —
+# we'd rather re-create early than fire a request against a cache
+# whose remote TTL just lapsed (race between our local clock and
+# Gemini's).
+_CACHE_REUSE_MARGIN_SECONDS = 60
+# Skip caching when the prefix (system + tools serialized) is below
+# this many characters. Gemini rejects caches below ~1024 tokens with
+# a hard error; we check char-length as a cheap proxy so we don't
+# bother the API for sub-min prefixes. 4000 chars ≈ 1000-1500 tokens
+# on Spanish text + JSON.
+_CACHE_MIN_PREFIX_CHARS = 4000
+# Hard kill switch. ``AGENT_LOOP_CACHE_DISABLED=1`` in env disables
+# caching at process boot; the loop falls back to inline
+# ``system_instruction`` + ``tools``. Cheaper to flip than a deploy.
+_CACHE_DISABLED = os.getenv("AGENT_LOOP_CACHE_DISABLED", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+
+@dataclass
+class _CachedEntry:
+    name: str
+    expires_at: datetime
+
+
+# Process-local map from a (model, system, tools) hash to the Gemini
+# cache resource name. Survives across turns and across conversations
+# that share the same system + tool surface. Reset on process restart
+# (Railway deploys, dev reloads) — first request after a restart pays
+# the full prefix once to repopulate.
+_cached_content_registry: dict[str, _CachedEntry] = {}
+
+
+def _serialize_tools_for_hash(
+    tool_list: list[genai_types.Tool],
+) -> list[dict[str, Any]]:
+    """Stable representation of the tool surface for hashing. Stick to
+    the fields that actually shape the cache (name, description,
+    JSONSchema) — Tool wrappers can carry SDK-internal state we don't
+    want to fingerprint."""
+    out: list[dict[str, Any]] = []
+    for t in tool_list:
+        for fd in t.function_declarations or []:
+            out.append(
+                {
+                    "name": fd.name,
+                    "description": fd.description,
+                    "parameters": fd.parameters_json_schema,
+                }
+            )
+    return out
+
+
+def _cache_key(
+    model: str, system: str, tool_list: list[genai_types.Tool]
+) -> str:
+    payload = json.dumps(
+        {
+            "model": model,
+            "system": system,
+            "tools": _serialize_tools_for_hash(tool_list),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _estimate_prefix_chars(
+    system: str, tool_list: list[genai_types.Tool]
+) -> int:
+    n = len(system or "")
+    for t in tool_list:
+        for fd in t.function_declarations or []:
+            n += len(fd.name or "") + len(fd.description or "")
+            schema = fd.parameters_json_schema
+            if schema is not None:
+                # Cheap stringify — we only need a rough size, not a
+                # canonical serialization.
+                n += len(str(schema))
+    return n
+
+
+async def _ensure_cached_content(
+    *,
+    client: genai.Client,
+    model: str,
+    system: str,
+    tool_list: list[genai_types.Tool],
+    ttl_seconds: int = _CACHE_TTL_SECONDS,
+    min_prefix_chars: int = _CACHE_MIN_PREFIX_CHARS,
+) -> str | None:
+    """Return a Gemini ``cachedContents/...`` name to reuse, or ``None``
+    so the caller falls back to inline ``system_instruction`` + ``tools``.
+
+    Best-effort: this never raises. If ``caches.create`` fails (size
+    below the model minimum, transient API error, model not eligible
+    for caching), we log and return ``None``. The agent loop then uses
+    the inline path for that turn — correct, just more expensive.
+
+    Caching is keyed by a hash of ``(model, system, serialized_tools)``
+    so a per-user system prompt (with display name, allergies,
+    wishlist) gets its own cache. The trade-off is cardinality:
+    storage grows with unique system prompts within the TTL window.
+    With ~30 min TTL and a small active user count this is fine; if
+    we ever see cache storage become a cost line, the next move is to
+    factor the per-user block out of ``system_instruction`` and into
+    a leading user message instead."""
+    if _CACHE_DISABLED:
+        return None
+    if _estimate_prefix_chars(system, tool_list) < min_prefix_chars:
+        return None
+
+    key = _cache_key(model, system, tool_list)
+    now = datetime.now(timezone.utc)
+
+    cached = _cached_content_registry.get(key)
+    if cached is not None and cached.expires_at > now:
+        return cached.name
+
+    try:
+        result = await client.aio.caches.create(
+            model=model,
+            config=genai_types.CreateCachedContentConfig(
+                system_instruction=system,
+                tools=tool_list,
+                ttl=f"{ttl_seconds}s",
+                display_name=f"agent-loop-{key[:8]}",
+            ),
+        )
+    except Exception as exc:  # network, validation, "below minimum size"
+        logger.warning(
+            "agent_loop: caches.create failed; falling back to inline: %s",
+            exc,
+        )
+        # Drop a stale entry if we had one — next request will retry.
+        _cached_content_registry.pop(key, None)
+        return None
+
+    name = result.name
+    if not name:
+        return None
+
+    expires_at = now + timedelta(
+        seconds=max(ttl_seconds - _CACHE_REUSE_MARGIN_SECONDS, 60)
+    )
+    _cached_content_registry[key] = _CachedEntry(name=name, expires_at=expires_at)
+    logger.info(
+        "agent_loop: created cache %s (key=%s, ttl=%ds)",
+        name,
+        key[:8],
+        ttl_seconds,
+    )
+    return name
+
+
+def _clear_cached_content_registry() -> None:
+    """Test helper. Clears the process-local registry so each test
+    starts from a known empty state."""
+    _cached_content_registry.clear()
+
+
+# ──────────────────────────────────────────────────────────────────────────
 #   Agent loop
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -382,15 +713,48 @@ class AgentLoop:
         contents = _messages_to_contents(messages)
         tool_list = _registry_to_gemini_tools(self.registry)
 
+        # Try to attach a Gemini Cached Content for the (model, system,
+        # tools) prefix. When the cache is in use we omit
+        # ``system_instruction`` and ``tools`` from each call — they
+        # come from the cache, billed at ~25% of normal input cost.
+        cached_name = await _ensure_cached_content(
+            client=self._client,
+            model=self.model,
+            system=system,
+            tool_list=tool_list,
+        )
+
         for iteration in range(self.max_iterations):
-            config = genai_types.GenerateContentConfig(
-                system_instruction=system,
-                tools=tool_list,
-                max_output_tokens=self.max_tokens,
-                automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
-                    disable=True,  # we run the loop manually
-                ),
+            # Guard against context-window overflow. Cheap no-op when
+            # history is short; drops oldest tool-call/response pairs
+            # before we hand contents to the streaming call when the
+            # prompt is near the cap. Always preserves the latest user
+            # turn — we never lie about what the user just asked.
+            contents, _ = await _truncate_contents_to_fit(
+                client=self._client,
+                model=self.model,
+                system=system,
+                tool_list=tool_list,
+                contents=contents,
             )
+
+            if cached_name is not None:
+                config = genai_types.GenerateContentConfig(
+                    cached_content=cached_name,
+                    max_output_tokens=self.max_tokens,
+                    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                        disable=True,
+                    ),
+                )
+            else:
+                config = genai_types.GenerateContentConfig(
+                    system_instruction=system,
+                    tools=tool_list,
+                    max_output_tokens=self.max_tokens,
+                    automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                        disable=True,  # we run the loop manually
+                    ),
+                )
 
             stream_started = time.monotonic()
 
