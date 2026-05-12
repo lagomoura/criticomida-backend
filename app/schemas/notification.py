@@ -26,6 +26,7 @@ class NotificationResponse(BaseModel):
         "reservation_requested",
         "review_on_owned_restaurant",
         "mention",
+        "sommelier_review_recall",
     ]
     unread: bool
     created_at: datetime
@@ -35,6 +36,7 @@ class NotificationResponse(BaseModel):
     target_restaurant_id: uuid.UUID | None = None
     target_restaurant_slug: str | None = None
     target_comment_id: uuid.UUID | None = None
+    target_dish_id: uuid.UUID | None = None
     text: str
 
 

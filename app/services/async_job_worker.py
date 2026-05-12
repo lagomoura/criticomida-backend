@@ -115,7 +115,12 @@ async def _mark_retry_or_fail(
 
 async def _run_job(db: AsyncSession, job: AsyncJob) -> None:
     """Dispatch by ``kind``. Imported lazily to avoid a circular import
-    via ``embeddings_service`` → ``async_job_worker``."""
+    via ``embeddings_service`` → ``async_job_worker``.
+
+    Each branch knows which payload columns to read — the
+    ``ck_async_job_payload_shape`` CHECK in migration 063 guarantees
+    the right ones are populated for each kind.
+    """
     if job.kind is AsyncJobKind.embed_review:
         from app.services.embeddings_service import reembed_review
 
@@ -124,6 +129,16 @@ async def _run_job(db: AsyncSession, job: AsyncJob) -> None:
         from app.services.sentiment_service import analyze_and_persist_review
 
         await analyze_and_persist_review(db, job.payload_review_id)
+    elif job.kind is AsyncJobKind.sommelier_review_recall:
+        from app.services.sommelier_recall_service import (
+            process_sommelier_review_recall,
+        )
+
+        await process_sommelier_review_recall(
+            db,
+            user_id=job.payload_user_id,
+            dish_id=job.payload_dish_id,
+        )
     else:  # pragma: no cover — enum exhaustive
         raise RuntimeError(f"Unknown async_job kind: {job.kind!r}")
 

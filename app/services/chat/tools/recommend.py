@@ -27,6 +27,7 @@ emit an empty grid.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -48,6 +49,12 @@ from app.services.chat.tools._schemas import (
 )
 from app.services.chat.tools._wishlist_lookup import get_saved_dish_ids
 from app.services.chat.tools.search import _serialize_dish
+from app.services.sommelier_recall_service import (
+    enqueue_sommelier_review_recalls,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 def make_recommend_dishes_tool(
@@ -166,6 +173,31 @@ def make_recommend_dishes_tool(
             user_id=user_id,
             dish_ids=[d.id for d in kept_dishes],
         )
+
+        # Review-recall: 24h after a recommendation, if the diner
+        # didn't review the dish, drop an in-app notification (D2).
+        # Anonymous callers don't have an identity to notify, so we
+        # only enqueue for logged-in users. The enqueue is best-effort
+        # — a queue write failure should never tank the recommendation
+        # response itself.
+        logger.warning(
+            "DEBUG recommend_dishes: user_id=%s kept_dishes_count=%d",
+            user_id,
+            len(kept_dishes),
+        )
+        if user_id is not None and kept_dishes:
+            try:
+                await enqueue_sommelier_review_recalls(
+                    db,
+                    user_id=user_id,
+                    dish_ids=[d.id for d in kept_dishes],
+                )
+            except Exception:
+                logger.exception(
+                    "sommelier review-recall enqueue failed for user %s; "
+                    "continuing without recall",
+                    user_id,
+                )
         result: dict[str, Any] = {
             "count": len(kept_dishes),
             "dishes": [

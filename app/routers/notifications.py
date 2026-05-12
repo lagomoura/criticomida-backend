@@ -69,6 +69,7 @@ async def list_notifications(
             target_restaurant_id=n.target_restaurant_id,
             target_restaurant_slug=restaurant_slug,
             target_comment_id=n.target_comment_id,
+            target_dish_id=n.target_dish_id,
             text=n.text,
         )
         for n, actor, restaurant_slug in trimmed

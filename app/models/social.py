@@ -71,7 +71,8 @@ class Notification(Base):
         CheckConstraint(
             "kind IN ('like','comment','follow','claim_approved',"
             "'claim_rejected','claim_revoked','comment_like','comment_reply',"
-            "'reservation_requested','review_on_owned_restaurant','mention')",
+            "'reservation_requested','review_on_owned_restaurant','mention',"
+            "'sommelier_review_recall')",
             name="ck_notifications_kind",
         ),
     )
@@ -108,6 +109,11 @@ class Notification(Base):
     target_comment_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    target_dish_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("dishes.id", ondelete="CASCADE"),
         nullable=True,
     )
     text: Mapped[str] = mapped_column(String(500), nullable=False)

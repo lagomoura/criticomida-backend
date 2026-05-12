@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # prod); off in pytest / one-shot scripts to keep tests
     # deterministic and avoid contaminating shared state.
     ASYNC_JOB_WORKER_ENABLED: bool = True
+    # Delay between a Sommelier ``recommend_dishes`` call and the
+    # in-app review-recall notification. 24h hits the sweet spot for
+    # "go eat, then come back and review": short enough that the dish
+    # is still fresh in memory, long enough that a same-day diner has
+    # had time to actually visit. Tunable per environment in case the
+    # feedback loop suggests a different cadence.
+    SOMMELIER_RECALL_DELAY_HOURS: int = 24
 
     # Sentry. Empty DSN deshabilita el SDK por completo (dev por default).
     # SENTRY_RELEASE cae a RAILWAY_GIT_COMMIT_SHA cuando está vacío en prod.
