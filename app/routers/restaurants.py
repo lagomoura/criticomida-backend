@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.db_errors import is_unique_violation
 from app.middleware.auth import get_current_user, get_current_user_optional, require_role
+from app.middleware.rate_limit import MAP_BBOX_LIMIT, limiter
 from app.models.category import Category
 from app.models.restaurant import ReservationClick, Restaurant
 from app.models.user import User, UserRole
@@ -124,13 +125,15 @@ async def match_candidates_endpoint(
 
 
 @router.get("/in-bbox", response_model=MapBboxResponse)
+@limiter.limit(MAP_BBOX_LIMIT)
 async def restaurants_in_bbox(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     min_lat: float = Query(..., ge=-90.0, le=90.0),
     min_lng: float = Query(..., ge=-180.0, le=180.0),
     max_lat: float = Query(..., ge=-90.0, le=90.0),
     max_lng: float = Query(..., ge=-180.0, le=180.0),
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(default=200, ge=1, le=200),
     sort: str = Query(default="geek_score"),
     include_empty: bool = Query(default=False),
     chef_only: bool = Query(default=False),

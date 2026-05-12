@@ -389,7 +389,7 @@ async def list_messages(
     conversation_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=100, ge=1, le=200),
 ) -> list[ChatMessage]:
     convo = (
         await db.execute(

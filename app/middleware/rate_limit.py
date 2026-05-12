@@ -76,3 +76,9 @@ AUTH_RESEND_VERIFICATION_LIMIT = "5/hour"
 # by IP via ``user_or_ip_key``; the limit applies regardless.
 CHAT_STREAM_LIMIT = "30/hour"
 GHOSTWRITER_ASSIST_LIMIT = "20/hour"
+
+# Map discovery — heavy aggregate query (geek_score/value_prop/trending
+# over all dishes in bbox). FE uses a 300ms debounce + AbortController,
+# so a single legit session emits ~20-40 req/min during active pan.
+# 120/min gives a 3-6× buffer for legit users and caps scripted abuse.
+MAP_BBOX_LIMIT = "120/minute"
