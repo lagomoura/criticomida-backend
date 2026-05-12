@@ -52,6 +52,35 @@ _PLATING_STYLES = {
 }
 
 
+def _build_style_block(samples: list[str]) -> str:
+    """Addendum que sólo se suma al system instruction si el usuario tiene
+    reseñas previas suficientemente largas. Importante: el bloque acota su
+    alcance al ``editorial_blurb`` para no contaminar tags/ingredientes/pros
+    /cons, que tienen que seguir siendo observacionales sobre la foto.
+    """
+    numbered = "\n".join(f"{i + 1}. \"{s}\"" for i, s in enumerate(samples))
+    return (
+        "# Voz del autor\n\n"
+        "Abajo van reseñas previas escritas por este mismo usuario. "
+        "Usalas SOLO para inferir su voz al redactar `editorial_blurb`: "
+        "imitá su registro (formal/informal), longitud típica de frase, "
+        "vocabulario y muletillas.\n\n"
+        "Reglas:\n"
+        "- NO copies frases literales de las muestras.\n"
+        "- NO menciones platos, restaurantes ni lugares que aparezcan en "
+        "ellas (son de OTROS platos).\n"
+        "- Si el autor usa clichés vacíos (\"delicioso\", \"exquisito\", "
+        "\"una explosión de sabor\"), priorizá las reglas originales de "
+        "Palato por sobre la imitación.\n"
+        "- Para `tags`, `visible_ingredients`, `plating_style`, "
+        "`suggested_pros` y `suggested_cons`: ignorá estas muestras "
+        "completamente y seguí las reglas originales (observacional sobre "
+        "la foto).\n\n"
+        "Reseñas previas (más recientes primero):\n"
+        f"{numbered}"
+    )
+
+
 _SYSTEM_INSTRUCTION = """Sos el Ghostwriter de Palato. Mirás fotos de platos y proponés etiquetas + texto editorial corto, en español rioplatense, tono cálido y específico (sin clichés tipo "delicioso", "exquisito", "una explosión de sabor").
 
 Devolvé SIEMPRE un JSON válido con esta forma exacta:
@@ -267,6 +296,7 @@ async def analyze_dish_photo(
     photo_bytes: bytes | None = None,
     photo_mime: str | None = None,
     dish_hint: str | None = None,
+    style_samples: list[str] | None = None,
 ) -> dict[str, Any]:
     """Analyze a dish photo and return Ghostwriter suggestions.
 
@@ -275,6 +305,8 @@ async def analyze_dish_photo(
     ``dish_hint`` lets the caller pass the dish name so the model can
     bias tags toward what it expects (helps disambiguate: "pizza" with
     a hint of "fugazzeta" vs "napolitana" gives different tags).
+    ``style_samples`` son notas de reseñas previas del autor; cuando se
+    pasan, el ``editorial_blurb`` imita su voz (ver ``_build_style_block``).
     """
     key = settings.GEMINI_API_KEY
     if not key:
@@ -300,9 +332,13 @@ async def analyze_dish_photo(
     if dish_hint:
         text_prompt += f" Pista: el plato probablemente es '{dish_hint}'."
 
+    system_text = _SYSTEM_INSTRUCTION
+    if style_samples:
+        system_text = f"{system_text}\n\n{_build_style_block(style_samples)}"
+
     payload: dict[str, Any] = {
         "system_instruction": {
-            "parts": [{"text": _SYSTEM_INSTRUCTION}],
+            "parts": [{"text": system_text}],
         },
         "contents": [
             {

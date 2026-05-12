@@ -45,6 +45,7 @@ from app.middleware.auth import get_current_user
 from app.middleware.rate_limit import GHOSTWRITER_ASSIST_LIMIT, limiter
 from app.models.dish import Dish
 from app.models.user import User
+from app.services.user_style_service import fetch_style_samples
 from app.services.vision_service import analyze_dish_photo
 
 
@@ -133,9 +134,13 @@ async def assist_with_url(
         )
 
     dish_hint = await _resolve_dish_hint(db, body.dish_id)
+    style_samples = await fetch_style_samples(
+        db, user.id, exclude_dish_id=body.dish_id
+    )
     raw = await analyze_dish_photo(
         photo_url=body.photo_url,
         dish_hint=dish_hint,
+        style_samples=style_samples,
     )
     return _build_response(raw, body.draft_text)
 
@@ -171,9 +176,13 @@ async def assist_with_upload(
         )
 
     dish_hint = await _resolve_dish_hint(db, dish_id)
+    style_samples = await fetch_style_samples(
+        db, user.id, exclude_dish_id=dish_id
+    )
     raw = await analyze_dish_photo(
         photo_bytes=photo_bytes,
         photo_mime=detected.mime,
         dish_hint=dish_hint,
+        style_samples=style_samples,
     )
     return _build_response(raw, draft_text)
