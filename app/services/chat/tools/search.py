@@ -41,7 +41,10 @@ from app.services.chat.tools._allergy_filter import (
     filter_dishes_by_allergies,
     get_user_allergies,
 )
-from app.services.chat.tools._resolution import _resolve_dish_global
+from app.services.chat.tools._resolution import (
+    _normalize_for_search,
+    _resolve_dish_global,
+)
 from app.services.chat.tools._schemas import (
     GetDishDetailInput,
     SearchDishesInput,
@@ -172,6 +175,19 @@ async def execute_dish_search(
             Category, Restaurant.category_id == Category.id, isouter=False
         )
         conditions.append(Category.slug == inputs.category_slug)
+
+    # Hard name filter — acento-insensible, contra la columna stored
+    # ``dishes.name_normalized`` (lower + f_unaccent, generated column,
+    # indexada por gin_trgm). Le permite al agente garantizar que si el
+    # comensal pidió "ceviche" el resultado contiene "ceviche" — el
+    # re-ranking semántico solo no alcanza cuando embeddings tienen
+    # ruido o están sin generar para platos nuevos.
+    if inputs.name_contains:
+        needle_norm = _normalize_for_search(inputs.name_contains)
+        if needle_norm:
+            conditions.append(
+                Dish.name_normalized.ilike(f"%{needle_norm}%")
+            )
 
     # Pillar minima are stored on dish_reviews (one-to-many). We pull
     # dishes whose *latest* review meets the minimum on each requested
@@ -329,14 +345,21 @@ def make_search_dishes_tool(
         description=(
             "Search the Palato catalog of dishes. Combine structured "
             "filters (neighborhood, pillar minima, bbox, category, price "
-            "tier) with an optional semantic_query for vibe-based ranking. "
-            "Hard filters are AND and never relaxed. **Data-only**: the "
-            "rows come back to YOU; the comensal does NOT see them as "
-            "cards. After reading the results, decide which 1-6 actually "
-            "answer the question and call ``recommend_dishes(dish_ids="
-            "[...])`` to present that curated subset. Skipping the "
-            "recommend_dishes step means the comensal sees nothing — "
-            "search_dishes alone is invisible to them."
+            "tier, name_contains) with an optional semantic_query for "
+            "vibe-based ranking. Hard filters are AND and never relaxed. "
+            "**Pidió un plato por nombre concreto** ('ceviche', 'ramen', "
+            "'milanesa', 'café'): pasá ``name_contains=<nombre>`` — "
+            "filtro SQL acento-insensible contra la columna normalizada "
+            "del nombre, garantiza que el resultado contiene ese plato. "
+            "El ``semantic_query`` solo no alcanza ahí: embeddings con "
+            "ruido pueden rankear platos no relacionados sobre el match "
+            "real. **Data-only**: the rows come back to YOU; the comensal "
+            "does NOT see them as cards. After reading the results, "
+            "decide which 1-6 actually answer the question and call "
+            "``recommend_dishes(dish_ids=[...])`` to present that "
+            "curated subset. Skipping the recommend_dishes step means "
+            "the comensal sees nothing — search_dishes alone is "
+            "invisible to them."
         ),
         input_schema=pydantic_to_anthropic_schema(SearchDishesInput),
         handler=handler,

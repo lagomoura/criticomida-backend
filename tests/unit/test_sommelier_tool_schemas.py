@@ -113,6 +113,20 @@ class TestSearchDishesInput:
         with pytest.raises(ValidationError):
             SearchDishesInput.model_validate({"limit": 50})
 
+    def test_name_contains_validates(self):
+        inputs = SearchDishesInput.model_validate({"name_contains": "ceviche"})
+        assert inputs.name_contains == "ceviche"
+
+    def test_name_contains_alias_plato_accepted(self):
+        # El LLM en español tiende a tirar "plato" / "nombre" como key —
+        # los aceptamos para no rebotar payloads benignos.
+        inputs = SearchDishesInput.model_validate({"plato": "ramen"})
+        assert inputs.name_contains == "ramen"
+
+    def test_name_contains_alias_dish_name_accepted(self):
+        inputs = SearchDishesInput.model_validate({"dish_name": "risotto"})
+        assert inputs.name_contains == "risotto"
+
 
 class TestSearchDishesHandler:
     @pytest.fixture

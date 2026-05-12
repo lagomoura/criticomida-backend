@@ -625,6 +625,26 @@ class SearchDishesInput(BaseModel):
             "'mood' distinto del filtrado estructurado."
         ),
     )
+    name_contains: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "name_contains", "nombre", "plato", "dish_name"
+        ),
+        description=(
+            "Substring acento-insensible que TIENE que aparecer en el "
+            "nombre del plato. Filtro duro AND — el match es a nivel "
+            "SQL contra la columna normalizada (lower + unaccent). Usalo "
+            "siempre que el comensal pida un plato/bebida concreto por "
+            "nombre ('ceviche', 'ramen', 'milanesa', 'café', 'risotto') "
+            "para garantizar que el resultado contiene ese nombre — el "
+            "``semantic_query`` solo no alcanza porque embeddings con "
+            "ruido pueden devolver top-K que no incluye el plato real. "
+            "Acentos y mayúsculas no importan; ``ceviche`` matchea "
+            "'Ceviche de pescado' y 'Cevíches mixtos'. NO lo uses para "
+            "'moods' o categorías ('algo rico', 'comida confort') — "
+            "para eso está ``semantic_query``."
+        ),
+    )
     limit: int = Field(
         default=6,
         ge=1,
