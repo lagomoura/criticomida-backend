@@ -23,7 +23,14 @@ from datetime import date
 from enum import Enum
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -912,6 +919,125 @@ class RequestReservationInput(BaseModel):
             "la lee literal."
         ),
     )
+
+
+class ListRestaurantReviewsInput(BaseModel):
+    """Inputs del tool ``list_restaurant_reviews`` (agente Sommelier).
+
+    Listado paramétrico de reseñas para UN restaurante concreto del
+    catálogo. Espejo B2C del ``list_reviews`` del Business, con dos
+    diferencias clave:
+
+    - **Scope dinámico**: resuelve el restaurante por UUID, slug o
+      nombre libre — el comensal no sabe ids ni slugs. Al menos uno
+      de los tres tiene que venir; el handler valida y devuelve hint
+      cuando hay ambigüedad o sin match. Mismo patrón defensivo que
+      ``_resolve_dish_global``.
+    - **Output anónimo**: NUNCA expone autor (``user_id`` / display
+      name). Las reseñas del catálogo público las consume el comensal
+      de forma anónima — consistente con ``get_dish_detail``.
+
+    Rangos cruzados (``min_rating > max_rating``, ``date_from >
+    date_to``) se validan en el handler (no acá) para devolver un
+    payload ``{error, message}`` útil para que el LLM corrija en el
+    siguiente turno, en lugar de una ``ValidationError`` genérica.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("sentiment", "sort", mode="before")
+    @classmethod
+    def _lowercase_enum(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+    restaurant_id: str | None = Field(
+        default=None,
+        description=(
+            "UUID del restaurante. Pasalo cuando viene del output de un "
+            "``search_dishes`` / ``get_dish_detail`` previo en la misma "
+            "conversación."
+        ),
+    )
+    restaurant_slug: str | None = Field(
+        default=None,
+        description=(
+            "Slug del restaurante (ej. 'eretz-cantina'). Pasalo cuando "
+            "el slug es visible — viene del output previo o del context "
+            "del FE cuando el chat se abre desde la página del lugar."
+        ),
+    )
+    restaurant_name: str | None = Field(
+        default=None,
+        min_length=2,
+        description=(
+            "Nombre libre del restaurante como lo dijo el comensal "
+            "('Eretz', 'la cantina israelí'). El tool resuelve "
+            "internamente — si hay ambigüedad devuelve candidatos para "
+            "que el comensal aclare."
+        ),
+    )
+    sentiment: Sentiment = Field(
+        default=Sentiment.any,
+        description=(
+            "Filtra por sentimiento detectado. Reseñas sin sentimiento "
+            "analizado se excluyen cuando el filtro es distinto de "
+            "'any'. Usá 'negative' para 'reseñas duras', 'quejas', "
+            "'experiencias malas'."
+        ),
+    )
+    sort: ReviewSort = Field(
+        default=ReviewSort.recent,
+        description=(
+            "Orden del resultado. Para 'la peor reseña' usá "
+            "'most_negative'; para 'la más reciente' usá 'recent'."
+        ),
+    )
+    min_rating: float | None = Field(
+        default=None,
+        ge=1,
+        le=5,
+        description="Rating mínimo del comensal, escala 1-5.",
+    )
+    max_rating: float | None = Field(
+        default=None,
+        ge=1,
+        le=5,
+        description="Rating máximo del comensal, escala 1-5.",
+    )
+    date_from: date | None = Field(
+        default=None,
+        description="Fecha mínima inclusive, ISO YYYY-MM-DD.",
+    )
+    date_to: date | None = Field(
+        default=None,
+        description="Fecha máxima inclusive, ISO YYYY-MM-DD.",
+    )
+    dish_name_contains: str | None = Field(
+        default=None,
+        description=(
+            "Substring acento-insensible que tiene que aparecer en el "
+            "nombre del plato. Útil para 'peor reseña del risotto en X'."
+        ),
+    )
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Cantidad máxima de reseñas a devolver (1-50).",
+    )
+
+    @model_validator(mode="after")
+    def _require_identifier(self) -> "ListRestaurantReviewsInput":
+        if not any(
+            (self.restaurant_id, self.restaurant_slug, self.restaurant_name)
+        ):
+            raise ValueError(
+                "At least one of restaurant_id, restaurant_slug, "
+                "restaurant_name must be provided."
+            )
+        return self
 
 
 # ──────────────────────────────────────────────────────────────────────────

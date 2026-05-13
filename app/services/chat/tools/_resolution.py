@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.dish import Dish
+from app.models.restaurant import Restaurant
 
 
 _MAX_CANDIDATES = 12
@@ -295,5 +296,181 @@ async def _resolve_dish_global(
             "similitud semántica (puede que el plato exista bajo otro "
             f"nombre), o decile {actor_dat} que no aparece en la base "
             "actual. NUNCA pidas 'el nombre exacto' ni el ID."
+        ),
+    }
+
+
+def _restaurant_candidate_payload(rest: Restaurant) -> dict[str, Any]:
+    """Render a Restaurant as a candidate row for the LLM.
+
+    Tighter than the dish payload — we include only what the comensal
+    needs to disambiguate two restaurants with similar names (location
+    + city), plus identifiers the LLM can pass back in the next call.
+    """
+    return {
+        "restaurant_id": str(rest.id),
+        "slug": rest.slug,
+        "name": rest.name,
+        "location_name": rest.location_name,
+        "city": rest.city,
+    }
+
+
+async def _resolve_restaurant_global(
+    db: AsyncSession,
+    *,
+    restaurant_id: str | None,
+    restaurant_slug: str | None,
+    restaurant_name: str | None,
+) -> tuple[Restaurant | None, dict[str, Any] | None]:
+    """Resolve a restaurant from uuid / slug / free-form name.
+
+    Mirror of :func:`_resolve_dish_global`, adapted to the restaurant
+    table. Priority: UUID > slug exact > name fuzzy. Returns
+    ``(Restaurant, None)`` on a clean resolution, otherwise ``(None,
+    payload)`` with a structured hint the LLM should turn into a
+    natural message — never raw JSON.
+
+    Cases covered:
+
+    - **UUID hit**: returns the Restaurant row.
+    - **UUID invalid**: treated as a free-form name (same trick used in
+      :func:`_resolve_dish_global` to forgive the LLM dropping a name
+      into the wrong field).
+    - **UUID valid but not in catalog**: falls back to slug/name if
+      either is provided, otherwise returns ``restaurant_not_found``.
+    - **Slug hit**: returns the Restaurant row.
+    - **Slug miss**: falls back to name if provided, otherwise
+      ``slug_not_found``.
+    - **Name → unique match**: returns the Restaurant row.
+    - **Name → multiple matches**: ``needs_disambiguation: True`` with
+      a candidate list (capped). LLM presents the list and waits for
+      the comensal to pick.
+    - **Name → zero matches**: ``no_match`` with a hint to ask the
+      comensal to clarify.
+    - **Missing input**: defensive ``missing_input`` (the schema's
+      ``model_validator`` should catch this first, but defense in
+      depth is cheap).
+    """
+    # ── Path 1 — explicit UUID ────────────────────────────────────────
+    if restaurant_id:
+        try:
+            uid = uuid.UUID(restaurant_id)
+        except ValueError:
+            # The LLM passed a name in ``restaurant_id``. Treat it as
+            # the name input (same forgiveness pattern as dish).
+            restaurant_name = restaurant_name or restaurant_id
+        else:
+            stmt = select(Restaurant).where(Restaurant.id == uid)
+            rest = (await db.execute(stmt)).scalars().first()
+            if rest is not None:
+                return rest, None
+            if not restaurant_slug and not restaurant_name:
+                return None, {
+                    "error": "restaurant_not_found",
+                    "message": (
+                        "Ese restaurant_id no existe en el catálogo. "
+                        "Pasá el nombre libre del lugar en "
+                        "``restaurant_name`` o el slug en "
+                        "``restaurant_slug``."
+                    ),
+                }
+
+    # ── Path 2 — slug exact match ─────────────────────────────────────
+    if restaurant_slug and restaurant_slug.strip():
+        slug = restaurant_slug.strip().lower()
+        stmt = select(Restaurant).where(Restaurant.slug == slug)
+        rest = (await db.execute(stmt)).scalars().first()
+        if rest is not None:
+            return rest, None
+        if not restaurant_name:
+            return None, {
+                "error": "slug_not_found",
+                "query": slug,
+                "message": (
+                    f"El slug '{slug}' no existe en el catálogo. Si "
+                    "el comensal mencionó el restaurante por nombre, "
+                    "pasalo en ``restaurant_name`` y reintento — yo "
+                    "resuelvo la ambigüedad."
+                ),
+            }
+
+    # ── Path 3 — fuzzy name search ────────────────────────────────────
+    if not restaurant_name or not restaurant_name.strip():
+        return None, {
+            "error": "missing_input",
+            "message": (
+                "Pasame el restaurante como ``restaurant_id`` (UUID), "
+                "``restaurant_slug`` o ``restaurant_name`` (texto libre, "
+                "p.ej. 'Eretz', 'la cantina israelí'). NUNCA le pidas "
+                "al comensal el ID."
+            ),
+        }
+
+    needle = restaurant_name.strip()
+    needle_norm = _normalize_for_search(needle)
+
+    # Primary: ILIKE on name (fast happy path when accents match).
+    primary_stmt = (
+        select(Restaurant)
+        .where(Restaurant.name.ilike(f"%{needle}%"))
+        .order_by(Restaurant.review_count.desc(), Restaurant.name.asc())
+        .limit(_GLOBAL_PRIMARY_LIMIT)
+    )
+    candidates = list((await db.execute(primary_stmt)).scalars().all())
+
+    if not candidates:
+        # Fallback: wider scan + Python-side accent-insensible filter
+        # against name + location_name (so "Eretz Palermo" matches via
+        # the barrio token even if the name alone wouldn't).
+        wider_stmt = (
+            select(Restaurant)
+            .order_by(Restaurant.review_count.desc(), Restaurant.name.asc())
+            .limit(_GLOBAL_FALLBACK_LIMIT)
+        )
+        all_rows = list((await db.execute(wider_stmt)).scalars().all())
+        candidates = [
+            r
+            for r in all_rows
+            if needle_norm in _normalize_for_search(r.name)
+            or needle_norm in _normalize_for_search(r.location_name or "")
+        ]
+    else:
+        # The ILIKE primary scan may include rows where the substring
+        # only matches case-insensitively; refine in Python so accent
+        # mismatches don't survive.
+        candidates = [
+            r for r in candidates if needle_norm in _normalize_for_search(r.name)
+        ]
+
+    if len(candidates) == 1:
+        return candidates[0], None
+
+    if len(candidates) > 1:
+        return None, {
+            "needs_disambiguation": True,
+            "query": needle,
+            "candidates": [
+                _restaurant_candidate_payload(r)
+                for r in candidates[:_MAX_CANDIDATES]
+            ],
+            "message": (
+                f"Tengo {len(candidates)} restaurantes que matchean "
+                f"'{needle}'. Mostrale al comensal los candidatos como "
+                "una lista numerada (nombre + barrio + ciudad) y dejá "
+                "que elija. Cuando aclare, llamá el tool de nuevo con "
+                "el restaurant_id o restaurant_slug del candidato. "
+                "NUNCA pidas 'el nombre exacto'."
+            ),
+        }
+
+    return None, {
+        "error": "no_match",
+        "query": needle,
+        "message": (
+            f"No encontré ningún restaurante cuyo nombre o barrio "
+            f"contenga '{needle}' en el catálogo. Pedile al comensal "
+            "que aclare el nombre o que pruebe con el barrio del "
+            "lugar. NUNCA pidas 'el nombre exacto' ni el ID."
         ),
     }

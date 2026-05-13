@@ -46,6 +46,7 @@ from app.services.chat.tools.reservations import make_request_reservation_tool
 from app.services.chat.tools.routes import make_create_dish_route_tool
 from app.services.chat.tools.search import (
     make_get_dish_detail_tool,
+    make_list_restaurant_reviews_tool,
     make_search_dishes_tool,
 )
 from app.services.chat.tools.taste import make_update_taste_profile_tool
@@ -96,6 +97,15 @@ def build_registry(
         )
 
     if agent == ChatAgent.sommelier:
+        # Parametric listing of public reviews for one restaurant. B2C
+        # mirror of the Business ``list_reviews`` with two differences:
+        # (a) dynamic scope (resolves the restaurant by id/slug/name),
+        # (b) anonymous output — no ``user_id`` / author exposed.
+        # ``user_id`` enables the safety filter against blocked/muted
+        # authors (same pattern as get_dish_detail).
+        registry.register(
+            make_list_restaurant_reviews_tool(db, user_id=user_id)
+        )
         # Curated grid: the agent calls this AFTER reading the rows
         # from search_dishes to present a hand-picked subset. The
         # cards visible to the comensal come from this tool, not from

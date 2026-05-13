@@ -28,7 +28,7 @@ import uuid
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, asc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -44,10 +44,14 @@ from app.services.chat.tools._allergy_filter import (
 from app.services.chat.tools._resolution import (
     _normalize_for_search,
     _resolve_dish_global,
+    _resolve_restaurant_global,
 )
 from app.services.chat.tools._schemas import (
     GetDishDetailInput,
+    ListRestaurantReviewsInput,
+    ReviewSort,
     SearchDishesInput,
+    Sentiment,
     pydantic_to_anthropic_schema,
 )
 
@@ -493,4 +497,276 @@ def make_get_dish_detail_tool(
         ),
         input_schema=pydantic_to_anthropic_schema(GetDishDetailInput),
         handler=handler,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   list_restaurant_reviews — Sommelier parametric listing of public reviews
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def make_list_restaurant_reviews_tool(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID | None,
+) -> ToolSpec:
+    """Build ``list_restaurant_reviews`` (Sommelier-only).
+
+    B2C mirror of ``list_reviews`` (Business). Two key differences:
+
+    - **Dynamic scope**: resolves the restaurant from
+      ``restaurant_id`` / ``restaurant_slug`` / ``restaurant_name``
+      (free text) — the comensal never knows ids. The shared resolver
+      handles disambiguation, slug lookup, and graceful fallbacks.
+    - **Anonymous output**: no ``user_id`` / display name is exposed.
+      Reviews from the public catalog are read by the comensal
+      anonymously — consistent with ``get_dish_detail``.
+
+    ``user_id`` (optional) enables the safety filter against
+    blocked/muted authors. Applied at SQL level via
+    ``excluded_author_ids_subquery``.
+    """
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        from app.models.dish import DishReview, SentimentLabel
+        from app.services.safety_service import excluded_author_ids_subquery
+
+        # 1. Pydantic validation (extra=forbid + model_validator)
+        try:
+            inputs = ListRestaurantReviewsInput.model_validate(args)
+        except ValidationError as exc:
+            return {
+                "error": "Invalid arguments for list_restaurant_reviews.",
+                "details": exc.errors(include_url=False),
+            }
+
+        # 2. Crossed ranges — return useful error, not exception. The
+        # LLM reads the message and retries with corrected args in the
+        # same turn (agent loop pattern).
+        if (
+            inputs.min_rating is not None
+            and inputs.max_rating is not None
+            and inputs.min_rating > inputs.max_rating
+        ):
+            return {
+                "error": "invalid_rating_range",
+                "message": (
+                    f"min_rating ({inputs.min_rating}) no puede ser "
+                    f"mayor que max_rating ({inputs.max_rating}). "
+                    "Volvé a llamar con valores correctos."
+                ),
+            }
+        if (
+            inputs.date_from is not None
+            and inputs.date_to is not None
+            and inputs.date_from > inputs.date_to
+        ):
+            return {
+                "error": "invalid_date_range",
+                "message": (
+                    f"date_from ({inputs.date_from.isoformat()}) no "
+                    "puede ser posterior a date_to "
+                    f"({inputs.date_to.isoformat()})."
+                ),
+            }
+
+        # 3. Resolve restaurant. Resolver returns a structured hint
+        # payload on ambiguity / no_match so the LLM can guide the
+        # comensal without falling into hand-back patterns.
+        restaurant, hint = await _resolve_restaurant_global(
+            db,
+            restaurant_id=inputs.restaurant_id,
+            restaurant_slug=inputs.restaurant_slug,
+            restaurant_name=inputs.restaurant_name,
+        )
+        if hint is not None:
+            return hint
+        assert restaurant is not None
+
+        # 4. Build SELECT — eager-load pros_cons so we can include them
+        # per review without an N+1 burst. Reviews per restaurant are
+        # capped by the LIMIT below, so the batched fetch stays small.
+        sentiment_filter = (
+            SentimentLabel(inputs.sentiment.value)
+            if inputs.sentiment is not Sentiment.any
+            else None
+        )
+
+        stmt = (
+            select(DishReview, Dish)
+            .join(Dish, DishReview.dish_id == Dish.id)
+            .where(Dish.restaurant_id == restaurant.id)
+            .options(selectinload(DishReview.pros_cons))
+        )
+
+        if sentiment_filter is not None:
+            stmt = stmt.where(DishReview.sentiment_label == sentiment_filter)
+        if inputs.min_rating is not None:
+            stmt = stmt.where(DishReview.rating >= inputs.min_rating)
+        if inputs.max_rating is not None:
+            stmt = stmt.where(DishReview.rating <= inputs.max_rating)
+        if inputs.date_from is not None:
+            stmt = stmt.where(
+                func.date(DishReview.created_at) >= inputs.date_from
+            )
+        if inputs.date_to is not None:
+            stmt = stmt.where(
+                func.date(DishReview.created_at) <= inputs.date_to
+            )
+
+        if inputs.dish_name_contains and inputs.dish_name_contains.strip():
+            needle_norm = _normalize_for_search(inputs.dish_name_contains)
+            if needle_norm:
+                stmt = stmt.where(
+                    Dish.name_normalized.ilike(f"%{needle_norm}%")
+                )
+
+        # Safety filter at SQL level — efficient because the base query
+        # is already restaurant-scoped and we don't need a post-query
+        # reload (unlike get_dish_detail, which works in memory).
+        if user_id is not None:
+            stmt = stmt.where(
+                DishReview.user_id.notin_(
+                    excluded_author_ids_subquery(user_id)
+                )
+            )
+
+        if inputs.sort is ReviewSort.most_negative:
+            stmt = stmt.order_by(
+                asc(DishReview.sentiment_score).nullslast(),
+                DishReview.created_at.desc(),
+            )
+        elif inputs.sort is ReviewSort.most_positive:
+            stmt = stmt.order_by(
+                DishReview.sentiment_score.desc().nullslast(),
+                DishReview.created_at.desc(),
+            )
+        elif inputs.sort is ReviewSort.rating_high:
+            stmt = stmt.order_by(
+                DishReview.rating.desc(), DishReview.created_at.desc()
+            )
+        elif inputs.sort is ReviewSort.rating_low:
+            stmt = stmt.order_by(
+                DishReview.rating.asc(), DishReview.created_at.desc()
+            )
+        elif inputs.sort is ReviewSort.oldest:
+            stmt = stmt.order_by(DishReview.created_at.asc())
+        else:  # ReviewSort.recent
+            stmt = stmt.order_by(DishReview.created_at.desc())
+
+        rows = list((await db.execute(stmt.limit(inputs.limit))).all())
+
+        # 5. Build ``applied_filters`` for the LLM to echo back when
+        # narrating ("una de N reseñas en abril con sentimiento
+        # negativo"). Mirror of the Business list_reviews shape so the
+        # agent loop sees a familiar payload across agents.
+        applied: dict[str, Any] = {
+            "sentiment": inputs.sentiment.value,
+            "sort": inputs.sort.value,
+            "limit": inputs.limit,
+        }
+        if inputs.min_rating is not None:
+            applied["min_rating"] = inputs.min_rating
+        if inputs.max_rating is not None:
+            applied["max_rating"] = inputs.max_rating
+        if inputs.dish_name_contains:
+            applied["dish_name_contains"] = inputs.dish_name_contains
+        if inputs.date_from is not None:
+            applied["date_from"] = inputs.date_from.isoformat()
+        if inputs.date_to is not None:
+            applied["date_to"] = inputs.date_to.isoformat()
+
+        def _excerpt(note: str | None) -> str:
+            if not note:
+                return ""
+            # Collapse whitespace so the LLM gets clean text without
+            # stray newlines / double spaces.
+            return " ".join(note.split())[:240]
+
+        items = [
+            {
+                "review_id": str(rev.id),
+                "dish_id": str(dish.id),
+                "dish_name": dish.name,
+                "created_at": rev.created_at.isoformat(),
+                "rating": (
+                    float(rev.rating) if rev.rating is not None else None
+                ),
+                "presentation": rev.presentation,
+                "execution": rev.execution,
+                "value_prop": rev.value_prop,
+                "would_order_again": rev.would_order_again,
+                "meal_period": (
+                    rev.meal_period.value
+                    if rev.meal_period is not None
+                    else None
+                ),
+                "sentiment_label": (
+                    rev.sentiment_label.value
+                    if rev.sentiment_label is not None
+                    else None
+                ),
+                "sentiment_score": (
+                    float(rev.sentiment_score)
+                    if rev.sentiment_score is not None
+                    else None
+                ),
+                "excerpt": _excerpt(rev.note),
+                "pros": [
+                    pc.text for pc in rev.pros_cons if pc.type.value == "pro"
+                ][:3],
+                "cons": [
+                    pc.text for pc in rev.pros_cons if pc.type.value == "con"
+                ][:3],
+            }
+            for rev, dish in rows
+        ]
+
+        return {
+            "restaurant": {
+                "id": str(restaurant.id),
+                "slug": restaurant.slug,
+                "name": restaurant.name,
+                "location_name": restaurant.location_name,
+                "city": restaurant.city,
+                "rating": (
+                    float(restaurant.computed_rating)
+                    if restaurant.computed_rating is not None
+                    else None
+                ),
+                "review_count": restaurant.review_count,
+            },
+            "count": len(items),
+            "applied_filters": applied,
+            "reviews": items,
+        }
+
+    return ToolSpec(
+        name="list_restaurant_reviews",
+        description=(
+            "Listado paramétrico de reseñas de un restaurante del "
+            "catálogo. Usalo cuando el comensal pregunta por opiniones, "
+            "quejas, mejor/peor reseña, sentimiento o experiencias en "
+            "un lugar concreto ('¿cuál es la peor reseña de Eretz?', "
+            "'¿qué se está quejando la gente últimamente?', "
+            "'reseñas negativas del último mes'). Composable: combiná "
+            "``sentiment``, ``sort`` (incluye ``most_negative`` / "
+            "``most_positive``), rangos de rating y fecha, "
+            "``dish_name_contains`` (substring acento-insensible para "
+            "acotar a un plato). Identificá el restaurante por "
+            "``restaurant_id`` (UUID, viene de search_dishes), "
+            "``restaurant_slug`` (también del output previo) o "
+            "``restaurant_name`` (texto libre como lo dijo el comensal); "
+            "si hay ambigüedad el tool devuelve candidatos para que "
+            "aclares. **Output anónimo** — no expone autor; hablá en "
+            "tercera persona ('hay una reseña que dice...'). "
+            "**Cuándo NO usar**: si es descubrimiento general ('algo "
+            "rico en Palermo') → search_dishes; si es detalle de UN "
+            "plato con pros/cons agregados → get_dish_detail. Esta tool "
+            "es para preguntas centradas en lo que opina el público "
+            "sobre un lugar concreto."
+        ),
+        input_schema=pydantic_to_anthropic_schema(ListRestaurantReviewsInput),
+        handler=handler,
+        emits_card=False,
     )
