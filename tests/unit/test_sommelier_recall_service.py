@@ -243,3 +243,130 @@ def test_bot_user_id_matches_migration_seed():
     assert str(svc.SOMMELIER_BOT_USER_ID) == (
         "00000000-0000-4000-8000-50616c61746f"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#   get_pending_recalls — Post-visit Bridge (B) source
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _recall_row(name: str = "Kanafeh", restaurant: str = "Eretz"):
+    """SQLAlchemy Row stand-in for the JOIN query result. The handler
+    reads attributes (.dish_id, .dish_name, ...) so a SimpleNamespace
+    behaves the same as a real ``Row``."""
+    from datetime import datetime, timezone
+
+    return SimpleNamespace(
+        dish_id=_uuid.uuid4(),
+        dish_name=name,
+        cover_image_url="https://example/cover.jpg",
+        restaurant_name=restaurant,
+        restaurant_slug=restaurant.lower(),
+        recommended_at=datetime.now(timezone.utc),
+    )
+
+
+class _FakeAllResult:
+    """``(await db.execute(stmt)).all()`` shape."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def all(self):
+        return list(self._rows)
+
+
+class TestGetPendingRecalls:
+    async def test_empty_when_no_rows(self, user_id):
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_FakeAllResult([]))
+
+        items = await svc.get_pending_recalls(db, user_id=user_id)
+
+        assert items == []
+
+    async def test_maps_rows_to_dataclass(self, user_id):
+        row = _recall_row("Kanafeh", "Eretz")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_FakeAllResult([row]))
+
+        items = await svc.get_pending_recalls(db, user_id=user_id)
+
+        assert len(items) == 1
+        item = items[0]
+        assert item.dish_id == row.dish_id
+        assert item.dish_name == "Kanafeh"
+        assert item.restaurant_name == "Eretz"
+        assert item.restaurant_slug == "eretz"
+        assert item.cover_image_url == "https://example/cover.jpg"
+
+    async def test_short_circuits_when_limit_is_zero(self, user_id):
+        # Cheap guard: callers passing limit=0 (eg. feature-flagged off)
+        # shouldn't pay the round-trip. The handler returns before
+        # touching the DB at all.
+        db = AsyncMock()
+        db.execute = AsyncMock()
+
+        items = await svc.get_pending_recalls(db, user_id=user_id, limit=0)
+
+        assert items == []
+        db.execute.assert_not_called()
+
+    async def test_passes_tunables_through_to_query(self, user_id):
+        # Sanity check: limit + lookback_days arrive in the SQL bind
+        # params. Lets the test pin the contract a future refactor of
+        # the query would have to preserve.
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_FakeAllResult([]))
+
+        await svc.get_pending_recalls(
+            db, user_id=user_id, limit=5, lookback_days=30
+        )
+
+        _, bound = db.execute.await_args.args
+        assert bound["user_id"] == str(user_id)
+        assert bound["lookback_days"] == 30
+        assert bound["limit"] == 5
+
+    async def test_query_excludes_dismissed_dishes(self, user_id):
+        # The SQL must reference ``sommelier_recall_dismissals`` in a
+        # NOT EXISTS clause so dismissed dishes never surface. Pinning
+        # the SQL prevents a refactor from silently dropping the
+        # dismiss filter (which would feel like a bug to the user:
+        # cards they "X"ed reappear).
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_FakeAllResult([]))
+
+        await svc.get_pending_recalls(db, user_id=user_id)
+
+        sql_text, _ = db.execute.await_args.args
+        rendered = str(sql_text).lower()
+        assert "sommelier_recall_dismissals" in rendered
+        assert "not exists" in rendered
+
+
+# ──────────────────────────────────────────────────────────────────────
+#   dismiss_pending_recall — Post-visit Bridge "X" handler
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestDismissPendingRecall:
+    async def test_inserts_with_on_conflict_do_nothing(self, user_id, dish_id):
+        # The handler stages an INSERT with ON CONFLICT DO NOTHING so
+        # a repeated dismiss from a flaky network is a silent no-op.
+        # Test pins the SQL shape so future edits keep the
+        # idempotency guarantee.
+        db = AsyncMock()
+        db.execute = AsyncMock()
+
+        await svc.dismiss_pending_recall(
+            db, user_id=user_id, dish_id=dish_id
+        )
+
+        sql_text, bound = db.execute.await_args.args
+        rendered = str(sql_text).lower()
+        assert "insert into sommelier_recall_dismissals" in rendered
+        assert "on conflict" in rendered
+        assert "do nothing" in rendered
+        assert bound["user_id"] == str(user_id)
+        assert bound["dish_id"] == str(dish_id)

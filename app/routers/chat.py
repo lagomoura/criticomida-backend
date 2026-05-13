@@ -48,6 +48,10 @@ from app.services.chat_service import (
     stream_chat,
 )
 from app.services.claim_service import assert_verified_owner
+from app.services.sommelier_recall_service import (
+    dismiss_pending_recall,
+    get_pending_recalls,
+)
 from app.services.taste_profile_service import get_taste_profile
 
 
@@ -132,10 +136,28 @@ class SommelierPreviewProfile(BaseModel):
     avg_price_band: str | None
 
 
+class SommelierPreviewPendingRecall(BaseModel):
+    """One row of the Post-visit Bridge (B) section of the empty state.
+
+    Surfaces dishes the Sommelier recommended in the last 14 days that
+    the diner hasn't reviewed yet. The FE renders a card per item with
+    a CTA that points at the compose form pre-filled with ``dish_id``
+    — same destination as the in-app notification (D2), so the two
+    surfaces stay coherent.
+    """
+
+    dish_id: uuid.UUID
+    dish_name: str
+    cover_image_url: str | None
+    restaurant_name: str
+    restaurant_slug: str | None
+    recommended_at: datetime
+
+
 class SommelierPreviewOut(BaseModel):
     """Payload for ``GET /api/chat/sommelier/preview``.
 
-    Both fields are nullable on purpose:
+    ``user`` and ``profile`` are nullable on purpose:
 
     - ``user is None`` — anonymous visitor; FE shows the sign-in
       invitation + generic starters.
@@ -143,10 +165,15 @@ class SommelierPreviewOut(BaseModel):
       who hasn't reviewed enough dishes for the aggregator to infer
       preferences yet; FE shows a name greeting + generic starters
       and skips the "Te conocemos así" chip.
+
+    ``pending_recalls`` defaults to ``[]`` so the FE never has to
+    null-check the array. Anonymous callers always receive an empty
+    list — there's no identity to look recalls up against.
     """
 
     user: SommelierPreviewUser | None
     profile: SommelierPreviewProfile | None
+    pending_recalls: list[SommelierPreviewPendingRecall] = []
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -268,9 +295,10 @@ async def sommelier_preview(
     invitation.
     """
     if user is None:
-        return SommelierPreviewOut(user=None, profile=None)
+        return SommelierPreviewOut(user=None, profile=None, pending_recalls=[])
 
     profile = await get_taste_profile(db, user.id)
+    pending = await get_pending_recalls(db, user_id=user.id)
     profile_out: SommelierPreviewProfile | None = None
     if profile is not None:
         profile_out = SommelierPreviewProfile(
@@ -301,7 +329,40 @@ async def sommelier_preview(
             handle=user.handle,
         ),
         profile=profile_out,
+        pending_recalls=[
+            SommelierPreviewPendingRecall(
+                dish_id=item.dish_id,
+                dish_name=item.dish_name,
+                cover_image_url=item.cover_image_url,
+                restaurant_name=item.restaurant_name,
+                restaurant_slug=item.restaurant_slug,
+                recommended_at=item.recommended_at,
+            )
+            for item in pending
+        ],
     )
+
+
+@router.post(
+    "/sommelier/recalls/{dish_id}/dismiss",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def dismiss_recall(
+    dish_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    """Diner clicked "X" on a Post-visit Bridge card. The dish stops
+    surfacing in the empty-state pending-recalls section permanently,
+    even if the Sommelier re-recommends it later.
+
+    Idempotent: the underlying INSERT uses ``ON CONFLICT DO NOTHING``,
+    so repeated taps from a flaky network are silent no-ops. Auth
+    required — anonymous callers can't dismiss anything because
+    anonymous callers don't see the section to begin with.
+    """
+    await dismiss_pending_recall(db, user_id=user.id, dish_id=dish_id)
+    await db.commit()
 
 
 # ──────────────────────────────────────────────────────────────────────────

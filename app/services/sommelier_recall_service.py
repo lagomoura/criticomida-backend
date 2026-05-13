@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Iterable
 
 from sqlalchemy import select, text
@@ -61,6 +62,150 @@ SOMMELIER_BOT_USER_ID: uuid.UUID = uuid.UUID(
 
 _RECALL_KIND: str = "sommelier_review_recall"
 _JOB_KIND: str = "sommelier_review_recall"
+
+# Empty-state preview tuning. Lookback caps at 14 days because past
+# that window the diner's memory of the meal decays enough that a
+# "did you try it?" prompt feels like noise. Limit caps at 3 cards to
+# avoid wrapping the section on a 360px-wide phone.
+_PREVIEW_LOOKBACK_DAYS: int = 14
+_PREVIEW_LIMIT: int = 3
+
+
+@dataclass(frozen=True)
+class PendingRecallItem:
+    """One pending review-recall surfaced in the Sommelier empty state.
+
+    Hydrated from a JOIN over ``async_job``, ``dishes`` and
+    ``restaurants`` so the FE can paint the card in a single fetch.
+    """
+
+    dish_id: uuid.UUID
+    dish_name: str
+    cover_image_url: str | None
+    restaurant_name: str
+    restaurant_slug: str | None
+    recommended_at: datetime
+
+
+async def get_pending_recalls(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    limit: int = _PREVIEW_LIMIT,
+    lookback_days: int = _PREVIEW_LOOKBACK_DAYS,
+) -> list[PendingRecallItem]:
+    """Return the diner's most recent pending recalls.
+
+    Source of truth is ``async_job``: every Sommelier recommendation
+    enqueues a row with ``kind='sommelier_review_recall'`` and
+    ``payload_user_id``/``payload_dish_id``. The Post-visit Bridge (B)
+    surfaces those that are still pending — i.e. the diner didn't
+    write the review yet — so the empty state can prompt them to
+    close the loop on their next chat open.
+
+    Ordering: most recent first (memory of the meal is freshest).
+    DISTINCT ON collapses the case where the Sommelier recommended the
+    same dish in two different conversations — one card per dish, not
+    one per recommendation event.
+    """
+    if limit <= 0:
+        return []
+
+    # DISTINCT ON requires ORDER BY to start with the distinct column,
+    # so we keep the dedup inside a subquery and sort the outer
+    # SELECT by recency. ``make_interval`` keeps the int parameter
+    # type-safe under asyncpg (the same coercion bug that bit the
+    # enqueue path; see migration 063 / commit history).
+    # Two NOT EXISTS guards: (1) already reviewed, (2) explicitly
+    # dismissed via the "X" on the empty-state card. Both must miss
+    # for the dish to surface — either signal means "diner already
+    # closed the loop on this", just for different reasons.
+    stmt = text(
+        """
+        SELECT
+            sub.dish_id,
+            sub.dish_name,
+            sub.cover_image_url,
+            sub.restaurant_name,
+            sub.restaurant_slug,
+            sub.recommended_at
+        FROM (
+            SELECT DISTINCT ON (j.payload_dish_id)
+                j.payload_dish_id AS dish_id,
+                d.name AS dish_name,
+                d.cover_image_url AS cover_image_url,
+                r.name AS restaurant_name,
+                r.slug AS restaurant_slug,
+                j.created_at AS recommended_at
+            FROM async_job j
+            JOIN dishes d ON d.id = j.payload_dish_id
+            JOIN restaurants r ON r.id = d.restaurant_id
+            WHERE j.kind = 'sommelier_review_recall'
+              AND j.payload_user_id = :user_id
+              AND j.created_at > now() - make_interval(days => :lookback_days)
+              AND NOT EXISTS (
+                  SELECT 1 FROM dish_reviews dr
+                  WHERE dr.user_id = j.payload_user_id
+                    AND dr.dish_id = j.payload_dish_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM sommelier_recall_dismissals dm
+                  WHERE dm.user_id = j.payload_user_id
+                    AND dm.dish_id = j.payload_dish_id
+              )
+            ORDER BY j.payload_dish_id, j.created_at DESC
+        ) sub
+        ORDER BY sub.recommended_at DESC
+        LIMIT :limit;
+        """
+    )
+    rows = (
+        await db.execute(
+            stmt,
+            {
+                "user_id": str(user_id),
+                "lookback_days": lookback_days,
+                "limit": limit,
+            },
+        )
+    ).all()
+    return [
+        PendingRecallItem(
+            dish_id=row.dish_id,
+            dish_name=row.dish_name,
+            cover_image_url=row.cover_image_url,
+            restaurant_name=row.restaurant_name,
+            restaurant_slug=row.restaurant_slug,
+            recommended_at=row.recommended_at,
+        )
+        for row in rows
+    ]
+
+
+async def dismiss_pending_recall(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    dish_id: uuid.UUID,
+) -> None:
+    """Mark a (user, dish) pair as dismissed from the pending-recalls
+    surface. Idempotent: ON CONFLICT DO NOTHING means a repeated
+    dismiss from a flaky network is a silent no-op.
+
+    Caller controls the commit so the dismiss rides the same tx as
+    any audit logging that wraps the endpoint.
+    """
+    await db.execute(
+        text(
+            """
+            INSERT INTO sommelier_recall_dismissals (
+                user_id, dish_id, dismissed_at
+            ) VALUES (:user_id, :dish_id, now())
+            ON CONFLICT (user_id, dish_id) DO NOTHING;
+            """
+        ),
+        {"user_id": str(user_id), "dish_id": str(dish_id)},
+    )
 
 
 async def _filter_dishes_already_reviewed(

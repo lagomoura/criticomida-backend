@@ -264,3 +264,36 @@ class DishEmbedding(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class SommelierRecallDismissal(Base):
+    """A diner explicitly dismissed a Sommelier recall (Post-visit
+    Bridge "X" button). Filters the dish out of the empty-state
+    pending-recalls section permanently, even if the Sommelier
+    re-recommends it later. The dismiss is per (user, dish) — the
+    same diner can dismiss many dishes; a single dish can be
+    dismissed by many diners independently.
+    """
+
+    __tablename__ = "sommelier_recall_dismissals"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "user_id", "dish_id", name="pk_sommelier_recall_dismissals"
+        ),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dish_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("dishes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
