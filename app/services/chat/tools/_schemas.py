@@ -544,12 +544,29 @@ class SearchDishesInput(BaseModel):
             return mapping.get(v.lower(), v)
         return value
 
+    restaurant_id: str | None = Field(
+        default=None,
+        description=(
+            "UUID del restaurante para acotar la búsqueda a UN solo "
+            "lugar. Pasalo cuando el comensal abrió el chat desde la "
+            "página de un restaurante (Context Injection del FE menciona "
+            "el lugar) o cuando ya tenés el uuid de un tool previo. "
+            "Garantiza que el resultado contiene SOLO platos de ese "
+            "restaurante — sin él, la búsqueda barre el catálogo entero "
+            "y un 'qué postre hay acá' termina trayendo postres de otros "
+            "lugares cercanos. Mutuamente exclusivo con bbox / city en "
+            "intención (si pasás restaurant_id, los otros pierden sentido)."
+        ),
+    )
     neighborhood: str | None = Field(
         default=None,
         validation_alias=AliasChoices("neighborhood", "barrio", "zona"),
         description=(
             "Substring del location_name del restaurante (case-"
-            "insensitive). Ejemplos: 'Palermo', 'Centro', 'Belgrano'."
+            "insensitive). Ejemplos: 'Palermo', 'Centro', 'Belgrano'. "
+            "NO uses esto para el NOMBRE de un restaurante específico "
+            "('Eretz Cantina') — para acotar a UN restaurante pasá "
+            "``restaurant_id``."
         ),
     )
     city: str | None = Field(

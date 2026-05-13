@@ -148,6 +148,28 @@ class TestSearchDishesHandler:
             for d in result["details"]
         )
 
+    async def test_restaurant_id_field_is_accepted(self, tool):
+        # The field is wired through the schema; it parses cleanly as a
+        # UUID string. The handler resolution happens against the DB so
+        # we don't exercise the full path here — that's covered by the
+        # integration suite. This test just pins the contract.
+        prop = tool.input_schema["properties"]["restaurant_id"]
+        # Nullable str → anyOf with a string branch.
+        assert any(b.get("type") == "string" for b in prop["anyOf"])
+
+    async def test_restaurant_id_invalid_uuid_returns_structured_error(
+        self, tool
+    ):
+        # The LLM dumped a name into restaurant_id (forgivable slip).
+        # The handler short-circuits with an actionable error rather than
+        # silently scanning the whole catalog. Empty dishes prevents the
+        # comensal from seeing random cards.
+        result = await tool.handler({"restaurant_id": "not-a-uuid"})
+        assert "error" in result
+        assert "UUID" in result["error"]
+        assert result["count"] == 0
+        assert result["dishes"] == []
+
 
 # ──────────────────────────────────────────────────────────────────────────
 #   GetDishDetailInput / AddToWishlistInput — both accept name OR id

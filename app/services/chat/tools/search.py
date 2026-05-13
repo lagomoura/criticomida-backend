@@ -144,7 +144,31 @@ async def execute_dish_search(
     conditions: list[Any] = []
 
     if restaurant_scope_id:
+        # Business agent hard-pin: NEVER lifted, even if the LLM passes
+        # a different ``restaurant_id`` in the args. Owner cross-talk is
+        # the threat model — assert at SQL boundary.
         conditions.append(Restaurant.id == restaurant_scope_id)
+    elif inputs.restaurant_id:
+        # Sommelier soft-pin: the LLM extracted a restaurant from the
+        # Context Injection hint or from a previous tool output. Cast
+        # to UUID defensively — if the LLM dumped a name here, the cast
+        # raises and the agent loop surfaces the ValidationError back
+        # to the model for retry (Regla #0 still applies; the LLM
+        # should switch to ``neighborhood``/``semantic_query`` or a
+        # ``get_dish_detail`` call to get the right uuid).
+        try:
+            conditions.append(Restaurant.id == uuid.UUID(inputs.restaurant_id))
+        except ValueError:
+            return {
+                "error": (
+                    "Invalid restaurant_id (not a UUID). Did you mean to "
+                    "pass a free-text name? Use ``get_dish_detail`` to "
+                    "resolve the restaurant first or drop the parameter."
+                ),
+                "count": 0,
+                "dishes": [],
+                "semantic_used": False,
+            }
 
     if inputs.neighborhood:
         conditions.append(

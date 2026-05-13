@@ -66,7 +66,12 @@ async def build_context_hint(
     if dish_id is not None:
         row = (
             await db.execute(
-                select(Dish.name, Restaurant.name.label("restaurant_name"))
+                select(
+                    Dish.name,
+                    Dish.restaurant_id,
+                    Restaurant.name.label("restaurant_name"),
+                    Restaurant.slug.label("restaurant_slug"),
+                )
                 .join(Restaurant, Restaurant.id == Dish.restaurant_id)
                 .where(Dish.id == dish_id)
             )
@@ -76,16 +81,28 @@ async def build_context_hint(
                 "context hint skipped: dish %s not found", dish_id
             )
             return None
+        # Include the canonical identifiers in the hint so the LLM never
+        # has to invent / re-derive them. Without this, agents reach for
+        # ``search_dishes(restaurant_id=<hallucinated uuid>)`` to scope
+        # discovery to the current restaurant and burn iterations until a
+        # later tool reveals the real uuid — observed in prod logs.
         return (
             f'[contexto: el comensal está mirando la página del plato '
-            f'"{row.name}" en {row.restaurant_name}. Usá esto como pista '
-            "de orientación, no como filtro obligatorio.]"
+            f'"{row.name}" (dish_id={dish_id}) en "{row.restaurant_name}" '
+            f"(restaurant_id={row.restaurant_id}, "
+            f"restaurant_slug={row.restaurant_slug}). Usá estos "
+            "identificadores cuando llames tools que los necesiten "
+            "(ej. search_dishes(restaurant_id=...) para acotar a este "
+            "lugar, list_restaurant_reviews(restaurant_id=...) para "
+            "opiniones). Es pista de orientación, no filtro obligatorio.]"
         )
 
     if restaurant_id is not None:
         row = (
             await db.execute(
-                select(Restaurant.name).where(Restaurant.id == restaurant_id)
+                select(Restaurant.name, Restaurant.slug).where(
+                    Restaurant.id == restaurant_id
+                )
             )
         ).first()
         if row is None:
@@ -96,14 +113,18 @@ async def build_context_hint(
             return None
         return (
             f'[contexto: el comensal está mirando la página del '
-            f'restaurante "{row.name}". Usá esto como pista de '
-            "orientación, no como filtro obligatorio.]"
+            f'restaurante "{row.name}" (restaurant_id={restaurant_id}, '
+            f"restaurant_slug={row.slug}). Usá estos identificadores "
+            "cuando llames tools que los necesiten (ej. "
+            "search_dishes(restaurant_id=...), "
+            "list_restaurant_reviews(restaurant_id=...)). Es pista de "
+            "orientación, no filtro obligatorio.]"
         )
 
     if restaurant_slug:
         row = (
             await db.execute(
-                select(Restaurant.name).where(
+                select(Restaurant.id, Restaurant.name).where(
                     Restaurant.slug == restaurant_slug
                 )
             )
@@ -116,8 +137,12 @@ async def build_context_hint(
             return None
         return (
             f'[contexto: el comensal está mirando la página del '
-            f'restaurante "{row.name}". Usá esto como pista de '
-            "orientación, no como filtro obligatorio.]"
+            f'restaurante "{row.name}" (restaurant_id={row.id}, '
+            f"restaurant_slug={restaurant_slug}). Usá estos "
+            "identificadores cuando llames tools que los necesiten "
+            "(ej. search_dishes(restaurant_id=...), "
+            "list_restaurant_reviews(restaurant_id=...)). Es pista de "
+            "orientación, no filtro obligatorio.]"
         )
 
     return None
