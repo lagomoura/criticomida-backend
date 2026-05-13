@@ -26,6 +26,7 @@ from app.services.chat.tools._schemas import (
     CenterPoint,
     CreateDishRouteInput,
     GetDishDetailInput,
+    ListRestaurantReviewsInput,
     OpenInMapInput,
     PriceTierFilter,
     RequestReservationInput,
@@ -34,7 +35,10 @@ from app.services.chat.tools._schemas import (
 from app.services.chat.tools.map import make_open_in_map_tool
 from app.services.chat.tools.routes import make_create_dish_route_tool
 from app.services.chat.tools.reservations import make_request_reservation_tool
-from app.services.chat.tools.search import make_search_dishes_tool
+from app.services.chat.tools.search import (
+    make_list_restaurant_reviews_tool,
+    make_search_dishes_tool,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -359,3 +363,103 @@ class TestRequestReservationHandler:
             }
         )
         assert "error" in result
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#   ListRestaurantReviewsInput — schema pin
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestListRestaurantReviewsInput:
+    """Schema pin for the Sommelier review-listing tool.
+
+    Pin the contract at the JSONSchema level so a refactor that
+    silently widens / narrows the enum, the bounds, or the
+    ``extra=forbid`` posture trips a unit test BEFORE the model sees
+    it in production. The handler-level behaviour lives in
+    ``test_list_restaurant_reviews_tool.py``; this file only checks
+    the wire shape the LLM is given.
+    """
+
+    @pytest.fixture
+    def tool(self):
+        return make_list_restaurant_reviews_tool(AsyncMock(), user_id=None)
+
+    def test_additional_properties_forbidden(self, tool):
+        assert tool.input_schema.get("additionalProperties") is False
+
+    def test_three_identifier_fields_present(self, tool):
+        props = tool.input_schema["properties"]
+        for key in ("restaurant_id", "restaurant_slug", "restaurant_name"):
+            assert key in props, f"missing identifier field {key!r}"
+
+    def test_sentiment_enum_pinned(self, tool):
+        prop = tool.input_schema["properties"]["sentiment"]
+        assert prop["enum"] == ["any", "positive", "neutral", "negative"]
+
+    def test_sort_enum_pinned_includes_most_negative_and_most_positive(self, tool):
+        prop = tool.input_schema["properties"]["sort"]
+        # Set comparison — order is irrelevant at the wire level but the
+        # full vocabulary is load-bearing for the LLM's NL → enum mapping.
+        assert set(prop["enum"]) == {
+            "recent",
+            "oldest",
+            "rating_high",
+            "rating_low",
+            "most_negative",
+            "most_positive",
+        }
+
+    def test_rating_bounds_one_to_five(self, tool):
+        # Nullable fields render under ``anyOf``; pull the numeric branch.
+        for key in ("min_rating", "max_rating"):
+            prop = tool.input_schema["properties"][key]
+            numeric_branch = next(
+                b for b in prop["anyOf"] if b.get("type") == "number"
+            )
+            assert numeric_branch.get("minimum") == 1
+            assert numeric_branch.get("maximum") == 5
+
+    def test_limit_bounds_one_to_fifty_default_ten(self, tool):
+        prop = tool.input_schema["properties"]["limit"]
+        assert prop["minimum"] == 1
+        assert prop["maximum"] == 50
+        assert prop.get("default") == 10
+
+    def test_restaurant_name_min_length_two(self, tool):
+        prop = tool.input_schema["properties"]["restaurant_name"]
+        string_branch = next(
+            b for b in prop["anyOf"] if b.get("type") == "string"
+        )
+        assert string_branch.get("minLength") == 2
+
+    def test_no_responded_status_field(self, tool):
+        # Owner-only concept — must NOT leak into the Sommelier contract.
+        # If this regresses, the LLM might call the tool with a B2B-shaped
+        # payload and the comensal output would lose its anonymous posture.
+        assert "responded_status" not in tool.input_schema["properties"]
+        assert "has_owner_response" not in tool.input_schema["properties"]
+
+    def test_dates_render_as_iso_strings(self, tool):
+        # ``date_from`` / ``date_to`` must serialise to ISO YYYY-MM-DD
+        # so the LLM knows the wire format. Nullable → anyOf with the
+        # date branch carrying ``format: "date"``.
+        for key in ("date_from", "date_to"):
+            prop = tool.input_schema["properties"][key]
+            date_branch = next(
+                b for b in prop["anyOf"] if b.get("format") == "date"
+            )
+            assert date_branch["type"] == "string"
+
+    def test_extra_property_rejected_via_pydantic(self):
+        # Same defense the JSONSchema declares — confirm Pydantic also
+        # enforces it (the ``extra=forbid`` config). Belt + suspenders
+        # in case the schema generator drifts.
+        with pytest.raises(ValidationError):
+            ListRestaurantReviewsInput.model_validate(
+                {"restaurant_slug": "x", "rogue_field": "y"}
+            )
+
+    def test_model_validator_requires_an_identifier(self):
+        with pytest.raises(ValidationError):
+            ListRestaurantReviewsInput.model_validate({})
