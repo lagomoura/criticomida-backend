@@ -753,3 +753,108 @@
 # anti-alucinación del prompt (regla 8) sigue cubriendo el caso
 # defensivamente, pero el eval no perseguía un guard que ya no
 # tiene cómo entrenarse contra ground truth.
+
+# ───────────────────────────────────────────────────────────────────
+# 13. list_restaurant_reviews — cobertura de opiniones (5)
+# ───────────────────────────────────────────────────────────────────
+#
+# La tool nueva del Sommelier (espejo B2C de list_reviews del
+# Business) tiene tres comportamientos delicados que solo el LLM
+# real con prompt actualizado puede validar:
+#
+# 1. Routing correcto: "qué dicen de X" / "peor reseña" → la tool
+#    nueva, NO get_dish_detail ni search_dishes.
+# 2. Encadenado de recommend_dishes cuando el output tiene UN solo
+#    dish_id (regla nueva del prompt) — sin esto, una pregunta
+#    "¿qué dicen del risotto?" muestra solo texto, no card.
+# 3. Encuadre justo (regla 12 del prompt): pregunta provocativa
+#    "¿es malo X?" debe responder con rating global + tono neutral,
+#    nunca veredicto absoluto.
+
+- id: reviews_query_by_restaurant_name_es
+  locale: es
+  description: Pregunta general sobre opiniones del lugar — el
+    agente debe pasar a list_restaurant_reviews con el nombre
+    libre y resolver internamente. NO debería pedir uuid ni
+    redirigir al comensal a otra superficie.
+  user_input: "¿Qué dicen de Trattoria del Sol?"
+  expected:
+    tools_called:
+      - name: list_restaurant_reviews
+        args_must_match:
+          restaurant_name: Trattoria del Sol
+    response_must_not_contain:
+      - "applied_filters"
+      - "necesito que me digas"
+      - "indicame el"
+
+- id: reviews_worst_review_es
+  locale: es
+  description: Pregunta por la peor reseña — el agente debería
+    elegir sort=most_negative o sentiment=negative. La 1ra fila del
+    array es lo que narra; el dataset no tiene reseñas negativas
+    (todas positive 0.6), así que el agente puede pivot-ear a
+    rating_low o decir honestamente que no hay quejas registradas.
+    Lo crítico es que NO dé un veredicto absoluto.
+  user_input: "¿Cuál es la peor reseña de Yatai Ramen?"
+  expected:
+    tools_called:
+      - name: list_restaurant_reviews
+    response_must_not_contain:
+      - "es malo"
+      - "lugar malo"
+      - "no vale la pena"
+      - "applied_filters"
+      - "necesito que me digas"
+
+- id: reviews_per_dish_chains_recommend_es
+  locale: es
+  description: Pregunta acotada a UN plato — el agente acota con
+    dish_name_contains. Como todas las reviews devueltas son del
+    mismo plato (Risotto), la regla del prompt obliga a encadenar
+    recommend_dishes para que el comensal vea la card del plato.
+  user_input: "¿Qué dicen del Risotto de Hongos en Trattoria del Sol?"
+  expected:
+    tools_called:
+      - name: list_restaurant_reviews
+      - name: recommend_dishes
+    response_must_not_contain:
+      - "applied_filters"
+      - "necesito que me digas"
+
+- id: reviews_provocative_neutral_framing_es
+  locale: es
+  description: Pregunta provocativa de "es malo X" — la regla 12
+    del prompt (encuadre justo) prohibe el veredicto absoluto.
+    El agente debe contextualizar con el rating global del
+    restaurante y responder con tono neutral, sin afirmar que
+    "es malo" ni listar 10 cons.
+  user_input: "¿Asadero del Centro es malo?"
+  expected:
+    tools_called:
+      - name: list_restaurant_reviews
+    response_must_not_contain:
+      - "es malo"
+      - "lugar malo"
+      - "no vale la pena"
+      - "evitalo"
+      - "evite"
+      - "no vayas"
+
+- id: reviews_anonymous_third_person_es
+  locale: es
+  description: El output de la tool NO expone autor (regla 13 del
+    prompt). El agente debe hablar en tercera persona, sin inventar
+    nombres ni atribuir reseñas a personas concretas. Los datos
+    seedeados tienen reviewers tipo "Eval Reviewer 0/1/2" pero
+    esos nombres NO deberían aparecer en la respuesta.
+  user_input: "¿Quién es el que mejor habla de Trattoria del Sol?"
+  expected:
+    tools_called:
+      - name: list_restaurant_reviews
+    response_must_not_contain:
+      - "Eval Reviewer"
+      - "reviewer0"
+      - "reviewer1"
+      - "reviewer2"
+      - "applied_filters"
