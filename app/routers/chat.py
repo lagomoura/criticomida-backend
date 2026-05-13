@@ -65,11 +65,35 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # ──────────────────────────────────────────────────────────────────────────
 
 
+class ClientContext(BaseModel):
+    """Hint about where in the app the diner opened the chat from.
+
+    Lets the Sommelier ground its first reply in the page the diner
+    was just looking at (a restaurant detail page, a dish detail
+    page), so they don't have to retype the obvious. Strictly a hint
+    — the agent still has every tool and the full catalog; if the
+    diner pivots, the agent follows.
+
+    Exactly one field is expected populated. Both unset = no hint
+    (server treats the request as if the field were absent). Both set
+    is treated as ``dish_id`` wins (more specific signal).
+
+    Business agent ignores this entirely — it has
+    ``restaurant_scope_id`` enforced at the data layer, which is a
+    constraint, not a hint.
+    """
+
+    restaurant_slug: str | None = Field(default=None, max_length=200)
+    restaurant_id: uuid.UUID | None = None
+    dish_id: uuid.UUID | None = None
+
+
 class StreamChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     conversation_id: uuid.UUID | None = None
     agent: ChatAgent = ChatAgent.sommelier
     restaurant_scope_id: uuid.UUID | None = None
+    client_context: ClientContext | None = None
 
 
 class ConversationCreate(BaseModel):
@@ -240,6 +264,21 @@ async def stream_endpoint(
                 conversation=convo,
                 user=user,
                 user_message=body.message,
+                context_restaurant_slug=(
+                    body.client_context.restaurant_slug
+                    if body.client_context
+                    else None
+                ),
+                context_restaurant_id=(
+                    body.client_context.restaurant_id
+                    if body.client_context
+                    else None
+                ),
+                context_dish_id=(
+                    body.client_context.dish_id
+                    if body.client_context
+                    else None
+                ),
             ):
                 yield _sse_pack(event.type, event.data)
         except Exception as exc:  # noqa: BLE001

@@ -42,6 +42,7 @@ from app.services.chat.agent_loop import (
     default_b2b_model,
     default_b2c_model,
 )
+from app.services.chat.client_context import build_context_hint
 from app.services.chat.preference_intent import detect_preference_intent
 from app.services.chat.user_preference_intent import (
     detect_user_preference_intent,
@@ -219,8 +220,24 @@ async def stream_chat(
     conversation: ChatConversation,
     user: User | None,
     user_message: str,
+    context_restaurant_slug: str | None = None,
+    context_restaurant_id: uuid.UUID | None = None,
+    context_dish_id: uuid.UUID | None = None,
 ) -> AsyncIterator[AgentEvent]:
-    """Run one turn of the chat loop, persisting messages as we go."""
+    """Run one turn of the chat loop, persisting messages as we go.
+
+    ``context_restaurant_slug`` / ``context_restaurant_id`` /
+    ``context_dish_id`` carry the FE-provided hint about which page
+    the diner opened the chat from (A — Context Injection). The hint
+    is resolved into a short prefix block and prepended to the user
+    message ONLY when this is the first user turn (history empty)
+    AND the agent is the Sommelier; Business runs under a real
+    ``restaurant_scope_id`` constraint and doesn't need (or want)
+    the hint shape. We accept both slug and id because the FE route
+    for a restaurant detail page can be either ``/restaurants/{slug}``
+    or ``/restaurants/{uuid}`` and the launcher derives whichever is
+    in the URL — turning the hint into a no-op for the other.
+    """
 
     # ── persist the incoming user message ─────────────────────────────────
     user_row = ChatMessage(
@@ -349,8 +366,49 @@ async def stream_chat(
         )
 
     history = await _load_history(db, conversation.id)
+    # ``_load_history`` runs after the user row was persisted +
+    # flushed, so the trailing entry is always the message we're
+    # about to send. We drop it from the history copy and re-append
+    # below so the augmented version (with the optional context
+    # hint) lands in its place — otherwise the model would see two
+    # consecutive user turns with subtly different content.
+    if history and history[-1]["role"] == "user":
+        history = history[:-1]
     messages = list(history)
-    messages.append({"role": "user", "content": user_message})
+
+    # A — Context Injection. Resolve the FE hint into a short prefix
+    # block and prepend it to the user message that goes to the
+    # agent (NOT to the version persisted in chat_messages — that
+    # row above keeps the diner's original wording for audit /
+    # replay fidelity).
+    #
+    # We inject on EVERY turn, not only the first one, because the
+    # comensal can navigate between contextual pages while keeping
+    # the same chat thread open: starting in restaurant X, getting a
+    # dish recommendation, tapping the dish, asking a follow-up
+    # question — that follow-up needs to know we're now on the dish
+    # page. The hint is framed as a present-tense observation
+    # ("the comensal is looking at ...") so it makes sense in any
+    # turn, not only the first. ~80 tokens per turn — trivial.
+    augmented_user_message = user_message
+    if (
+        conversation.agent == ChatAgent.sommelier
+        and (
+            context_restaurant_slug
+            or context_restaurant_id
+            or context_dish_id
+        )
+    ):
+        hint = await build_context_hint(
+            db,
+            restaurant_slug=context_restaurant_slug,
+            restaurant_id=context_restaurant_id,
+            dish_id=context_dish_id,
+        )
+        if hint:
+            augmented_user_message = f"{hint}\n\n{user_message}"
+
+    messages.append({"role": "user", "content": augmented_user_message})
 
     registry = build_registry(
         agent=conversation.agent,

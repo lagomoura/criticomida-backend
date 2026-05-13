@@ -1,0 +1,123 @@
+"""Resolve the "where was the diner when they opened the chat?" hint.
+
+A — Context Injection. The Sommelier drawer optionally receives a
+client-side hint about the page the diner was looking at when they
+tapped the floating button (a restaurant detail page, a dish detail
+page). This module resolves that hint to a short human-readable
+block the agent loop prefixes to the first user message so the model
+can ground its first response without us having to type "I was
+looking at Sagardi" by hand.
+
+Design notes:
+
+- The block is a **hint**, never a constraint. The agent keeps full
+  tool access; if the diner pivots, the agent follows.
+- We only resolve on the FIRST user turn (history empty) — once the
+  conversation has any turns, the topic has been established and
+  re-injecting the context would just bloat tokens.
+- We prepend to the **user message**, not the system prompt. The
+  system + tools prefix is cached server-side (sha256 of model +
+  system + tools, see ``agent_loop._ensure_cached_content``); putting
+  per-(user, restaurant)-page text in the system would shred cache
+  cardinality and erase the 25%-cost reduction the cache is for.
+- Slug / dish_id pointing at deleted rows return ``None`` silently.
+  The diner's URL could have been stale (they had the tab open while
+  someone moderated the restaurant). Better to lose the hint than to
+  drop a misleading block into the prompt.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.dish import Dish
+from app.models.restaurant import Restaurant
+
+
+logger = logging.getLogger(__name__)
+
+
+async def build_context_hint(
+    db: AsyncSession,
+    *,
+    restaurant_slug: str | None = None,
+    restaurant_id: uuid.UUID | None = None,
+    dish_id: uuid.UUID | None = None,
+) -> str | None:
+    """Resolve the FE-provided context to a one-line prefix block.
+
+    All fields default to ``None``. Priority when more than one is
+    populated: ``dish_id`` (most specific — already pins a
+    restaurant too) > ``restaurant_id`` > ``restaurant_slug``.
+
+    Both restaurant identifiers exist because the FE route for a
+    restaurant detail page accepts either ``/restaurants/{slug}`` or
+    ``/restaurants/{uuid}`` — the launcher sends whichever one is in
+    the path so the backend can resolve without a slug↔id round-trip.
+
+    Returns ``None`` when:
+    - All fields are empty.
+    - The referenced entity no longer exists (stale URL).
+    """
+    if dish_id is not None:
+        row = (
+            await db.execute(
+                select(Dish.name, Restaurant.name.label("restaurant_name"))
+                .join(Restaurant, Restaurant.id == Dish.restaurant_id)
+                .where(Dish.id == dish_id)
+            )
+        ).first()
+        if row is None:
+            logger.debug(
+                "context hint skipped: dish %s not found", dish_id
+            )
+            return None
+        return (
+            f'[contexto: el comensal está mirando la página del plato '
+            f'"{row.name}" en {row.restaurant_name}. Usá esto como pista '
+            "de orientación, no como filtro obligatorio.]"
+        )
+
+    if restaurant_id is not None:
+        row = (
+            await db.execute(
+                select(Restaurant.name).where(Restaurant.id == restaurant_id)
+            )
+        ).first()
+        if row is None:
+            logger.debug(
+                "context hint skipped: restaurant id %s not found",
+                restaurant_id,
+            )
+            return None
+        return (
+            f'[contexto: el comensal está mirando la página del '
+            f'restaurante "{row.name}". Usá esto como pista de '
+            "orientación, no como filtro obligatorio.]"
+        )
+
+    if restaurant_slug:
+        row = (
+            await db.execute(
+                select(Restaurant.name).where(
+                    Restaurant.slug == restaurant_slug
+                )
+            )
+        ).first()
+        if row is None:
+            logger.debug(
+                "context hint skipped: restaurant slug %s not found",
+                restaurant_slug,
+            )
+            return None
+        return (
+            f'[contexto: el comensal está mirando la página del '
+            f'restaurante "{row.name}". Usá esto como pista de '
+            "orientación, no como filtro obligatorio.]"
+        )
+
+    return None
