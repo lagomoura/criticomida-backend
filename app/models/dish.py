@@ -64,6 +64,14 @@ class Dish(Base):
     restaurant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Categoría a nivel plato. Independiente de la categoría del restaurant
+    # (que define la identidad del lugar). Permite un Khachapuri georgiano
+    # servido en un restaurant chino, o un gnocchi italiano en una parrilla.
+    # Auto-inferida por ``category_inference_service`` al crear el dish; el
+    # admin puede ajustarla después.
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     name_normalized: Mapped[str] = mapped_column(
         Text,

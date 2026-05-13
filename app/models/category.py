@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -17,6 +17,13 @@ class Category(Base):
         ForeignKey("categories.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    # True ⇔ propuesta por el servicio de inferencia (Gemini) y todavía
+    # no aprobada por un admin. Las pendientes no aparecen en feeds
+    # públicos; sí siguen siendo `category_id` válido en restaurants
+    # para no perder la propuesta mientras está en cola.
+    pending_review: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
 
     # Relationships

@@ -35,6 +35,10 @@ from app.models.user import User
 from app.routers.feed import _build_feed_items
 from app.schemas.feed import FeedItem
 from app.schemas.post_create import PostCreate, RestaurantFromPlace
+from app.services.admin_notification_service import (
+    notify_admins_category_pending,
+)
+from app.services.category_inference_service import infer_category
 from app.services.embeddings_service import schedule_reembed_review
 from app.services.notification_service import record_mention_notifications
 from app.services.price_validation import (
@@ -268,6 +272,49 @@ async def create_post(
         created_by=current_user.id,
         price_tier=price_tier_model,
     )
+
+    # Auto-inferencia de categoría a nivel DISH. La categoría del restaurant
+    # es su identidad (parrilla / china / japonesa); la categoría del dish es
+    # lo que ES el plato (puede divergir: Khachapuri georgiano en restaurant
+    # chino, gnocchi italianos en parrilla). Disparamos cuando:
+    #   - El dish todavía no tiene category_id (recién creado o legacy)
+    #   - Y el FE no mandó payload.category (path nuevo: el picker se quitó)
+    # Si el FE legacy mandó category, esa decisión humana gana sin llamar a
+    # Gemini. Restaurant.category_id se setea solo si estaba NULL (default
+    # sano: el primer dish define la categoría inicial del lugar, después
+    # el admin la edita si quiere).
+    if dish.category_id is None and not payload.category:
+        result = await infer_category(
+            db,
+            dish_name=payload.dish_name,
+            restaurant_name=restaurant.name,
+            dish_editorial_origin=dish.editorial_origin,
+            dish_editorial_blurb=dish.editorial_blurb,
+        )
+        dish.category_id = result.category_id
+        if restaurant.category_id is None:
+            restaurant.category_id = result.category_id
+        if result.was_newly_created:
+            new_cat = (
+                await db.execute(
+                    select(Category).where(Category.id == result.category_id)
+                )
+            ).scalar_one()
+            await notify_admins_category_pending(
+                db,
+                new_cat,
+                dish_name=payload.dish_name,
+                restaurant_name=restaurant.name,
+                triggered_by_user_id=current_user.id,
+            )
+    elif dish.category_id is None and payload.category:
+        # Legacy: FE mandó slug → persistilo a nivel dish también, para
+        # que el feed nuevo (que prefiere dish.category) muestre lo correcto.
+        legacy_cat_id = await _find_category_id(db, payload.category)
+        if legacy_cat_id is not None:
+            dish.category_id = legacy_cat_id
+            if restaurant.category_id is None:
+                restaurant.category_id = legacy_cat_id
 
     portion_model: ModelPortionSize | None = None
     if extras and extras.portion_size:

@@ -15,6 +15,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.database import get_db
 from app.middleware.auth import get_current_user_optional
@@ -234,13 +235,23 @@ async def _build_feed_items(
         viewer_follows_author = select(False).scalar_subquery()
         viewer_want_to_try = select(False).scalar_subquery()
 
+    # Doble JOIN a categorías: el dish puede tener su propia categoría
+    # (servida por ``category_inference_service``) que difiere de la del
+    # restaurant. Preferimos la del dish; caemos a la del restaurant si
+    # el dish todavía no tiene una asignada (legacy / inferencia caída).
+    # Ambas categorías pendientes de revisión se filtran abajo en
+    # presentation (no en el JOIN: si una review apunta a una pendiente,
+    # igual queremos servirla; solo no la exponemos en filtros).
+    DishCat = aliased(Category)
+    RestaurantCat = aliased(Category)
     stmt = (
         select(
             DishReview,
             User,
             Dish,
             Restaurant,
-            Category,
+            DishCat,
+            RestaurantCat,
             likes_count.label("likes_count"),
             comments_count.label("comments_count"),
             saves_count.label("saves_count"),
@@ -252,7 +263,8 @@ async def _build_feed_items(
         .join(User, DishReview.user_id == User.id)
         .join(Dish, DishReview.dish_id == Dish.id)
         .join(Restaurant, Dish.restaurant_id == Restaurant.id)
-        .outerjoin(Category, Restaurant.category_id == Category.id)
+        .outerjoin(DishCat, Dish.category_id == DishCat.id)
+        .outerjoin(RestaurantCat, Restaurant.category_id == RestaurantCat.id)
     )
 
     for predicate in base_filters:
@@ -342,7 +354,8 @@ async def _build_feed_items(
         author,
         dish,
         restaurant,
-        category,
+        dish_category,
+        restaurant_category,
         likes_c,
         comments_c,
         saves_c,
@@ -351,6 +364,11 @@ async def _build_feed_items(
         v_follow_author,
         v_want_to_try,
     ) in trimmed:
+        # Política dish > restaurant: la categoría del dish manda en el feed
+        # porque el usuario consume *platos*. El restaurant.category sigue
+        # siendo la identidad del lugar y se usa en filtros de descubrimiento
+        # de restaurantes (`/categorias/[slug]`), no acá.
+        category = dish_category or restaurant_category
         extras: FeedExtras | None = None
         if with_extras:
             pros, cons = pros_cons_by_review.get(review.id, ([], []))

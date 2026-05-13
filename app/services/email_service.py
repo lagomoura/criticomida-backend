@@ -287,6 +287,75 @@ def render_reservation_requested(
     return subject, body, "\n\n".join(text_lines)
 
 
+def render_category_pending_review(
+    *,
+    category_name: str,
+    category_slug: str,
+    category_description: str | None,
+    dish_name: str,
+    restaurant_name: str | None,
+) -> tuple[str, str, str]:
+    """Email al admin cuando el servicio de inferencia auto-crea una
+    categoría nueva con ``pending_review=True``. Linkea a la cola de
+    pendientes para que decida en un click: aprobar, mergear con otra, o
+    rechazar (re-asignando los restaurantes a otra categoría).
+    """
+    queue_url = f"{settings.PUBLIC_APP_URL}/admin/categorias-pendientes"
+    subject = f"Nueva categoría pendiente: {category_name}"
+    description_block = (
+        f"""
+    <p style="font-size:14px;color:#5a4a40;line-height:1.5;">
+      Descripción propuesta:
+      <em>{_h(category_description)}</em>
+    </p>
+    """
+        if category_description
+        else ""
+    )
+    restaurant_block = (
+        f"<li>Restaurante: <strong>{_h(restaurant_name)}</strong></li>"
+        if restaurant_name
+        else ""
+    )
+    body = _wrap(
+        f"""
+    <p style="font-size:16px;line-height:1.5;">
+      El clasificador automático creó una categoría nueva como parte de
+      una reseña recién publicada:
+    </p>
+    <ul style="font-size:14px;color:#2a2520;line-height:1.7;">
+      <li>Categoría: <strong>{_h(category_name)}</strong>
+          <code>({_h(category_slug)})</code></li>
+      <li>Plato disparador: <strong>{_h(dish_name)}</strong></li>
+      {restaurant_block}
+    </ul>
+    {description_block}
+    <p style="margin-top:24px;">
+      <a href="{queue_url}"
+         style="display:inline-block;background:#a04a3c;color:#fff;
+                padding:12px 20px;border-radius:8px;text-decoration:none;
+                font-weight:600;">
+        Revisar la cola de pendientes
+      </a>
+    </p>
+    <p style="font-size:13px;color:#5a4a40;margin-top:18px;">
+      La categoría no aparece en feeds ni filtros públicos hasta que
+      la apruebes. Si es duplicada o no encaja, rechazala desde el panel.
+    </p>
+    """
+    )
+    text_lines = [
+        f"Nueva categoría pendiente: {category_name} ({category_slug})",
+        f"Plato disparador: {dish_name}",
+    ]
+    if restaurant_name:
+        text_lines.append(f"Restaurante: {restaurant_name}")
+    if category_description:
+        text_lines.append(f"Descripción propuesta: {category_description}")
+    text_lines.append(f"Cola de pendientes: {queue_url}")
+    return subject, body, "\n\n".join(text_lines)
+
+
 def render_review_on_owned_restaurant(
     *,
     restaurant_name: str,
