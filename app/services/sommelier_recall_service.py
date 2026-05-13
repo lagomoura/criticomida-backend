@@ -128,6 +128,9 @@ async def enqueue_sommelier_review_recalls(
         # ``ix_async_job_pending_recall_dedup``: at most one pending
         # recall per (user, dish). If a previous conversation already
         # left one in the queue, the second insert is a no-op.
+        # ``make_interval(hours => :hours)`` takes a typed int directly
+        # — avoids the string-concat coercion that asyncpg rejects when
+        # we pass an int parameter into ``(:hours || ' hours')::interval``.
         result = await db.execute(
             text(
                 """
@@ -140,7 +143,7 @@ async def enqueue_sommelier_review_recalls(
                     :user_id,
                     :dish_id,
                     'pending',
-                    now() + (:hours || ' hours')::interval,
+                    now() + make_interval(hours => :hours),
                     now()
                 )
                 ON CONFLICT (kind, payload_user_id, payload_dish_id)

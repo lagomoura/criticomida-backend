@@ -180,11 +180,6 @@ def make_recommend_dishes_tool(
         # only enqueue for logged-in users. The enqueue is best-effort
         # — a queue write failure should never tank the recommendation
         # response itself.
-        logger.warning(
-            "DEBUG recommend_dishes: user_id=%s kept_dishes_count=%d",
-            user_id,
-            len(kept_dishes),
-        )
         if user_id is not None and kept_dishes:
             try:
                 await enqueue_sommelier_review_recalls(
