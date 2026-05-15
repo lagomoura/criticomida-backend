@@ -278,11 +278,14 @@ class DishEditorialCache(Base):
 
     __tablename__ = "dish_editorial_cache"
     __table_args__ = (
-        PrimaryKeyConstraint("name_key", "cuisine_key", name="pk_dish_editorial_cache"),
+        PrimaryKeyConstraint(
+            "name_key", "cuisine_key", "lang", name="pk_dish_editorial_cache"
+        ),
     )
 
     name_key: Mapped[str] = mapped_column(Text, nullable=False)
     cuisine_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    lang: Mapped[str] = mapped_column(String(8), nullable=False, default="es")
     story: Mapped[str] = mapped_column(Text, nullable=False)
     origin: Mapped[str | None] = mapped_column(String(80), nullable=True)
     prompt_version: Mapped[str] = mapped_column(String(16), nullable=False)

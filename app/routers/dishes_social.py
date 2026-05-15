@@ -35,7 +35,11 @@ from app.schemas.dish_aggregates import (
     RelatedDishesResponse,
 )
 from app.schemas.feed import FeedPage
-from app.services.dish_editorial_enricher import maybe_schedule_blurb_refresh
+from app.services.dish_editorial_enricher import (
+    get_cached_blurb,
+    maybe_schedule_blurb_refresh,
+    normalize_lang,
+)
 from app.services.dish_service import (
     compute_dish_aggregates,
     get_dish_diary_stats,
@@ -53,6 +57,10 @@ async def get_dish_social(
     db: Annotated[AsyncSession, Depends(get_db)],
     background_tasks: BackgroundTasks,
     viewer: Annotated[User | None, Depends(get_current_user_optional)] = None,
+    lang: str = Query(
+        "es",
+        description="Idioma del blurb editorial (es/en/pt). Cae a 'es'.",
+    ),
 ) -> dict:
     stmt = (
         select(Dish, Restaurant, Category, User)
@@ -81,8 +89,24 @@ async def get_dish_social(
 
     is_signature = await is_signature_dish(db, dish)
 
-    # Lazy editorial blurb generation. Degrades silent when not configured.
-    maybe_schedule_blurb_refresh(background_tasks, dish.id)
+    # Blurb editorial en el idioma de la URL. El dish row guarda el canónico
+    # ES; el resto vive en `dish_editorial_cache`. Servimos lo cacheado para
+    # `lang`; si falta, caemos a ES (solo para lang=es, evita mostrar el
+    # idioma equivocado) y encolamos la generación del idioma pedido.
+    lang = normalize_lang(lang)
+    cached_blurb = await get_cached_blurb(db, dish, restaurant, lang)
+    if cached_blurb is not None:
+        editorial_blurb, editorial_origin = cached_blurb
+    elif lang == "es":
+        editorial_blurb, editorial_origin = (
+            dish.editorial_blurb,
+            dish.editorial_origin,
+        )
+    else:
+        editorial_blurb, editorial_origin = None, None
+
+    # Lazy generation. Degrades silent when not configured.
+    maybe_schedule_blurb_refresh(background_tasks, dish.id, lang)
 
     want_to_try = False
     if viewer is not None:
@@ -155,9 +179,9 @@ async def get_dish_social(
         "would_order_again_pct": woa_pct,
         "price_range": dish.price_tier.value if dish.price_tier else None,
         "is_signature": is_signature,
-        "editorial_blurb": dish.editorial_blurb,
+        "editorial_blurb": editorial_blurb,
         "editorial_source": dish.editorial_blurb_source,
-        "editorial_origin": dish.editorial_origin,
+        "editorial_origin": editorial_origin,
         "created_by_display_name": creator.display_name if creator else None,
         "want_to_try": want_to_try,
         "first_discoverers": first_discoverers,

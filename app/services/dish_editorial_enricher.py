@@ -43,21 +43,47 @@ logger = logging.getLogger(__name__)
 EDITORIAL_PROMPT_VERSION = "v2"
 
 
-SYSTEM_PROMPT = (
-    "Eres un editor gastronómico para Palato. Te dan el nombre de un "
-    "plato y la cocina a la que pertenece. Devolvé un JSON con dos campos:\n"
-    '  "origin": etiqueta corta (máx. 5 palabras) que ubique al plato en su '
-    "tradición. Ejemplos: \"Cocina napolitana\", \"Sushi · Edo, Japón\", "
-    "\"Asado rioplatense\", \"Cocina andaluza\".\n"
-    '  "story": 2 a 3 oraciones (máx. 60 palabras) en español rioplatense '
-    "neutro que cuenten brevemente el origen del plato y una curiosidad "
-    "concreta — un ingrediente clave, una técnica tradicional, una anécdota "
-    "cultural o el momento histórico en que apareció.\n"
-    "Tono editorial, evocativo pero sobrio. NO menciones el restaurante ni "
-    "el local. No uses listas, emojis, hashtags ni signos de exclamación. "
-    "No inventes datos: si no estás seguro, mantenete en conocimiento "
-    "general del plato."
-)
+# Idiomas soportados por la UI (next-intl: es/en/pt). El default es `es`
+# porque es el idioma histórico de la cache y el canónico del dish row.
+SUPPORTED_LANGS = ("es", "en", "pt")
+DEFAULT_LANG = "es"
+
+# En qué idioma debe redactarse `story`, por código. Las *instrucciones*
+# siguen en español (el modelo las obedece igual); lo único que cambia es
+# el idioma de salida exigido y el matiz regional.
+_STORY_LANGUAGE = {
+    "es": "español rioplatense neutro",
+    "en": "neutral, editorial English",
+    "pt": "português do Brasil neutro",
+}
+
+
+def normalize_lang(lang: str | None) -> str:
+    """Mapea cualquier locale entrante al set soportado; cae a `es`."""
+    if not lang:
+        return DEFAULT_LANG
+    code = lang.strip().lower()[:2]
+    return code if code in SUPPORTED_LANGS else DEFAULT_LANG
+
+
+def _system_prompt(lang: str) -> str:
+    story_lang = _STORY_LANGUAGE[lang]
+    return (
+        "Eres un editor gastronómico para Palato. Te dan el nombre de un "
+        "plato y la cocina a la que pertenece. Devolvé un JSON con dos campos:\n"
+        '  "origin": etiqueta corta (máx. 5 palabras) que ubique al plato en su '
+        "tradición. Ejemplos: \"Cocina napolitana\", \"Sushi · Edo, Japón\", "
+        "\"Asado rioplatense\", \"Cocina andaluza\". Escribí `origin` en "
+        f"{story_lang}.\n"
+        '  "story": 2 a 3 oraciones (máx. 60 palabras) en '
+        f"{story_lang} que cuenten brevemente el origen del plato y una "
+        "curiosidad concreta — un ingrediente clave, una técnica tradicional, "
+        "una anécdota cultural o el momento histórico en que apareció.\n"
+        "Tono editorial, evocativo pero sobrio. NO menciones el restaurante ni "
+        "el local. No uses listas, emojis, hashtags ni signos de exclamación. "
+        "No inventes datos: si no estás seguro, mantenete en conocimiento "
+        "general del plato."
+    )
 
 
 def _model() -> str:
@@ -113,7 +139,7 @@ def _normalize_blurb(parsed: _EditorialSchema) -> tuple[str, str | None] | None:
 
 
 async def _generate_blurb(
-    dish: Dish, restaurant: Restaurant
+    dish: Dish, restaurant: Restaurant, lang: str
 ) -> tuple[str, str | None] | None:
     api_key = _api_key()
     if not api_key:
@@ -130,7 +156,7 @@ async def _generate_blurb(
                 )
             ],
             config=genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                system_instruction=_system_prompt(lang),
                 max_output_tokens=320,
                 response_mime_type="application/json",
                 response_schema=_EditorialSchema,
@@ -199,12 +225,13 @@ def _normalize_name_fallback(name: str) -> str:
 
 
 async def _read_cache(
-    db: AsyncSession, name_key: str, cuisine_key: str
+    db: AsyncSession, name_key: str, cuisine_key: str, lang: str
 ) -> tuple[str, str | None] | None:
     row = await db.execute(
         select(DishEditorialCache).where(
             DishEditorialCache.name_key == name_key,
             DishEditorialCache.cuisine_key == cuisine_key,
+            DishEditorialCache.lang == lang,
             DishEditorialCache.prompt_version == EDITORIAL_PROMPT_VERSION,
         )
     )
@@ -218,6 +245,7 @@ async def _write_cache(
     db: AsyncSession,
     name_key: str,
     cuisine_key: str,
+    lang: str,
     story: str,
     origin: str | None,
 ) -> None:
@@ -225,6 +253,7 @@ async def _write_cache(
     stmt = pg_insert(DishEditorialCache).values(
         name_key=name_key,
         cuisine_key=cuisine_key,
+        lang=lang,
         story=story,
         origin=origin,
         prompt_version=EDITORIAL_PROMPT_VERSION,
@@ -242,25 +271,54 @@ async def _write_cache(
     await db.execute(stmt)
 
 
+def _keys(dish: Dish, restaurant: Restaurant) -> tuple[str, str]:
+    name_key = (dish.name_normalized or "").strip()
+    if not name_key:
+        name_key = _normalize_name_fallback(dish.name or "")
+    return name_key, _cuisine_key(restaurant)
+
+
+async def get_cached_blurb(
+    db: AsyncSession, dish: Dish, restaurant: Restaurant, lang: str
+) -> tuple[str, str | None] | None:
+    """Lookup síncrono del blurb cacheado para `lang` (sin tocar el LLM).
+
+    Lo usa el endpoint de detalle para servir la historia en el idioma de
+    la URL: si hay hit devolvemos esa historia; si no, el endpoint cae a la
+    historia ES del dish row (solo cuando `lang == 'es'`) y encola la
+    generación del idioma faltante en background.
+    """
+    lang = normalize_lang(lang)
+    name_key, cuisine_key = _keys(dish, restaurant)
+    if not name_key:
+        return None
+    return await _read_cache(db, name_key, cuisine_key, lang)
+
+
 async def refresh_dish_blurb(
     db: AsyncSession,
     dish_id: uuid.UUID,
     *,
+    lang: str = DEFAULT_LANG,
     force: bool = False,
 ) -> bool:
-    """Genera o refresca el blurb editorial del plato.
+    """Genera o refresca el blurb editorial del plato en `lang`.
 
     Flujo:
-      1. Si el dish ya está al día y no es `force`, no hacemos nada.
-      2. Lookup en `dish_editorial_cache` por (name_key, cuisine_key) — si
-         hit, copiamos al dish sin llamar al LLM.
-      3. Miss: una llamada al LLM, escribimos cache + dish.
+      1. ES tiene un fast-path: el dish row es el store canónico, así que si
+         no está stale y no es `force`, no hacemos nada.
+      2. Lookup en `dish_editorial_cache` por (name_key, cuisine_key, lang).
+         Hit: para ES copiamos al dish row; para el resto la cache ya alcanza
+         (el endpoint la lee directo) y no hay nada que hacer.
+      3. Miss: una llamada al LLM en `lang`, escribimos cache (+ dish row si ES).
 
-    Devuelve True cuando el row del dish se actualizó y commiteó.
+    Devuelve True cuando algo se generó/copió y commiteó.
     """
     if not _api_key():
         logger.debug("Editorial enricher: no API key configured — skipping.")
         return False
+
+    lang = normalize_lang(lang)
 
     row = (
         await db.execute(
@@ -273,56 +331,66 @@ async def refresh_dish_blurb(
         return False
     dish, restaurant = row
 
-    if not force and not _is_stale(dish):
+    # Fast-path ES: el dish row es el canónico. Si está al día, nada que hacer.
+    if lang == DEFAULT_LANG and not force and not _is_stale(dish):
         return False
 
-    name_key = (dish.name_normalized or "").strip()
-    if not name_key:
-        name_key = _normalize_name_fallback(dish.name or "")
-    cuisine_key = _cuisine_key(restaurant)
+    name_key, cuisine_key = _keys(dish, restaurant)
 
-    if name_key:
-        cached = await _read_cache(db, name_key, cuisine_key)
+    if not force and name_key:
+        cached = await _read_cache(db, name_key, cuisine_key, lang)
         if cached is not None:
-            story, origin = cached
-            _apply_blurb(dish, story, origin)
-            await db.commit()
-            return True
+            if lang == DEFAULT_LANG:
+                story, origin = cached
+                _apply_blurb(dish, story, origin)
+                await db.commit()
+                return True
+            # Non-ES ya cacheado: el endpoint lo lee directo de la cache.
+            return False
 
-    result = await _generate_blurb(dish, restaurant)
+    result = await _generate_blurb(dish, restaurant, lang)
     if not result:
         return False
     story, origin = result
 
     if name_key:
-        await _write_cache(db, name_key, cuisine_key, story, origin)
-    _apply_blurb(dish, story, origin)
+        await _write_cache(db, name_key, cuisine_key, lang, story, origin)
+    if lang == DEFAULT_LANG:
+        _apply_blurb(dish, story, origin)
     await db.commit()
     return True
 
 
 def _apply_blurb(dish: Dish, story: str, origin: str | None) -> None:
+    """Mirror del blurb ES sobre el dish row.
+
+    Solo se llama para ES: el dish row es el store canónico español que leen
+    los metadatos de página y cualquier otro consumidor. Los idiomas no-ES
+    viven exclusivamente en `dish_editorial_cache`.
+    """
     dish.editorial_blurb = story
     dish.editorial_origin = origin
-    dish.editorial_blurb_lang = "es"
+    dish.editorial_blurb_lang = DEFAULT_LANG
     dish.editorial_blurb_source = "gemini"
     dish.editorial_prompt_version = EDITORIAL_PROMPT_VERSION
     dish.editorial_cached_at = datetime.now(timezone.utc)
 
 
-async def _refresh_in_background(dish_id: uuid.UUID) -> None:
+async def _refresh_in_background(dish_id: uuid.UUID, lang: str) -> None:
     """Open a fresh DB session — request-scoped sessions are closed already."""
     async with async_session() as session:
         try:
-            await refresh_dish_blurb(session, dish_id, force=False)
+            await refresh_dish_blurb(session, dish_id, lang=lang, force=False)
         except Exception:  # pragma: no cover — background swallow
             logger.exception("Background dish blurb refresh failed (%s)", dish_id)
 
 
 def maybe_schedule_blurb_refresh(
-    background_tasks: BackgroundTasks, dish_id: uuid.UUID
+    background_tasks: BackgroundTasks,
+    dish_id: uuid.UUID,
+    lang: str = DEFAULT_LANG,
 ) -> None:
-    """Best-effort: enqueue blurb generation for a dish if API key is set.
+    """Best-effort: enqueue blurb generation for a dish+lang if API key is set.
 
     El check de stale corre dentro de `refresh_dish_blurb` con una sesión
     fresca, así que enqueue es barato — el task hace short-circuit cuando
@@ -330,4 +398,4 @@ def maybe_schedule_blurb_refresh(
     """
     if not _api_key():
         return
-    background_tasks.add_task(_refresh_in_background, dish_id)
+    background_tasks.add_task(_refresh_in_background, dish_id, normalize_lang(lang))
