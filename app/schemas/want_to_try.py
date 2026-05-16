@@ -26,6 +26,8 @@ class WantToTryItem(BaseModel):
     restaurant_city: str | None = None
     restaurant_latitude: Decimal | None = None
     restaurant_longitude: Decimal | None = None
+    reservation_url: str | None = None
+    reservation_provider: str | None = None
     saved_at: datetime
 
 

@@ -166,6 +166,8 @@ async def list_my_want_to_try(
             Restaurant.city.label("restaurant_city"),
             Restaurant.latitude,
             Restaurant.longitude,
+            Restaurant.reservation_url,
+            Restaurant.reservation_provider,
         )
         .join(Dish, Dish.id == WantToTryDish.dish_id)
         .join(Restaurant, Restaurant.id == Dish.restaurant_id)
@@ -193,6 +195,8 @@ async def list_my_want_to_try(
             restaurant_city=r.restaurant_city,
             restaurant_latitude=r.latitude,
             restaurant_longitude=r.longitude,
+            reservation_url=r.reservation_url,
+            reservation_provider=r.reservation_provider,
             saved_at=r.saved_at,
         )
         for r in trimmed
