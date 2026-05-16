@@ -27,6 +27,7 @@ class NotificationResponse(BaseModel):
         "review_on_owned_restaurant",
         "mention",
         "sommelier_review_recall",
+        "category_pending_review",
     ]
     unread: bool
     created_at: datetime
