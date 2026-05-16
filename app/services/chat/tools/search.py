@@ -54,6 +54,7 @@ from app.services.chat.tools._schemas import (
     Sentiment,
     pydantic_to_anthropic_schema,
 )
+from app.services.chat.tools._wishlist_lookup import get_saved_dish_ids
 
 
 _PRICE_TIER_RANK = {PriceTier.low: 1, PriceTier.mid: 2, PriceTier.high: 3}
@@ -99,6 +100,8 @@ def _serialize_dish(
             ),
             "has_reservation": restaurant.has_reservation,
             "is_claimed": restaurant.is_claimed,
+            "reservation_url": restaurant.reservation_url,
+            "reservation_provider": restaurant.reservation_provider,
         },
     }
 
@@ -274,9 +277,22 @@ async def execute_dish_search(
     allergies = await get_user_allergies(db, user_id=user_id)
     kept_dishes, dropped = filter_dishes_by_allergies(dishes, allergies)
 
+    # Wishlist state per dish so the bookmark chip paints correctly on
+    # first render and survives a refresh. Without this, every
+    # search_dishes card shipped want_to_try=false regardless of the
+    # comensal's actual wishlist (recommend_dishes already did this;
+    # search_dishes silently didn't). Empty set for anon callers.
+    saved_ids = await get_saved_dish_ids(
+        db,
+        user_id=user_id,
+        dish_ids=[d.id for d in kept_dishes],
+    )
+
     payload: dict[str, Any] = {
         "count": len(kept_dishes),
-        "dishes": [_serialize_dish(d) for d in kept_dishes],
+        "dishes": [
+            _serialize_dish(d, saved_ids=saved_ids) for d in kept_dishes
+        ],
         # ``semantic_used`` reflects whether KNN actually ran: true iff
         # we had a usable vector. Honest about degraded paths (Gemini
         # down → no vector → rating-fallback → semantic_used=false).
