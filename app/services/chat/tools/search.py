@@ -503,8 +503,19 @@ def make_get_dish_detail_tool(
         top_reviews = sorted(
             reviews, key=lambda r: float(r.rating or 0), reverse=True
         )[:3]
+
+        # Hidratar want_to_try contra la wishlist real del comensal, igual
+        # que execute_dish_search. Sin esto la card del detalle salía
+        # siempre con want_to_try=false aunque el plato estuviera guardado.
+        # Anon/Business (user_id None) → set vacío → false, que es lo
+        # correcto: la tool ahí es de diagnóstico, no de consumo social.
+        saved_ids = await get_saved_dish_ids(
+            db,
+            user_id=user_id,
+            dish_ids=[dish.id],
+        )
         return {
-            **_serialize_dish(dish),
+            **_serialize_dish(dish, saved_ids=saved_ids),
             "reviews": [
                 {
                     "rating": float(r.rating) if r.rating else None,
