@@ -75,6 +75,20 @@ def _suggestion_cache_put(key: tuple[str, int], page: UserSuggestionsPage) -> No
     _SUGGESTION_CACHE[key] = (time.monotonic() + _SUGGESTION_CACHE_TTL, page)
 
 
+def _suggestion_cache_invalidate(viewer_id: str) -> None:
+    """Tira la cache de sugerencias de un viewer (todos los ``limit``).
+
+    Se llama tras follow/unfollow: el set de exclusión
+    (``_EXCLUDED_CTE``) cambió, así que la lista cacheada quedó stale —
+    seguiría mostrando a alguien que el viewer ya sigue. Sin esto el
+    rail "Para vos" parece *no persistir* el follow: el usuario sigue
+    apareciendo con botón "Seguir" hasta que vence el TTL.
+    """
+    stale = [k for k in _SUGGESTION_CACHE if k[0] == viewer_id]
+    for k in stale:
+        _SUGGESTION_CACHE.pop(k, None)
+
+
 async def _resolve_user(db: AsyncSession, id_or_handle: str) -> User:
     """Find a user by UUID or by lowercase handle. 404 otherwise."""
     user: User | None = None
@@ -146,6 +160,7 @@ async def follow_user(
             # following; proceed as if the call succeeded.
             await db.rollback()
 
+    _suggestion_cache_invalidate(str(current_user.id))
     followers = await _followers_count(db, target.id)
     return FollowActionResponse(
         follower_id=current_user.id,
@@ -177,6 +192,7 @@ async def unfollow_user(
         await db.delete(row)
         await db.flush()
 
+    _suggestion_cache_invalidate(str(current_user.id))
     followers = await _followers_count(db, target.id)
     return FollowActionResponse(
         follower_id=current_user.id,
