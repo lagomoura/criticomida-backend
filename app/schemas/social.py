@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -44,6 +45,14 @@ class UserSuggestion(BaseModel):
     sigue este candidato (friends-of-friends).
     ``shared_restaurants`` cuenta restaurantes donde tanto el viewer como
     el candidato reseñaron platos (señal de afinidad gastronómica).
+
+    ``reason_kind`` indica el origen del candidato para que el frontend
+    pueda renderizar el badge correcto:
+
+    - ``signal``: salió de friends-of-friends y/o co-reviewers (hay
+      ``shared_followers``/``shared_restaurants`` > 0).
+    - ``popular_critic``: relleno de cold-start, es un crítico.
+    - ``popular``: relleno de cold-start por popularidad general.
     """
 
     id: uuid.UUID
@@ -53,6 +62,7 @@ class UserSuggestion(BaseModel):
     bio: str | None = None
     shared_followers: int = 0
     shared_restaurants: int = 0
+    reason_kind: Literal["signal", "popular_critic", "popular"] = "signal"
 
 
 class UserSuggestionsPage(BaseModel):

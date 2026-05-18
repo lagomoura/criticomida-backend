@@ -23,12 +23,31 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_suggestions_empty_for_new_user(async_client_integration, user_a):
+async def test_suggestions_cold_start_uses_fallback(
+    async_client_integration, user_a
+):
+    """Usuario nuevo sin grafo ni reseñas.
+
+    Antes devolvía ``[]`` (rail oculto). Ahora el cold-start se rellena
+    con un fallback de popularidad/críticos, así que un viewer recién
+    registrado igual recibe candidatos — y todos ellos sin señal
+    compartida y marcados con ``reason_kind`` de fallback.
+    """
+    # Garantizamos que exista al menos otro usuario elegible.
+    await register_and_login(async_client_integration)
+
     r = await async_client_integration.get(
         "/api/users/me/suggestions", cookies=user_a.cookies
     )
     assert r.status_code == 200
-    assert r.json()["items"] == []
+    items = r.json()["items"]
+    assert len(items) >= 1
+    for it in items:
+        assert it["id"] != user_a.user_id
+        # Sin grafo ni reseñas no puede haber señal compartida.
+        assert it["shared_followers"] == 0
+        assert it["shared_restaurants"] == 0
+        assert it["reason_kind"] in ("popular_critic", "popular")
 
 
 @pytest.mark.asyncio
@@ -54,6 +73,7 @@ async def test_suggestions_surface_friends_of_friends(
     candidate = next((it for it in items if it["id"] == user_c.user_id), None)
     assert candidate is not None
     assert candidate["shared_followers"] >= 1
+    assert candidate["reason_kind"] == "signal"
 
 
 @pytest.mark.asyncio
@@ -74,6 +94,7 @@ async def test_suggestions_surface_co_reviewers(
     candidate = next((it for it in items if it["id"] == user_b.user_id), None)
     assert candidate is not None
     assert candidate["shared_restaurants"] >= 1
+    assert candidate["reason_kind"] == "signal"
 
 
 @pytest.mark.asyncio
