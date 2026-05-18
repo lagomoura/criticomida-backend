@@ -72,7 +72,8 @@ class Notification(Base):
             "kind IN ('like','comment','follow','claim_approved',"
             "'claim_rejected','claim_revoked','comment_like','comment_reply',"
             "'reservation_requested','review_on_owned_restaurant','mention',"
-            "'sommelier_review_recall','category_pending_review')",
+            "'sommelier_review_recall','category_pending_review',"
+            "'user_created')",
             name="ck_notifications_kind",
         ),
     )

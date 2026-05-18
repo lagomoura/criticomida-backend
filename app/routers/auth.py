@@ -43,6 +43,7 @@ from app.schemas.user import (
     UserLogin,
     UserResponse,
 )
+from app.services.admin_notification_service import notify_admins_user_created
 from app.services.email_verification_service import (
     consume_verification_token,
     create_verification_token,
@@ -235,6 +236,14 @@ async def register(
             ) from exc
         raise
     await db.refresh(user)
+
+    # Aviso a admins (in-app) — best-effort. Las filas se agregan a la
+    # sesión y commitean junto con el user. Si algo falla acá, no rompemos
+    # el registro: el alta del usuario es lo crítico, el aviso es accesorio.
+    try:
+        await notify_admins_user_created(db, user)
+    except Exception:
+        pass
 
     # Verification email — best-effort. Si el provider falla, el user puede
     # pedir un resend desde la UI. No bloqueamos el registro.

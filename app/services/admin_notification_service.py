@@ -124,3 +124,52 @@ async def notify_admins_category_pending(
         category.slug,
         len(admins),
     )
+
+
+async def notify_admins_user_created(
+    db: AsyncSession,
+    new_user: User,
+) -> None:
+    """Avisa a todos los admins que se registró un usuario nuevo.
+
+    Solo in-app (sin email): a escala, un mail por cada signup inunda la
+    casilla del admin sin aportar — la campanita alcanza. Inserta una fila
+    en ``notifications`` por admin (kind=``user_created``) apuntando al
+    perfil del usuario nuevo vía ``target_user_id``, de modo que el click
+    abre ``/u/{id}``.
+
+    Best-effort por diseño: si no hay admins, loguea y sale sin romper el
+    registro. El caller commitea — este helper solo agrega filas a la sesión.
+
+    Nota: el usuario nuevo es su propio ``actor`` (NOT NULL en el modelo);
+    es el mismo patrón de auto-notificación que ``category_pending_review``.
+    """
+    admins = await _load_admin_users(db)
+    if not admins:
+        logger.warning(
+            "user_created: no admins found in DB (user=%s)", new_user.id
+        )
+        return
+
+    handle = new_user.handle or new_user.display_name
+    text_body = f"Nuevo usuario registrado: @{handle}"
+    if len(text_body) > 500:
+        text_body = text_body[:497] + "…"
+
+    for admin in admins:
+        # Un admin no necesita el aviso de su propia alta.
+        if admin.id == new_user.id:
+            continue
+        db.add(
+            Notification(
+                recipient_user_id=admin.id,
+                actor_user_id=new_user.id,
+                kind="user_created",
+                target_user_id=new_user.id,
+                text=text_body,
+            )
+        )
+
+    logger.info(
+        "user_created fanout user=%s admins=%d", new_user.id, len(admins)
+    )
